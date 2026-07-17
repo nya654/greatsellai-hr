@@ -38,6 +38,7 @@ def test_agent_executes_model_selected_search_tool(
                                     "is_985_211": True,
                                     "min_employment_months": 36,
                                     "skills_all_of": ["Python"],
+                                    "limit": None,
                                 }
                             ),
                         },

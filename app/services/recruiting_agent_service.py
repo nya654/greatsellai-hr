@@ -178,8 +178,19 @@ def _clean_tool_arguments(value: object) -> dict[str, Any]:
 
 def _search(session: Session, arguments: dict[str, Any]) -> ToolRun:
     allowed = set(_SEARCH_SCHEMA["properties"])
-    values = {key: value for key, value in arguments.items() if key in allowed}
-    values["limit"] = min(int(values.get("limit", 20)), 20)
+    # Tool models occasionally include optional keys with JSON null.  Those
+    # are omissions, not a reason to turn a recruiter request into a 500.
+    values = {
+        key: value
+        for key, value in arguments.items()
+        if key in allowed and value is not None
+    }
+    raw_limit = values.get("limit", 20)
+    values["limit"] = (
+        min(raw_limit, 20)
+        if isinstance(raw_limit, int) and not isinstance(raw_limit, bool)
+        else 20
+    )
     try:
         request = CandidateSearchRequest.model_validate(values)
     except (TypeError, ValueError) as exc:

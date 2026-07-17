@@ -10,16 +10,19 @@ from sqlalchemy.orm import Session
 
 from app.config import AppSettings
 from app.database import Database
-from app.models import Resume, ResumeAiExtractionJob, ResumeSourceBlock
+from app.models import Candidate, Resume, ResumeAiExtractionJob, ResumeSourceBlock
 from app.schemas import ResumeFactsSaveRequest, ResumeFactsSubmission
 from app.services.deepseek_provider import (
     DeepSeekProviderError,
     EvidenceBlock,
+    extract_resume_candidate_name,
     extract_resume_core_facts,
     extract_resume_facts,
 )
 from app.services.resume_service import (
     FactValidationError,
+    _assert_raw_value_grounded,
+    _source_text_by_ids,
     get_resume,
     prepare_ai_draft_facts,
     save_facts,
@@ -161,6 +164,112 @@ def request_resume_ai_extraction(
     job.completed_at = None
     session.flush()
     return resume
+
+
+def backfill_unnamed_candidate_names(
+    database: Database,
+    *,
+    settings: AppSettings,
+    limit: int = 100,
+) -> tuple[int, int]:
+    """Fill only empty candidate names without touching completed facts.
+
+    The compact extraction fallback deliberately omits identity. This bounded
+    repair calls a name-only contract and keeps the same page-evidence check
+    before writing, so it can never replace an existing name or alter scores,
+    summaries, or screening facts.
+    """
+
+    if limit < 1:
+        return 0, 0
+    if not settings.deepseek_api_key:
+        raise AiExtractionJobError(_NO_KEY_ERROR)
+
+    with database.session_factory() as session:
+        resume_ids = session.scalars(
+            select(Resume.id)
+            .join(Candidate, Candidate.id == Resume.candidate_id)
+            .where(
+                or_(Candidate.display_name.is_(None), Candidate.display_name == ""),
+            )
+            .order_by(Resume.created_at.asc(), Resume.id.asc())
+            .limit(limit)
+        ).all()
+
+    updated = 0
+    skipped = 0
+    for resume_id in resume_ids:
+        with database.session_factory() as session:
+            resume = session.get(Resume, resume_id)
+            if resume is None:
+                continue
+            source_blocks = session.scalars(
+                select(ResumeSourceBlock)
+                .where(ResumeSourceBlock.resume_id == resume.id)
+                .order_by(ResumeSourceBlock.page_no, ResumeSourceBlock.block_id)
+            ).all()
+            blocks = [
+                EvidenceBlock(
+                    block_id=block.block_id,
+                    page_no=block.page_no,
+                    block_type=block.block_type,
+                    text=block.text,
+                )
+                for block in source_blocks
+            ]
+        if not blocks:
+            skipped += 1
+            continue
+        try:
+            draft = extract_resume_candidate_name(
+                api_key=settings.deepseek_api_key,
+                model=settings.deepseek_model,
+                timeout_seconds=settings.deepseek_timeout_seconds,
+                blocks=blocks,
+            )
+        except DeepSeekProviderError:
+            skipped += 1
+            continue
+        if draft.value is None:
+            skipped += 1
+            continue
+
+        with database.session_factory() as session:
+            resume = session.scalar(
+                select(Resume).where(Resume.id == resume_id).with_for_update()
+            )
+            if resume is None:
+                continue
+            candidate = session.scalar(
+                select(Candidate)
+                .where(Candidate.id == resume.candidate_id)
+                .with_for_update()
+            )
+            if candidate is None:
+                session.rollback()
+                continue
+            if candidate.display_name and candidate.display_name.strip():
+                session.rollback()
+                continue
+            try:
+                evidence_text = _source_text_by_ids(
+                    session,
+                    resume_id=resume.id,
+                    block_ids=draft.evidence_block_ids,
+                )
+                _assert_raw_value_grounded(
+                    value=draft.value,
+                    source_text=evidence_text,
+                    label="candidate_name_raw",
+                )
+            except FactValidationError:
+                session.rollback()
+                skipped += 1
+                continue
+            candidate.display_name = draft.value
+            session.commit()
+            updated += 1
+    return updated, skipped
 
 
 def run_ai_extraction_worker_once(
@@ -612,6 +721,7 @@ __all__ = [
     "AI_EXTRACTION_UNAVAILABLE",
     "AiExtractionJobError",
     "ai_extraction_state",
+    "backfill_unnamed_candidate_names",
     "enqueue_uploaded_resume_ai_extraction",
     "request_resume_ai_extraction",
     "run_ai_extraction_worker_once",

@@ -9,7 +9,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from app.schemas import ResumeFactsSubmission
+from app.schemas import (
+    CANDIDATE_NAME_LABEL_PATTERN,
+    CANDIDATE_NAME_UNSAFE_CHARACTER_PATTERN,
+    ResumeFactsSubmission,
+)
 from app.services.institution_service import build_985_211_ai_rulebook
 
 
@@ -23,6 +27,12 @@ LABELED_PERSONAL_LINE = re.compile(
 
 class DeepSeekProviderError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class CandidateNameDraft:
+    value: str | None
+    evidence_block_ids: list[str]
 
 
 FACT_SNAPSHOT_SCHEMA_VERSION = "resume_fact_snapshot.v3"
@@ -429,6 +439,95 @@ def _evidence_schema() -> dict[str, Any]:
         "type": "string",
         "pattern": "^page-\\d{3}$",
     }
+
+
+def candidate_name_tool_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "candidate_name_raw": {
+                "anyOf": [
+                    {"type": "string", "minLength": 1, "maxLength": 80},
+                    {"type": "null"},
+                ]
+            },
+            "candidate_name_evidence_block_ids": {
+                "type": "array",
+                "items": _evidence_schema(),
+                "maxItems": 2,
+            },
+        },
+        "required": ["candidate_name_raw", "candidate_name_evidence_block_ids"],
+        "additionalProperties": False,
+    }
+
+
+def extract_resume_candidate_name(
+    *,
+    api_key: str,
+    model: str,
+    timeout_seconds: int,
+    blocks: list[EvidenceBlock],
+) -> CandidateNameDraft:
+    """Return only a source-cited resume owner name for safe backfills.
+
+    This small call exists because the compact facts fallback intentionally
+    omits identity to keep long-resume extraction reliable. It never changes
+    a candidate's existing user-owned display name.
+    """
+
+    source = render_evidence_blocks(
+        blocks,
+        max_chars=8000,
+        retain_candidate_name=True,
+    )
+    result = call_strict_function(
+        api_key=api_key,
+        model=model,
+        timeout_seconds=timeout_seconds,
+        function_name="submit_resume_candidate_name",
+        function_description="Submit the explicitly written owner name of this resume, if clear.",
+        parameters_schema=candidate_name_tool_schema(),
+        system_prompt=(
+            "Extract only the resume owner's explicitly written header or labeled name. "
+            "Never infer a name and never use a filename, email, employer, referee, "
+            "team member, author, or any other identity. Do not output phone, email, "
+            "address, photo, or any other personal data."
+        ),
+        user_prompt=(
+            "Return the exact name text without a `姓名`/`Name` label and cite the page "
+            "containing it. If ownership is not explicit, return null with an empty "
+            "evidence list. Evidence blocks:\n" + source
+        ),
+        max_tokens=300,
+    )
+    name = result.get("candidate_name_raw")
+    evidence_block_ids = result.get("candidate_name_evidence_block_ids")
+    if name is None:
+        if evidence_block_ids != []:
+            raise DeepSeekProviderError("deepseek_invalid_candidate_name_response")
+        return CandidateNameDraft(value=None, evidence_block_ids=[])
+    if not isinstance(name, str) or not isinstance(evidence_block_ids, list):
+        raise DeepSeekProviderError("deepseek_invalid_candidate_name_response")
+    cleaned_name = name.strip()
+    if (
+        not cleaned_name
+        or len(cleaned_name) > 80
+        or CANDIDATE_NAME_LABEL_PATTERN.search(cleaned_name)
+        or CANDIDATE_NAME_UNSAFE_CHARACTER_PATTERN.search(cleaned_name)
+        or not 1 <= len(evidence_block_ids) <= 2
+        or len(evidence_block_ids) != len(set(evidence_block_ids))
+        or any(
+            not isinstance(block_id, str)
+            or not re.fullmatch(r"page-\d{3}", block_id)
+            for block_id in evidence_block_ids
+        )
+    ):
+        raise DeepSeekProviderError("deepseek_invalid_candidate_name_response")
+    return CandidateNameDraft(
+        value=cleaned_name,
+        evidence_block_ids=list(evidence_block_ids),
+    )
 
 
 def resume_facts_tool_schema() -> dict[str, Any]:

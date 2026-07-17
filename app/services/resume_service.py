@@ -39,6 +39,11 @@ from app.services.normalization import (
     normalized_contains,
     normalized_key,
 )
+from app.services.document_text_extraction import (
+    DocumentExtractionError,
+    SUPPORTED_DOCUMENT_EXTENSIONS,
+    extract_document_text,
+)
 from app.services.text_extraction import PdfExtractionError, extract_pdf_text
 from app.services.tencent_ocr_provider import TencentOcrConfig
 
@@ -92,18 +97,17 @@ def validate_pdf_resume_upload(
     content: bytes,
     settings: AppSettings,
 ) -> str:
-    """Validate a PDF payload before it is written to durable storage."""
+    """Validate a supported resume document before durable storage."""
 
     if not content:
         raise UploadValidationError("empty_upload")
     if len(content) > settings.max_upload_bytes:
         raise UploadValidationError("file_too_large")
-    if not content.startswith(b"%PDF-"):
-        raise UploadValidationError("not_a_pdf")
-
     submitted_name = Path(original_filename or "resume.pdf").name
-    if not submitted_name.lower().endswith(".pdf"):
-        raise UploadValidationError("filename_must_end_with_pdf")
+    if Path(submitted_name).suffix.lower() not in SUPPORTED_DOCUMENT_EXTENSIONS:
+        raise UploadValidationError("unsupported_document_type")
+    if submitted_name.lower().endswith(".pdf") and not content.startswith(b"%PDF-"):
+        raise UploadValidationError("not_a_pdf")
     return submitted_name
 
 
@@ -230,13 +234,13 @@ def save_pdf_resume(
     )
 
     settings.ensure_directories()
-    storage_key = f"{uuid4().hex}.pdf"
+    storage_key = f"{uuid4().hex}{Path(submitted_name).suffix.lower()}"
     storage_path = settings.upload_dir / storage_key
     try:
         _write_upload_atomically(storage_path=storage_path, content=content)
         sha256 = hashlib.sha256(content).hexdigest()
         try:
-            extracted = extract_pdf_text(
+            extracted = extract_document_text(
                 storage_path,
                 min_text_chars_per_page=settings.min_text_chars_per_page,
                 ocr_sparse_text_chars_per_page=settings.ocr_sparse_text_chars_per_page,
@@ -251,7 +255,7 @@ def save_pdf_resume(
                     else None
                 ),
             )
-        except PdfExtractionError as exc:
+        except DocumentExtractionError as exc:
             resume = Resume(
                 candidate_id=candidate_id,
                 original_filename=submitted_name[:255],
@@ -331,22 +335,29 @@ def reparse_inactive_resume_source_text(
 
     old_snapshot = _fact_snapshot(resume)
     try:
-        extracted = extract_pdf_text(
-            storage_path,
-            min_text_chars_per_page=settings.min_text_chars_per_page,
-            ocr_sparse_text_chars_per_page=settings.ocr_sparse_text_chars_per_page,
-            tencent_ocr_config=(
-                TencentOcrConfig(
-                    secret_id=settings.tencent_secret_id,
-                    secret_key=settings.tencent_secret_key,
-                    region=settings.tencent_ocr_region,
-                    timeout_seconds=settings.tencent_ocr_timeout_seconds,
-                )
-                if settings.tencent_secret_id and settings.tencent_secret_key
-                else None
-            ),
-        )
-    except PdfExtractionError as exc:
+        if storage_path.suffix.lower() == ".pdf":
+            extracted = extract_pdf_text(
+                storage_path,
+                min_text_chars_per_page=settings.min_text_chars_per_page,
+                ocr_sparse_text_chars_per_page=settings.ocr_sparse_text_chars_per_page,
+                tencent_ocr_config=(
+                    TencentOcrConfig(
+                        secret_id=settings.tencent_secret_id,
+                        secret_key=settings.tencent_secret_key,
+                        region=settings.tencent_ocr_region,
+                        timeout_seconds=settings.tencent_ocr_timeout_seconds,
+                    )
+                    if settings.tencent_secret_id and settings.tencent_secret_key
+                    else None
+                ),
+            )
+        else:
+            extracted = extract_document_text(
+                storage_path,
+                min_text_chars_per_page=settings.min_text_chars_per_page,
+                ocr_sparse_text_chars_per_page=settings.ocr_sparse_text_chars_per_page,
+            )
+    except (PdfExtractionError, DocumentExtractionError) as exc:
         raise ResumeServiceError(str(exc)) from exc
 
     session.execute(delete(ResumeSourceBlock).where(ResumeSourceBlock.resume_id == resume.id))
@@ -371,7 +382,7 @@ def reparse_inactive_resume_source_text(
         )
     session.flush()
 
-    if extracted.status == "text_ready":
+    if any(page.text for page in extracted.pages):
         # Imported lazily to avoid the module cycle: the worker itself relies
         # on resume_service for source-grounded fact persistence.
         from app.services.ai_extraction_job_service import request_resume_ai_extraction

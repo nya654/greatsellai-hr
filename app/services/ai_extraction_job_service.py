@@ -73,11 +73,11 @@ def ai_extraction_state(
     job = resume.ai_extraction_job
     if job is not None:
         return job.status, job.last_error
-    if resume.extraction_status == "text_ready":
+    if resume.source_blocks:
         # This is only expected for pre-worker legacy data.  New uploads create
         # a job in the same transaction as the Resume row.
         return AI_EXTRACTION_NEEDS_ATTENTION, "ai_extraction_not_queued"
-    return AI_EXTRACTION_NEEDS_ATTENTION, "native_pdf_text_unavailable"
+    return AI_EXTRACTION_NEEDS_ATTENTION, "resume_source_text_unavailable"
 
 
 def enqueue_uploaded_resume_ai_extraction(
@@ -86,13 +86,14 @@ def enqueue_uploaded_resume_ai_extraction(
     resume: Resume,
     settings: AppSettings,
 ) -> ResumeAiExtractionJob | None:
-    """Create a native-text AI job inside the caller's upload transaction.
+    """Create an AI job when standardized source text is available.
 
-    PDFs that did not reach ``text_ready`` are deliberately not queued: V1
-    does not invoke OCR and an LLM cannot safely recover unavailable text.
+    Every supported file is normalized into source-cited text before this
+    point.  A quality flag may still ask the recruiter to inspect the source,
+    but it must not discard useful OCR, Office, spreadsheet, or HTML text.
     """
 
-    if resume.extraction_status != "text_ready":
+    if not resume.source_blocks:
         return None
     existing = resume.ai_extraction_job
     if existing is not None:
@@ -134,7 +135,7 @@ def request_resume_ai_extraction(
     resume = get_resume(session, resume_id)
     job = resume.ai_extraction_job
     if job is None:
-        if resume.extraction_status != "text_ready":
+        if not resume.source_blocks:
             raise AiExtractionJobError("resume_has_no_native_text_for_ai_extraction")
         enqueue_uploaded_resume_ai_extraction(session, resume=resume, settings=settings)
         return resume

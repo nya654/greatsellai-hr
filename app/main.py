@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
@@ -29,6 +30,10 @@ from app.models import Candidate, Resume
 from app.schemas import (
     AuthLogin,
     AuthSession,
+    MailboxConfigResponse,
+    MailboxConfigUpdate,
+    MailboxImportHistoryResponse,
+    MailboxSyncResponse,
     CandidateCreate,
     CandidateCreated,
     CandidateSearchRequest,
@@ -150,6 +155,13 @@ from app.services.job_match_batch_service import (
     enqueue_job_version_match_batch,
     get_job_match_batch,
 )
+from app.services.mailbox_import_service import (
+    MailboxImportError,
+    get_mailbox_config,
+    list_mailbox_imports,
+    save_mailbox_config,
+    sync_mailbox,
+)
 
 
 def _resume_detail(resume: object) -> ResumeDetail:
@@ -187,8 +199,23 @@ def _resume_upload_response(resume: object) -> ResumeUploadResponse:
     )
 
 
-def _resume_original_pdf_path(*, settings: AppSettings, storage_key: str) -> Path:
-    """Resolve an uploaded resume only when it remains inside the upload root."""
+_SUPPORTED_RESUME_MEDIA_TYPES = frozenset(
+    {
+        "application/pdf",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "image/png",
+        "image/jpeg",
+        "text/html",
+        "application/octet-stream",
+    }
+)
+
+
+def _resume_original_file_path(*, settings: AppSettings, storage_key: str) -> Path:
+    """Resolve an uploaded original only when it remains inside the upload root."""
 
     try:
         upload_root = settings.upload_dir.resolve()
@@ -199,11 +226,7 @@ def _resume_original_pdf_path(*, settings: AppSettings, storage_key: str) -> Pat
             detail="resume_original_file_not_found",
         ) from exc
 
-    if (
-        source_path.parent != upload_root
-        or source_path.suffix.lower() != ".pdf"
-        or not source_path.is_file()
-    ):
+    if source_path.parent != upload_root or not source_path.is_file():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="resume_original_file_not_found",
@@ -427,6 +450,71 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
     async def post_auth_logout(request: Request) -> None:
         request.session.clear()
 
+    @app.get(
+        "/v1/mailbox/config",
+        response_model=MailboxConfigResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def get_mailbox_configuration(
+        session: Session = Depends(get_session),
+    ) -> MailboxConfigResponse:
+        return get_mailbox_config(session)
+
+    @app.put(
+        "/v1/mailbox/config",
+        response_model=MailboxConfigResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def put_mailbox_configuration(
+        payload: MailboxConfigUpdate,
+        session: Session = Depends(get_session),
+    ) -> MailboxConfigResponse:
+        try:
+            return save_mailbox_config(session, settings=settings, payload=payload)
+        except MailboxImportError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+
+    @app.post(
+        "/v1/mailbox/sync",
+        response_model=MailboxSyncResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def post_mailbox_sync(
+        session: Session = Depends(get_session),
+    ) -> MailboxSyncResponse:
+        try:
+            result = sync_mailbox(session, settings=settings)
+        except MailboxImportError as exc:
+            raise HTTPException(
+                status_code=(
+                    status.HTTP_404_NOT_FOUND
+                    if str(exc) == "mailbox_config_not_found"
+                    else status.HTTP_409_CONFLICT
+                ),
+                detail=str(exc),
+            ) from exc
+        if not result.configured:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="mailbox_not_configured",
+            )
+        return result
+
+    @app.get(
+        "/v1/mailbox/imports",
+        response_model=MailboxImportHistoryResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def get_mailbox_import_history(
+        limit: int = Query(default=40, ge=1, le=100),
+        session: Session = Depends(get_session),
+    ) -> MailboxImportHistoryResponse:
+        return list_mailbox_imports(session, limit=limit)
+
     @app.post(
         "/v1/recruiting-agent/turns",
         response_model=RecruitingAgentResponse,
@@ -477,13 +565,10 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         file: UploadFile = File(...),
         session: Session = Depends(get_session),
     ) -> ResumeUploadResponse:
-        if file.content_type and file.content_type not in {
-            "application/pdf",
-            "application/octet-stream",
-        }:
+        if file.content_type and file.content_type not in _SUPPORTED_RESUME_MEDIA_TYPES:
             raise HTTPException(
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                detail="content_type_must_be_pdf",
+                detail="content_type_not_supported",
             )
         content = await file.read(settings.max_upload_bytes + 1)
         storage_key: str | None = None
@@ -539,13 +624,10 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
     ) -> ResumeUploadResponse:
         """Convenience upload flow used by the single-account web app."""
 
-        if file.content_type and file.content_type not in {
-            "application/pdf",
-            "application/octet-stream",
-        }:
+        if file.content_type and file.content_type not in _SUPPORTED_RESUME_MEDIA_TYPES:
             raise HTTPException(
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                detail="content_type_must_be_pdf",
+                detail="content_type_not_supported",
             )
         try:
             normalized_idempotency_key = normalize_upload_idempotency_key(
@@ -741,13 +823,16 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         except NotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
-        source_path = _resume_original_pdf_path(
+        source_path = _resume_original_file_path(
             settings=settings,
             storage_key=resume.storage_key,
         )
         return FileResponse(
             path=source_path,
-            media_type="application/pdf",
+            media_type=(
+                mimetypes.guess_type(resume.original_filename)[0]
+                or "application/octet-stream"
+            ),
             filename=resume.original_filename,
             content_disposition_type="inline",
         )

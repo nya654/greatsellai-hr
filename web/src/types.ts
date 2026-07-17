@@ -52,6 +52,50 @@ export interface CandidateCreated {
   candidate_id: string;
 }
 
+export interface MailboxConfig {
+  configured: boolean;
+  imap_host: string | null;
+  imap_port: number | null;
+  email_address: string | null;
+  mailbox: string | null;
+  enabled: boolean;
+  password_configured: boolean;
+  last_synced_at: string | null;
+  last_sync_error: string | null;
+}
+
+export interface MailboxConfigUpdate {
+  imap_host: string;
+  imap_port: number;
+  email_address: string;
+  mailbox: string;
+  password?: string;
+  enabled: boolean;
+}
+
+export interface MailboxSync {
+  configured: boolean;
+  imported_count: number;
+  duplicate_count: number;
+  skipped_count: number;
+  failed_count: number;
+  last_synced_at: string | null;
+  last_sync_error: string | null;
+}
+
+export interface MailboxImportHistoryItem {
+  attachment_filename: string;
+  status: string;
+  error: string | null;
+  resume_id: string | null;
+  created_at: string;
+}
+
+export interface MailboxImportHistory {
+  items: MailboxImportHistoryItem[];
+  total: number;
+}
+
 export type RecruitingAgentIntent =
   | "search_candidates"
   | "run_job_matching"

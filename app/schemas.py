@@ -55,6 +55,50 @@ class AuthSession(ApiModel):
     login_required: bool
 
 
+class MailboxConfigUpdate(ApiModel):
+    imap_host: str = Field(min_length=1, max_length=255)
+    imap_port: int = Field(default=993, ge=1, le=65535)
+    email_address: str = Field(min_length=3, max_length=320)
+    mailbox: str = Field(default="INBOX", min_length=1, max_length=255)
+    password: str | None = Field(default=None, min_length=1, max_length=512)
+    enabled: bool = True
+
+
+class MailboxConfigResponse(ApiModel):
+    configured: bool
+    imap_host: str | None = None
+    imap_port: int | None = None
+    email_address: str | None = None
+    mailbox: str | None = None
+    enabled: bool = False
+    password_configured: bool = False
+    last_synced_at: datetime | None = None
+    last_sync_error: str | None = None
+
+
+class MailboxSyncResponse(ApiModel):
+    configured: bool
+    imported_count: int = 0
+    duplicate_count: int = 0
+    skipped_count: int = 0
+    failed_count: int = 0
+    last_synced_at: datetime | None = None
+    last_sync_error: str | None = None
+
+
+class MailboxImportResponse(ApiModel):
+    attachment_filename: str
+    status: str
+    error: str | None = None
+    resume_id: str | None = None
+    created_at: datetime
+
+
+class MailboxImportHistoryResponse(ApiModel):
+    items: list[MailboxImportResponse]
+    total: int
+
+
 class RecruitingAgentRequest(ApiModel):
     """One bounded recruiting-assistant turn.
 

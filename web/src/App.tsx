@@ -22,6 +22,8 @@ import type {
   JobMatch,
   JobRequirement,
   JobVersion,
+  MailboxConfig,
+  MailboxImportHistory,
   ResumeDetail,
   ResumeLibraryItem,
   ResumeLibraryResponse,
@@ -39,7 +41,7 @@ import type {
 } from "./types";
 import { Icon, type IconName } from "./icons";
 
-type View = "library" | "filter" | "upload" | "score" | "summary" | "match";
+type View = "library" | "filter" | "upload" | "inbox" | "score" | "summary" | "match";
 type DrawerTab = "original" | "summary";
 type SchoolFilter = "any" | "yes" | "no";
 type ToastKind = "success" | "error";
@@ -207,6 +209,7 @@ const navigation: Array<{ view: View; label: string; icon: IconName }> = [
   { view: "library", label: "简历库", icon: "folder" },
   { view: "filter", label: "筛选工作台", icon: "filter" },
   { view: "upload", label: "上传简历", icon: "upload" },
+  { view: "inbox", label: "邮箱入库", icon: "inbox" },
   { view: "score", label: "评分规则", icon: "layers" },
   { view: "summary", label: "简历总结", icon: "spark" },
   { view: "match", label: "岗位匹配", icon: "match" },
@@ -230,22 +233,29 @@ function humanizeError(error: unknown): string {
       deepseek_api_key_not_configured:
         "AI 服务尚未配置。请先在服务器环境变量中配置后重试。",
       resume_has_no_native_text_for_ai_extraction:
-        "这份 PDF 没有足够的原生文字，暂时不能由 AI 提取。",
+        "这份简历没有足够的可提取文字，暂时不能由 AI 提取。",
+      resume_source_text_unavailable:
+        "这份简历没有可用的提取文字，暂时不能由 AI 提取。",
       completed_resume_cannot_be_reextracted:
         "这份简历已启用，不能被后台 AI 任务覆盖。",
       resume_original_file_not_found:
-        "找不到这份简历的原始 PDF。请重新上传该文件。",
-      content_type_must_be_pdf: "仅支持 PDF 文件，请选择一份 PDF 简历。",
-      file_too_large: "PDF 文件过大，请压缩后再上传。",
-      empty_upload: "这份 PDF 是空文件。请重新选择原始文件后上传。",
+        "找不到这份简历的原始文件。请重新上传该文件。",
+      content_type_not_supported: "仅支持 PDF、Word、图片、Excel 和 HTML 简历文件。",
+      unsupported_document_type: "仅支持 PDF、Word、图片、Excel 和 HTML 简历文件。",
+      file_too_large: "简历文件过大，请压缩后再上传。",
+      empty_upload: "这份简历是空文件。请重新选择原始文件后上传。",
       not_a_pdf: "文件内容不是有效的 PDF。请重新导出后上传。",
-      filename_must_end_with_pdf:
-        "文件名需要以 .pdf 结尾。请修改文件名后重试。",
       database_conflict: "该简历与正在处理的请求冲突。请稍后重试。",
-      invalid_idempotency_key: "上传请求标识无效。请重新选择该 PDF 后重试。",
+      invalid_idempotency_key: "上传请求标识无效。请重新选择该简历后重试。",
       idempotency_key_reused_with_different_pdf:
-        "该 PDF 的重试标识已被其他文件使用。请重新选择文件后上传。",
+        "该简历的重试标识已被其他文件使用。请重新选择文件后上传。",
       resume_not_found: "这份简历已不存在或无法访问。",
+      mailbox_not_configured: "请先保存邮箱配置。",
+      mailbox_password_required: "首次配置需要填写邮箱授权码。",
+      mailbox_credentials_unavailable: "邮箱授权码无法读取，请重新保存后再同步。",
+      mailbox_connection_failed: "无法连接邮箱，请检查 IMAP 地址、端口和授权码。",
+      mailbox_select_failed: "无法打开指定的邮箱文件夹。",
+      mailbox_search_failed: "无法检索邮箱中的附件。",
       score_template_not_found: "评分规则不存在，请重新选择。",
       job_version_not_found: "岗位版本不存在，请重新创建。",
     };
@@ -254,13 +264,41 @@ function humanizeError(error: unknown): string {
   return "操作没有完成。请检查网络后重试。";
 }
 
-function isPdfFile(file: File): boolean {
-  const contentType = file.type.toLowerCase();
-  return (
-    contentType === "application/pdf" ||
-    contentType === "application/octet-stream" ||
-    file.name.toLowerCase().endsWith(".pdf")
-  );
+const SUPPORTED_RESUME_EXTENSIONS = new Set([
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".xls",
+  ".xlsx",
+  ".html",
+  ".htm",
+]);
+
+function resumeFileExtension(filename: string): string {
+  const dot = filename.lastIndexOf(".");
+  return dot >= 0 ? filename.slice(dot).toLowerCase() : "";
+}
+
+function isSupportedResumeFile(file: File): boolean {
+  return SUPPORTED_RESUME_EXTENSIONS.has(resumeFileExtension(file.name));
+}
+
+function resumeFileTypeLabel(filename: string): string {
+  const extension = resumeFileExtension(filename);
+  if (extension === ".pdf") return "PDF";
+  if (extension === ".doc" || extension === ".docx") return "Word";
+  if (extension === ".xls" || extension === ".xlsx") return "Excel";
+  if (extension === ".png" || extension === ".jpg" || extension === ".jpeg") return "图片";
+  if (extension === ".html" || extension === ".htm") return "HTML";
+  return "文件";
+}
+
+function canPreviewInline(filename: string): boolean {
+  const extension = resumeFileExtension(filename);
+  return [".pdf", ".png", ".jpg", ".jpeg", ".html", ".htm"].includes(extension);
 }
 
 function fileFingerprint(file: File): string {
@@ -817,6 +855,12 @@ function App() {
           <div hidden={view !== "upload"}>
             <UploadPage onComplete={openUploadedResume} notify={notify} />
           </div>
+          {view === "inbox" && (
+            <MailboxPage
+              notify={notify}
+              onImported={() => setLibraryRefreshToken((current) => current + 1)}
+            />
+          )}
           {view === "score" && (
             <ScorePage
               selected={selectedResume}
@@ -1030,7 +1074,7 @@ function Topbar({
           type="button"
         >
           <Icon name="upload" size={16} />
-          上传 PDF
+          上传简历
         </button>
         <button
           className="button button-ghost"
@@ -1798,7 +1842,7 @@ function ResultsPane({
               </span>
               <h2>没有符合条件的已启用简历</h2>
               <p>
-                调整筛选条件，或上传一份 PDF。AI
+                调整筛选条件，或上传一份简历。AI
                 提取完成后，它会自动进入筛选库。
               </p>
               <button
@@ -1807,7 +1851,7 @@ function ResultsPane({
                 type="button"
               >
                 <Icon name="upload" size={16} />
-                上传 PDF 简历
+                上传简历
               </button>
             </div>
           </div>
@@ -1967,7 +2011,7 @@ function ResumeLibraryPage({
             <table className="candidate-table library-table">
               <thead>
                 <tr>
-                  <th scope="col">候选人 / PDF</th>
+                  <th scope="col">候选人 / 原始文件</th>
                   <th scope="col">AI 总结</th>
                   <th scope="col">AI 评分</th>
                   <th scope="col">状态</th>
@@ -2082,7 +2126,7 @@ function ResumeLibraryPage({
               </span>
               <h2>简历库还是空的</h2>
               <p>
-                上传 PDF 后，它会立即出现在这里；AI 提取、总结和评分会逐步更新。
+                上传简历后，它会立即出现在这里；AI 提取、总结和评分会逐步更新。
               </p>
               <button
                 className="button button-primary"
@@ -2090,7 +2134,7 @@ function ResumeLibraryPage({
                 type="button"
               >
                 <Icon name="upload" size={16} />
-                上传 PDF 简历
+                上传简历
               </button>
             </div>
           </div>
@@ -2224,7 +2268,7 @@ function CandidateDrawer({
           {pdfUrl && drawerTab === "original" && (
             <button className="button" onClick={downloadPdf} type="button">
               <Icon name="download" size={16} />
-              下载 PDF
+              下载原始文件
             </button>
           )}
           <button
@@ -2242,7 +2286,7 @@ function CandidateDrawer({
         <div aria-label="详情标签" className="tabs" role="tablist">
           {(
             [
-              ["original", "原始 PDF"],
+              ["original", "原始文件"],
               ["summary", "AI 总结"],
             ] as Array<[DrawerTab, string]>
           ).map(([tab, label]) => (
@@ -2262,7 +2306,7 @@ function CandidateDrawer({
           {reviewLoading && !review ? (
             <TableSkeleton />
           ) : drawerTab === "original" ? (
-            <OriginalPdfTab
+            <OriginalDocumentTab
               error={pdfError}
               loading={pdfLoading}
               pdfUrl={pdfUrl}
@@ -2281,7 +2325,7 @@ function CandidateDrawer({
   );
 }
 
-function OriginalPdfTab({
+function OriginalDocumentTab({
   review,
   pdfUrl,
   loading,
@@ -2293,9 +2337,14 @@ function OriginalPdfTab({
   error: string | null;
 }) {
   const pageCount = Math.min(review?.source_page_count ?? 1, 4);
+  const filename = review?.original_filename ?? "";
+  const canPreview = canPreviewInline(filename);
+  const isImage = [".png", ".jpg", ".jpeg"].includes(
+    resumeFileExtension(filename),
+  );
   return (
     <div className="pdf-viewer">
-      <div className="pdf-thumbnails" aria-label="PDF 页面缩略图">
+      <div className="pdf-thumbnails" aria-label="原始文件页码">
         {Array.from({ length: pageCount }, (_, index) => (
           <div
             className={`pdf-thumb${index === 0 ? " is-current" : ""}`}
@@ -2310,7 +2359,7 @@ function OriginalPdfTab({
           <div className="pdf-loading">
             <span className="loading-line">
               <i className="spinner" />
-              正在载入受保护的原始 PDF…
+              正在载入受保护的原始文件…
             </span>
           </div>
         ) : error ? (
@@ -2319,18 +2368,35 @@ function OriginalPdfTab({
               <span className="empty-glyph">
                 <Icon name="document" size={23} />
               </span>
-              <h2>无法载入原始 PDF</h2>
+              <h2>无法载入原始文件</h2>
               <p>{error}</p>
             </div>
           </div>
+        ) : pdfUrl && canPreview ? (
+          isImage ? (
+            <img
+              alt={filename ? `${filename} 原始图片` : "原始图片"}
+              className="original-image-preview"
+              src={pdfUrl}
+            />
+          ) : (
+            <iframe
+              sandbox={resumeFileExtension(filename) === ".html" || resumeFileExtension(filename) === ".htm" ? "" : undefined}
+              src={pdfUrl}
+              title={filename ? `${filename} 原始文件` : "原始文件"}
+            />
+          )
         ) : pdfUrl ? (
-          <iframe
-            src={pdfUrl}
-            title={review ? `${review.original_filename} 原始 PDF` : "原始 PDF"}
-          />
+          <div className="empty-state">
+            <div className="empty-state-inner">
+              <span className="empty-glyph"><Icon name="document" size={23} /></span>
+              <h2>{resumeFileTypeLabel(filename)} 原件可下载</h2>
+              <p>浏览器不能安全预览此格式。请使用右上角“下载原始文件”查看。</p>
+            </div>
+          </div>
         ) : (
           <div className="pdf-loading">
-            选择一份简历后会在这里显示原始 PDF。
+            选择一份简历后会在这里显示原始文件。
           </div>
         )}
       </div>
@@ -2443,6 +2509,174 @@ function SummaryContent({ content }: { content: Record<string, unknown> }) {
   );
 }
 
+function MailboxPage({
+  notify,
+  onImported,
+}: {
+  notify: (kind: ToastKind, message: string) => void;
+  onImported: () => void;
+}) {
+  const [config, setConfig] = useState<MailboxConfig | null>(null);
+  const [history, setHistory] = useState<MailboxImportHistory | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [imapHost, setImapHost] = useState("imap.feishu.cn");
+  const [imapPort, setImapPort] = useState("993");
+  const [emailAddress, setEmailAddress] = useState("");
+  const [mailbox, setMailbox] = useState("INBOX");
+  const [password, setPassword] = useState("");
+  const [enabled, setEnabled] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [nextConfig, nextHistory] = await Promise.all([
+        api.getMailboxConfig(),
+        api.listMailboxImports(),
+      ]);
+      setConfig(nextConfig);
+      setHistory(nextHistory);
+      if (nextConfig.configured) {
+        setImapHost(nextConfig.imap_host || "imap.feishu.cn");
+        setImapPort(String(nextConfig.imap_port || 993));
+        setEmailAddress(nextConfig.email_address || "");
+        setMailbox(nextConfig.mailbox || "INBOX");
+        setEnabled(nextConfig.enabled);
+      }
+    } catch (error) {
+      notify("error", humanizeError(error));
+    } finally {
+      setLoading(false);
+    }
+  }, [notify]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const save = async () => {
+    if (!imapHost.trim() || !emailAddress.trim()) {
+      notify("error", "请填写 IMAP 地址和接收简历的邮箱。");
+      return;
+    }
+    if (!config?.password_configured && !password) {
+      notify("error", "首次配置需要填写邮箱授权码。");
+      return;
+    }
+    setSaving(true);
+    try {
+      const saved = await api.saveMailboxConfig({
+        imap_host: imapHost.trim(),
+        imap_port: Number(imapPort) || 993,
+        email_address: emailAddress.trim(),
+        mailbox: mailbox.trim() || "INBOX",
+        ...(password ? { password } : {}),
+        enabled,
+      });
+      setConfig(saved);
+      setPassword("");
+      notify("success", "邮箱配置已保存。授权码不会在页面中回显。");
+    } catch (error) {
+      notify("error", humanizeError(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const sync = async () => {
+    setSyncing(true);
+    try {
+      const result = await api.syncMailbox();
+      notify(
+        "success",
+        `本次入库 ${result.imported_count} 份，重复跳过 ${result.duplicate_count} 份。`,
+      );
+      if (result.imported_count) onImported();
+      await load();
+    } catch (error) {
+      notify("error", humanizeError(error));
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  return (
+    <div className="page-frame mailbox-page">
+      <header className="page-heading">
+        <div>
+          <h1>邮箱附件入库</h1>
+          <p>从指定邮箱的附件中接收简历，沿用相同的文件保存、文字提取和 AI 入库流程。</p>
+        </div>
+        <button className="button button-primary" disabled={!config?.configured || syncing} onClick={() => void sync()} type="button">
+          {syncing ? <><i className="spinner" />正在同步</> : <><Icon name="refresh" size={16} />立即同步</>}
+        </button>
+      </header>
+      <div className="page-layout mailbox-layout">
+        <section className="panel">
+          <div className="panel-heading">
+            <div>
+              <h2>收件邮箱</h2>
+              <p>保存后后台每 10 分钟同步一次，点击“立即同步”可手动拉取。</p>
+            </div>
+            {config?.configured && (
+              <span className={`status-pill${enabled ? " is-success" : ""}`}>
+                {enabled ? "已启用" : "已暂停"}
+              </span>
+            )}
+          </div>
+          {loading ? <TableSkeleton /> : (
+            <div className="form-grid">
+              <div className="field-stack">
+                <label className="field-label" htmlFor="imap-host">IMAP 地址</label>
+                <input className="field" id="imap-host" onChange={(event) => setImapHost(event.target.value)} value={imapHost} />
+              </div>
+              <div className="field-stack">
+                <label className="field-label" htmlFor="imap-port">端口</label>
+                <input className="field" id="imap-port" inputMode="numeric" onChange={(event) => setImapPort(event.target.value)} value={imapPort} />
+              </div>
+              <div className="field-stack span-full">
+                <label className="field-label" htmlFor="imap-address">接收简历的邮箱</label>
+                <input autoComplete="email" className="field" id="imap-address" onChange={(event) => setEmailAddress(event.target.value)} type="email" value={emailAddress} />
+              </div>
+              <div className="field-stack">
+                <label className="field-label" htmlFor="imap-folder">邮箱文件夹</label>
+                <input className="field" id="imap-folder" onChange={(event) => setMailbox(event.target.value)} value={mailbox} />
+              </div>
+              <div className="field-stack">
+                <label className="field-label" htmlFor="imap-password">邮箱授权码</label>
+                <input autoComplete="new-password" className="field" id="imap-password" onChange={(event) => setPassword(event.target.value)} placeholder={config?.password_configured ? "留空则保持原授权码" : "首次保存必填"} type="password" value={password} />
+              </div>
+              <label className="choice-row span-full">
+                <input checked={enabled} onChange={(event) => setEnabled(event.target.checked)} type="checkbox" />
+                启用后台定时同步
+              </label>
+            </div>
+          )}
+          <div className="review-actions">
+            <button className="button button-primary" disabled={loading || saving} onClick={() => void save()} type="button">
+              {saving ? <><i className="spinner" />正在保存</> : <><Icon name="check" size={16} />保存邮箱配置</>}
+            </button>
+          </div>
+        </section>
+        <aside className="panel mailbox-status-panel">
+          <div className="panel-heading"><div><h2>同步状态</h2><p>重复邮件和重复附件不会再次入库。</p></div></div>
+          <div className="fact-list">
+            <div className="fact-row"><strong>最近同步</strong><span>{config?.last_synced_at ? formatLibraryDate(config.last_synced_at) : "尚未同步"}</span></div>
+            <div className="fact-row"><strong>累计记录</strong><span>{history?.total ?? 0} 条</span></div>
+            <div className="fact-row"><strong>支持格式</strong><span>PDF、Word、图片、Excel、HTML</span></div>
+            {config?.last_sync_error && <div className="fact-row"><strong>最近异常</strong><span>{config.last_sync_error}</span></div>}
+          </div>
+        </aside>
+      </div>
+      <section className="panel mailbox-history">
+        <div className="panel-heading"><div><h2>最近入库记录</h2><p>只记录附件处理结果，不在这里展示邮件正文。</p></div></div>
+        {loading ? <TableSkeleton /> : history?.items.length ? (
+          <div className="table-scroll"><table className="candidate-table"><thead><tr><th scope="col">附件</th><th scope="col">结果</th><th scope="col">时间</th></tr></thead><tbody>{history.items.map((item, index) => <tr key={`${item.attachment_filename}-${item.created_at}-${index}`}><td><strong>{item.attachment_filename}</strong></td><td><span className="status-pill">{item.status === "imported" ? "已入库" : item.status === "skipped" ? "已跳过" : "处理失败"}</span>{item.error && <small>{item.error}</small>}</td><td>{formatLibraryDate(item.created_at)}</td></tr>)}</tbody></table></div>
+        ) : <div className="empty-state"><div className="empty-state-inner"><span className="empty-glyph"><Icon name="inbox" size={23} /></span><h2>还没有附件入库记录</h2><p>保存邮箱配置后，点击“立即同步”即可开始入库。</p></div></div>}
+      </section>
+    </div>
+  );
+}
+
 function UploadPage({
   onComplete,
   notify,
@@ -2546,11 +2780,11 @@ function UploadPage({
     const incoming = Array.from(selectedFiles);
     if (!incoming.length) return;
 
-    const pdfFiles = incoming.filter(isPdfFile);
+    const supportedFiles = incoming.filter(isSupportedResumeFile);
     const knownFiles = new Set(
       uploads.map((item) => fileFingerprint(item.file)),
     );
-    const uniqueFiles = pdfFiles.filter((file) => {
+    const uniqueFiles = supportedFiles.filter((file) => {
       const fingerprint = fileFingerprint(file);
       if (knownFiles.has(fingerprint)) return false;
       knownFiles.add(fingerprint);
@@ -2558,16 +2792,16 @@ function UploadPage({
     });
     const remainingSlots = Math.max(0, MAX_BATCH_FILES - uploads.length);
     const acceptedFiles = uniqueFiles.slice(0, remainingSlots);
-    const invalidCount = incoming.length - pdfFiles.length;
-    const duplicateCount = pdfFiles.length - uniqueFiles.length;
+    const invalidCount = incoming.length - supportedFiles.length;
+    const duplicateCount = supportedFiles.length - uniqueFiles.length;
     const capacityCount = uniqueFiles.length - acceptedFiles.length;
 
     if (!acceptedFiles.length) {
       const reason = invalidCount
-        ? "所选文件不是 PDF。"
+        ? "所选文件不在支持格式内。"
         : duplicateCount
-          ? "这些 PDF 已在当前队列中。"
-          : `一次最多处理 ${MAX_BATCH_FILES} 份 PDF。`;
+          ? "这些简历已在当前队列中。"
+          : `一次最多处理 ${MAX_BATCH_FILES} 份简历。`;
       notify("error", `没有加入新文件：${reason}`);
       return;
     }
@@ -2585,13 +2819,13 @@ function UploadPage({
     notify(
       "success",
       acceptedFiles.length === 1
-        ? "已加入 1 份 PDF，等待上传。"
-        : `已加入 ${acceptedFiles.length} 份 PDF，等待上传。`,
+        ? "已加入 1 份简历，等待上传。"
+        : `已加入 ${acceptedFiles.length} 份简历，等待上传。`,
     );
 
     const exclusions: string[] = [];
-    if (invalidCount) exclusions.push(`${invalidCount} 个非 PDF 文件`);
-    if (duplicateCount) exclusions.push(`${duplicateCount} 份重复 PDF`);
+    if (invalidCount) exclusions.push(`${invalidCount} 个不支持的文件`);
+    if (duplicateCount) exclusions.push(`${duplicateCount} 份重复简历`);
     if (capacityCount) exclusions.push(`${capacityCount} 份超过本次上限`);
     if (exclusions.length)
       notify("error", `未加入：${exclusions.join("、")}。`);
@@ -2625,7 +2859,7 @@ function UploadPage({
 
   const runUploads = async (targets: UploadQueueItem[]) => {
     if (!targets.length) {
-      notify("error", "请先选择至少一份 PDF 简历。");
+      notify("error", "请先选择至少一份简历。");
       return;
     }
     if (uploadLockRef.current) return;
@@ -2681,16 +2915,16 @@ function UploadPage({
       notify(
         "success",
         succeeded === 1
-          ? "PDF 已保存，AI 正在提取候选人姓名和结构化事实。"
-          : `${succeeded} 份 PDF 已保存，AI 正在按队列提取候选人姓名和结构化事实。`,
+          ? "简历已保存，AI 正在提取候选人姓名和结构化事实。"
+          : `${succeeded} 份简历已保存，AI 正在按队列提取候选人姓名和结构化事实。`,
       );
     }
     if (failed) {
       notify(
         "error",
         failed === 1
-          ? "1 份 PDF 上传失败。请查看原因后重试。"
-          : `${failed} 份 PDF 上传失败。其余文件未受影响。`,
+          ? "1 份简历上传失败。请查看原因后重试。"
+          : `${failed} 份简历上传失败。其余文件未受影响。`,
       );
     }
   };
@@ -2702,7 +2936,7 @@ function UploadPage({
 
   const statusText = (item: UploadQueueItem): string => {
     if (item.status === "queued") return "等待上传";
-    if (item.status === "uploading") return "正在保存原件并提取原生文字";
+    if (item.status === "uploading") return "正在保存原件并提取文字";
     if (item.status === "extracting") {
       return item.response?.ai_extraction_status === "running"
         ? "AI 正在提取候选人姓名、教育、经历和技能"
@@ -2732,7 +2966,7 @@ function UploadPage({
     <div className="page-frame">
       <header className="page-heading">
         <div>
-          <h1>批量上传 PDF 简历</h1>
+          <h1>批量上传简历</h1>
           <p>
             上传后会逐份保存原件、提取原生文字，并由 AI
             自动识别候选人姓名、教育、经历和技能。姓名无法可靠识别时，将保留为“未命名候选人”。
@@ -2745,7 +2979,7 @@ function UploadPage({
             <div>
               <h2>添加候选人简历</h2>
               <p>
-                可拖入多份 PDF 或一次选择多个文件。候选人姓名仅由 AI
+                可拖入多份简历或一次选择多个文件。支持 PDF、Word、图片、Excel 和 HTML。候选人姓名仅由 AI
                 从简历原文识别，文件名只用于区分上传文件。
               </p>
             </div>
@@ -2755,7 +2989,7 @@ function UploadPage({
               <div
                 aria-busy={uploading}
                 aria-describedby="upload-dropzone-help"
-                aria-label="批量 PDF 上传区域"
+                aria-label="批量简历上传区域"
                 className={`dropzone${dragging ? " is-dragging" : ""}${uploading ? " is-disabled" : ""}`}
                 onDragEnter={handleDragEnter}
                 onDragLeave={handleDragLeave}
@@ -2763,7 +2997,7 @@ function UploadPage({
                 onDrop={handleDrop}
               >
                 <input
-                  accept="application/pdf,.pdf"
+                  accept=".pdf,.doc,.docx,.png,.jpg,.jpeg,.xls,.xlsx,.html,.htm,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/png,image/jpeg,text/html"
                   disabled={uploading}
                   multiple
                   onChange={handleInputChange}
@@ -2781,11 +3015,11 @@ function UploadPage({
                       : extractingUploads.length
                         ? `AI 正在处理 ${extractingUploads.length} 份简历`
                         : uploads.length
-                          ? `已加入 ${uploads.length} 份 PDF`
-                          : "拖入 PDF，或点击选择文件"}
+                          ? `已加入 ${uploads.length} 份简历`
+                          : "拖入简历，或点击选择文件"}
                   </h2>
                   <p id="upload-dropzone-help">
-                    仅支持 PDF。每份会单独校验、保存，并由 AI
+                    支持 PDF、Word、图片、Excel 和 HTML。每份会单独校验、保存，并由 AI
                     从原文识别候选人姓名和结构化事实；姓名不清晰时不会使用文件名代替。
                   </p>
                   <button
@@ -2794,7 +3028,7 @@ function UploadPage({
                     onClick={() => inputRef.current?.click()}
                     type="button"
                   >
-                    选择 PDF 文件
+                    选择简历文件
                   </button>
                 </div>
               </div>
@@ -2842,7 +3076,7 @@ function UploadPage({
                             {item.file.name}
                           </strong>
                           <span>
-                            {formatFileSize(item.file.size)} · PDF ·{" "}
+                            {formatFileSize(item.file.size)} · {resumeFileTypeLabel(item.file.name)} ·{" "}
                             {statusText(item)}
                           </span>
                         </div>
@@ -2951,7 +3185,7 @@ function UploadPage({
             <li>
               <span className="workflow-step">1</span>
               <div>
-                <strong>逐份保存原始 PDF</strong>
+                <strong>逐份保存原始文件</strong>
                 <span>只允许 PDF，页面数与文件质量会被单独检查。</span>
               </div>
             </li>

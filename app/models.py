@@ -149,6 +149,60 @@ class ResumeUploadIdempotencyKey(Base):
     resume: Mapped[Resume] = relationship(back_populates="upload_idempotency_keys")
 
 
+class MailboxConfig(Base):
+    """The single account's IMAP source. Its password is always encrypted."""
+
+    __tablename__ = "mailbox_configs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    imap_host: Mapped[str] = mapped_column(String(255))
+    imap_port: Mapped[int] = mapped_column(Integer, default=993)
+    email_address: Mapped[str] = mapped_column(String(320))
+    mailbox: Mapped[str] = mapped_column(String(255), default="INBOX")
+    encrypted_password: Mapped[str] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_sync_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    imports: Mapped[list["EmailAttachmentImport"]] = relationship(
+        back_populates="mailbox_config", cascade="all, delete-orphan"
+    )
+
+
+class EmailAttachmentImport(Base):
+    """Idempotent audit record for every attachment considered by IMAP sync."""
+
+    __tablename__ = "email_attachment_imports"
+    __table_args__ = (
+        UniqueConstraint(
+            "mailbox_config_id",
+            "message_uid",
+            "attachment_sha256",
+            name="uq_email_attachment_import_message_attachment",
+        ),
+        Index("ix_email_attachment_imports_resume_id", "resume_id"),
+        Index("ix_email_attachment_imports_config_created", "mailbox_config_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    mailbox_config_id: Mapped[str] = mapped_column(ForeignKey("mailbox_configs.id"), index=True)
+    message_uid: Mapped[str] = mapped_column(String(128))
+    message_id: Mapped[str | None] = mapped_column(String(998))
+    attachment_filename: Mapped[str] = mapped_column(String(255))
+    attachment_sha256: Mapped[str] = mapped_column(String(64))
+    resume_id: Mapped[str | None] = mapped_column(ForeignKey("resumes.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    error: Mapped[str | None] = mapped_column(Text)
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    mailbox_config: Mapped[MailboxConfig] = relationship(back_populates="imports")
+
+
 class ResumeAiExtractionJob(Base):
     """Durable, lease-based AI structured-facts extraction work for one resume.
 

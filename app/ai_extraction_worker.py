@@ -10,6 +10,7 @@ from app.config import AppSettings
 from app.database import Database
 from app.services.ai_extraction_job_service import run_ai_extraction_worker_once
 from app.services.job_match_batch_service import run_job_match_batch_worker_once
+from app.services.mailbox_import_service import sync_due_mailboxes
 from app.services.institution_service import (
     is_institution_registry_seeded,
     seed_institution_registry,
@@ -54,7 +55,8 @@ def run_forever(settings: AppSettings) -> None:
                 settings=settings,
                 worker_id=worker_id,
             )
-            if not ran_extraction and not ran_job_match:
+            ran_mailbox_sync = sync_due_mailboxes(database=database, settings=settings)
+            if not ran_extraction and not ran_job_match and not ran_mailbox_sync:
                 time.sleep(settings.ai_extraction_worker_poll_seconds)
     finally:
         database.dispose()
@@ -88,6 +90,7 @@ def main() -> None:
                 settings=settings,
                 worker_id=_worker_id(),
             )
+        sync_due_mailboxes(database=database, settings=settings)
     finally:
         database.dispose()
 

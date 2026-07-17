@@ -9,6 +9,10 @@ import type {
   JobMatchCreate,
   JobVersion,
   JobVersionRequirementsUpdate,
+  MailboxConfig,
+  MailboxConfigUpdate,
+  MailboxImportHistory,
+  MailboxSync,
   ResumeActivateRequest,
   ResumeDetail,
   ResumeFactsSaveRequest,
@@ -195,6 +199,22 @@ export function createApiClient(options: ApiClientOptions = {}) {
 
     logout(): Promise<void> {
       return request<void>("/auth/logout", { method: "POST" });
+    },
+
+    getMailboxConfig(): Promise<MailboxConfig> {
+      return request<MailboxConfig>("/mailbox/config");
+    },
+
+    saveMailboxConfig(input: MailboxConfigUpdate): Promise<MailboxConfig> {
+      return request<MailboxConfig>("/mailbox/config", { method: "PUT", body: input });
+    },
+
+    syncMailbox(): Promise<MailboxSync> {
+      return request<MailboxSync>("/mailbox/sync", { method: "POST" });
+    },
+
+    listMailboxImports(): Promise<MailboxImportHistory> {
+      return request<MailboxImportHistory>("/mailbox/imports");
     },
 
     runRecruitingAgentTurn(input: RecruitingAgentTurnInput): Promise<RecruitingAgentTurn> {

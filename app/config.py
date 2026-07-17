@@ -38,6 +38,9 @@ class AppSettings:
     ai_extraction_job_max_attempts: int = 3
     ai_extraction_job_lease_seconds: int = 180
     ai_extraction_worker_poll_seconds: float = 2.0
+    mailbox_sync_interval_seconds: float = 600.0
+    mailbox_sync_attachment_limit: int = 100
+    email_credentials_key: str | None = None
     max_upload_bytes: int = 15 * 1024 * 1024
     min_text_chars_per_page: int = 80
     tencent_secret_id: str | None = None
@@ -95,6 +98,13 @@ class AppSettings:
             ai_extraction_worker_poll_seconds=float(
                 os.getenv("RESUME_V3_AI_EXTRACTION_WORKER_POLL_SECONDS", "2")
             ),
+            mailbox_sync_interval_seconds=float(
+                os.getenv("RESUME_V3_MAILBOX_SYNC_INTERVAL_SECONDS", "600")
+            ),
+            mailbox_sync_attachment_limit=int(
+                os.getenv("RESUME_V3_MAILBOX_SYNC_ATTACHMENT_LIMIT", "100")
+            ),
+            email_credentials_key=os.getenv("RESUME_V3_EMAIL_CREDENTIALS_KEY") or None,
             tencent_secret_id=os.getenv("TENCENT_SECRET_ID") or None,
             tencent_secret_key=os.getenv("TENCENT_SECRET_KEY") or None,
             tencent_ocr_region=os.getenv("TENCENT_OCR_REGION", "ap-guangzhou"),
@@ -141,6 +151,10 @@ class AppSettings:
             raise ValueError(
                 "RESUME_V3_AI_EXTRACTION_WORKER_POLL_SECONDS must be positive"
             )
+        if self.mailbox_sync_interval_seconds <= 0:
+            raise ValueError("RESUME_V3_MAILBOX_SYNC_INTERVAL_SECONDS must be positive")
+        if self.mailbox_sync_attachment_limit < 1:
+            raise ValueError("RESUME_V3_MAILBOX_SYNC_ATTACHMENT_LIMIT must be at least 1")
         if self.environment in {"production", "prod"}:
             if self.allow_unauthenticated:
                 raise RuntimeError("production_must_not_allow_unauthenticated")

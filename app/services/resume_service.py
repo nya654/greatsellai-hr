@@ -1,0 +1,1337 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+from uuid import uuid4
+
+from sqlalchemy import delete, select, update
+from sqlalchemy.orm import Session
+
+from app.config import AppSettings
+from app.models import (
+    Candidate,
+    Resume,
+    ResumeAiExtractionJob,
+    ResumeEducation,
+    ResumeExperience,
+    ResumeFactSnapshot,
+    ResumeReviewAction,
+    ResumeSkill,
+    ResumeSourceBlock,
+    ResumeSummary,
+    ResumeUploadIdempotencyKey,
+)
+from app.schemas import ResumeFactsSaveRequest, ResumeFactsSubmission
+from app.services.deepseek_provider import (
+    DeepSeekProviderError,
+    EvidenceBlock,
+    extract_resume_facts,
+)
+from app.services.institution_service import (
+    resolve_institution,
+    resolve_institution_by_roster_id,
+)
+from app.services.normalization import (
+    highest_degree,
+    merged_month_count,
+    normalized_contains,
+    normalized_key,
+)
+from app.services.text_extraction import PdfExtractionError, extract_pdf_text
+from app.services.tencent_ocr_provider import TencentOcrConfig
+
+
+WORK_CONTEXT_MARKERS = (
+    "工作经历",
+    "工作经验",
+    "任职经历",
+    "职业经历",
+    "任职",
+    "就职",
+    "入职",
+    "全职",
+    "work experience",
+    "professional experience",
+    "employment history",
+    "employment",
+    "full time",
+    "full-time",
+)
+INTERNSHIP_CONTEXT_MARKERS = ("实习经历", "实习", "internship", "intern")
+NON_WORK_CONTEXT_MARKERS = ("项目", "竞赛", "比赛", "课程设计", "科研", "论文", "社团", "获奖")
+
+
+class ResumeServiceError(RuntimeError):
+    pass
+
+
+class NotFoundError(ResumeServiceError):
+    pass
+
+
+class UploadValidationError(ResumeServiceError):
+    pass
+
+
+class IdempotencyConflictError(ResumeServiceError):
+    pass
+
+
+class FactValidationError(ResumeServiceError):
+    pass
+
+
+_MAX_IDEMPOTENCY_KEY_LENGTH = 255
+
+
+def validate_pdf_resume_upload(
+    *,
+    original_filename: str | None,
+    content: bytes,
+    settings: AppSettings,
+) -> str:
+    """Validate a PDF payload before it is written to durable storage."""
+
+    if not content:
+        raise UploadValidationError("empty_upload")
+    if len(content) > settings.max_upload_bytes:
+        raise UploadValidationError("file_too_large")
+    if not content.startswith(b"%PDF-"):
+        raise UploadValidationError("not_a_pdf")
+
+    submitted_name = Path(original_filename or "resume.pdf").name
+    if not submitted_name.lower().endswith(".pdf"):
+        raise UploadValidationError("filename_must_end_with_pdf")
+    return submitted_name
+
+
+def normalize_upload_idempotency_key(value: str | None) -> str | None:
+    """Normalize the optional request header without persisting its raw value."""
+
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized or len(normalized) > _MAX_IDEMPOTENCY_KEY_LENGTH:
+        raise UploadValidationError("invalid_idempotency_key")
+    return normalized
+
+
+def _idempotency_key_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def get_idempotent_upload_resume(
+    session: Session,
+    *,
+    idempotency_key: str,
+    content_sha256: str,
+) -> Resume | None:
+    """Return an earlier upload for a retry, or reject key reuse with new bytes."""
+
+    record = session.get(
+        ResumeUploadIdempotencyKey,
+        _idempotency_key_hash(idempotency_key),
+    )
+    if record is None:
+        return None
+    if record.content_sha256 != content_sha256:
+        raise IdempotencyConflictError("idempotency_key_reused_with_different_pdf")
+    resume = session.get(Resume, record.resume_id)
+    if resume is None:  # Defensive guard for a manually damaged database.
+        raise ResumeServiceError("idempotency_record_resume_not_found")
+    return resume
+
+
+def register_upload_idempotency_key(
+    session: Session,
+    *,
+    idempotency_key: str,
+    content_sha256: str,
+    resume_id: str,
+) -> None:
+    session.add(
+        ResumeUploadIdempotencyKey(
+            idempotency_key_hash=_idempotency_key_hash(idempotency_key),
+            content_sha256=content_sha256,
+            resume_id=resume_id,
+        )
+    )
+
+
+def discard_uploaded_pdf(settings: AppSettings, *, storage_key: str | None) -> None:
+    """Best-effort cleanup for an upload whose database transaction failed."""
+
+    if not storage_key:
+        return
+    try:
+        upload_root = settings.upload_dir.resolve()
+        storage_path = (upload_root / storage_key).resolve()
+        if storage_path.parent == upload_root:
+            storage_path.unlink(missing_ok=True)
+    except (OSError, RuntimeError, ValueError):
+        # The request is already failing.  Avoid replacing its database error
+        # with a cleanup error; normal operation still removes the file.
+        return
+
+
+def _write_upload_atomically(*, storage_path: Path, content: bytes) -> None:
+    """Write bytes through a same-directory temporary file before publishing."""
+
+    temporary_path = storage_path.with_name(
+        f".{storage_path.name}.{uuid4().hex}.uploading"
+    )
+    try:
+        if storage_path.exists():
+            raise ResumeServiceError("generated_storage_key_already_exists")
+        with temporary_path.open("xb") as output:
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary_path, storage_path)
+    except Exception:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def create_candidate(session: Session, *, display_name: str | None) -> Candidate:
+    candidate = Candidate(display_name=display_name.strip() if display_name else None)
+    session.add(candidate)
+    session.flush()
+    return candidate
+
+
+def get_resume(session: Session, resume_id: str) -> Resume:
+    resume = session.get(Resume, resume_id)
+    if resume is None:
+        raise NotFoundError("resume_not_found")
+    return resume
+
+
+def save_pdf_resume(
+    session: Session,
+    *,
+    candidate_id: str,
+    original_filename: str | None,
+    content: bytes,
+    settings: AppSettings,
+) -> Resume:
+    candidate = session.get(Candidate, candidate_id)
+    if candidate is None:
+        raise NotFoundError("candidate_not_found")
+    submitted_name = validate_pdf_resume_upload(
+        original_filename=original_filename,
+        content=content,
+        settings=settings,
+    )
+
+    settings.ensure_directories()
+    storage_key = f"{uuid4().hex}.pdf"
+    storage_path = settings.upload_dir / storage_key
+    try:
+        _write_upload_atomically(storage_path=storage_path, content=content)
+        sha256 = hashlib.sha256(content).hexdigest()
+        try:
+            extracted = extract_pdf_text(
+                storage_path,
+                min_text_chars_per_page=settings.min_text_chars_per_page,
+                ocr_sparse_text_chars_per_page=settings.ocr_sparse_text_chars_per_page,
+                tencent_ocr_config=(
+                    TencentOcrConfig(
+                        secret_id=settings.tencent_secret_id,
+                        secret_key=settings.tencent_secret_key,
+                        region=settings.tencent_ocr_region,
+                        timeout_seconds=settings.tencent_ocr_timeout_seconds,
+                    )
+                    if settings.tencent_secret_id and settings.tencent_secret_key
+                    else None
+                ),
+            )
+        except PdfExtractionError as exc:
+            resume = Resume(
+                candidate_id=candidate_id,
+                original_filename=submitted_name[:255],
+                storage_key=storage_key,
+                sha256=sha256,
+                source_page_count=0,
+                parsed_page_count=0,
+                extraction_status="failed",
+                quality_flags=[str(exc)],
+                parser_version="pypdf",
+                raw_text=None,
+                is_985_211=None,
+            )
+            session.add(resume)
+            session.flush()
+            return resume
+
+        resume = Resume(
+            candidate_id=candidate_id,
+            original_filename=submitted_name[:255],
+            storage_key=storage_key,
+            sha256=sha256,
+            source_page_count=extracted.source_page_count,
+            parsed_page_count=extracted.parsed_page_count,
+            extraction_status=extracted.status,
+            quality_flags=extracted.quality_flags,
+            parser_version=extracted.parser_version,
+            raw_text=extracted.raw_text or None,
+            is_985_211=None,
+        )
+        session.add(resume)
+        session.flush()
+        for page in extracted.pages:
+            if not page.text:
+                continue
+            session.add(
+                ResumeSourceBlock(
+                    resume_id=resume.id,
+                    block_id=f"page-{page.page_no:03d}",
+                    page_no=page.page_no,
+                    block_type="page_text",
+                    text=page.text,
+                )
+            )
+        session.flush()
+        return resume
+    except Exception:
+        discard_uploaded_pdf(settings, storage_key=storage_key)
+        raise
+
+
+def reparse_inactive_resume_source_text(
+    session: Session,
+    *,
+    resume_id: str,
+    settings: AppSettings,
+) -> Resume:
+    """Rebuild source evidence for an inactive resume after parser/OCR changes.
+
+    This is deliberately unavailable for an active screening version: changing
+    source text changes the evidence contract and must never mutate a version
+    that is already in use.  A successful reparse safely resets the durable AI
+    extraction job so it consumes the new page evidence.
+    """
+
+    resume = get_resume(session, resume_id)
+    if resume.is_active or resume.extraction_status == "ready":
+        raise ResumeServiceError("active_resume_cannot_be_reparsed")
+    job = resume.ai_extraction_job
+    if job is not None and job.status in {"queued", "running"}:
+        raise ResumeServiceError("resume_ai_extraction_already_running")
+
+    upload_root = settings.upload_dir.resolve()
+    storage_path = (upload_root / resume.storage_key).resolve()
+    if storage_path.parent != upload_root or not storage_path.is_file():
+        raise ResumeServiceError("resume_original_file_not_found")
+
+    old_snapshot = _fact_snapshot(resume)
+    try:
+        extracted = extract_pdf_text(
+            storage_path,
+            min_text_chars_per_page=settings.min_text_chars_per_page,
+            ocr_sparse_text_chars_per_page=settings.ocr_sparse_text_chars_per_page,
+            tencent_ocr_config=(
+                TencentOcrConfig(
+                    secret_id=settings.tencent_secret_id,
+                    secret_key=settings.tencent_secret_key,
+                    region=settings.tencent_ocr_region,
+                    timeout_seconds=settings.tencent_ocr_timeout_seconds,
+                )
+                if settings.tencent_secret_id and settings.tencent_secret_key
+                else None
+            ),
+        )
+    except PdfExtractionError as exc:
+        raise ResumeServiceError(str(exc)) from exc
+
+    session.execute(delete(ResumeSourceBlock).where(ResumeSourceBlock.resume_id == resume.id))
+    resume.source_page_count = extracted.source_page_count
+    resume.parsed_page_count = extracted.parsed_page_count
+    resume.extraction_status = extracted.status
+    resume.quality_flags = extracted.quality_flags
+    resume.parser_version = extracted.parser_version
+    resume.raw_text = extracted.raw_text or None
+    resume.facts_version += 1
+    for page in extracted.pages:
+        if not page.text:
+            continue
+        session.add(
+            ResumeSourceBlock(
+                resume_id=resume.id,
+                block_id=f"page-{page.page_no:03d}",
+                page_no=page.page_no,
+                block_type="page_text",
+                text=page.text,
+            )
+        )
+    session.flush()
+
+    if extracted.status == "text_ready":
+        # Imported lazily to avoid the module cycle: the worker itself relies
+        # on resume_service for source-grounded fact persistence.
+        from app.services.ai_extraction_job_service import request_resume_ai_extraction
+
+        request_resume_ai_extraction(session, resume_id=resume.id, settings=settings)
+    elif job is not None:
+        job.status = "needs_attention"
+        job.next_attempt_at = None
+        job.lease_owner = None
+        job.lease_expires_at = None
+        job.last_error = "resume_source_reparse_needs_review"
+
+    session.add(
+        ResumeReviewAction(
+            resume_id=resume.id,
+            action="resume_source_reparsed",
+            actor="system:ocr-fallback",
+            note=None,
+            old_values=old_snapshot,
+            new_values=_fact_snapshot(resume),
+        )
+    )
+    session.flush()
+    return resume
+
+
+def _fact_snapshot(resume: Resume) -> dict[str, object]:
+    return {
+        "extraction_status": resume.extraction_status,
+        "is_active": resume.is_active,
+        "is_985_211": resume.is_985_211,
+        "highest_degree": resume.highest_degree,
+        "employment_months": resume.employment_months,
+        "employment_or_internship_months": resume.employment_or_internship_months,
+        "education_count": len(resume.educations),
+        "experience_count": len(resume.experiences),
+        "skill_count": len(resume.skills),
+    }
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _sorted_block_ids(block_ids: list[str] | None) -> list[str]:
+    return sorted({block_id for block_id in (block_ids or []) if block_id})
+
+
+def _canonical_fact_payload(
+    session: Session,
+    *,
+    resume: Resume,
+) -> tuple[dict[str, object], list[str]]:
+    """Build a stable payload from persisted facts, not caller input order or IDs."""
+
+    educations = session.scalars(
+        select(ResumeEducation).where(ResumeEducation.resume_id == resume.id)
+    ).all()
+    experiences = session.scalars(
+        select(ResumeExperience).where(ResumeExperience.resume_id == resume.id)
+    ).all()
+    skills = session.scalars(
+        select(ResumeSkill).where(ResumeSkill.resume_id == resume.id)
+    ).all()
+
+    source_block_ids: set[str] = set()
+    education_entries: list[dict[str, object]] = []
+    for education in educations:
+        evidence_block_ids = _sorted_block_ids(education.evidence_block_ids)
+        source_block_ids.update(evidence_block_ids)
+        education_entries.append(
+            {
+                "school_name_raw": education.school_name_raw,
+                "school_key": education.school_key,
+                "school_match_state": education.school_match_state,
+                "degree": education.degree,
+                "major_raw": education.major_raw,
+                "major_key": education.major_key,
+                "start_month": education.start_month,
+                "end_month": education.end_month,
+                "evidence_block_ids": evidence_block_ids,
+            }
+        )
+
+    experience_entries: list[dict[str, object]] = []
+    for experience in experiences:
+        evidence_block_ids = _sorted_block_ids(experience.evidence_block_ids)
+        classification_evidence_block_ids = _sorted_block_ids(
+            experience.classification_evidence_block_ids
+        )
+        detail_items: list[dict[str, object]] = []
+        for detail in experience.detail_items or []:
+            if not isinstance(detail, dict):
+                continue
+            detail_raw = detail.get("detail_raw")
+            detail_evidence_block_ids = detail.get("evidence_block_ids")
+            if not isinstance(detail_raw, str) or not isinstance(
+                detail_evidence_block_ids, list
+            ):
+                continue
+            normalized_detail_evidence = _sorted_block_ids(detail_evidence_block_ids)
+            source_block_ids.update(normalized_detail_evidence)
+            detail_items.append(
+                {
+                    "detail_raw": detail_raw,
+                    "evidence_block_ids": normalized_detail_evidence,
+                }
+            )
+        source_block_ids.update(evidence_block_ids)
+        source_block_ids.update(classification_evidence_block_ids)
+        experience_entries.append(
+            {
+                "experience_type": experience.experience_type,
+                "experience_name_raw": experience.experience_name_raw,
+                "experience_name_key": experience.experience_name_key,
+                "organization_name_raw": experience.organization_name_raw,
+                "organization_key": experience.organization_key,
+                "title_raw": experience.title_raw,
+                "title_key": experience.title_key,
+                "start_month": experience.start_month,
+                "end_month": experience.end_month,
+                "is_current": experience.is_current,
+                "evidence_block_ids": evidence_block_ids,
+                "classification_evidence_block_ids": classification_evidence_block_ids,
+                "detail_items": detail_items,
+            }
+        )
+
+    skill_entries: list[dict[str, object]] = []
+    for skill in skills:
+        evidence_block_ids = _sorted_block_ids(skill.evidence_block_ids)
+        source_block_ids.update(evidence_block_ids)
+        skill_entries.append(
+            {
+                "skill_key": skill.skill_key,
+                "skill_display": skill.skill_display,
+                "evidence_block_ids": evidence_block_ids,
+            }
+        )
+
+    education_entries.sort(key=_canonical_json)
+    experience_entries.sort(key=_canonical_json)
+    skill_entries.sort(key=_canonical_json)
+    for index, entry in enumerate(education_entries, start=1):
+        entry["fact_id"] = f"education-{index:03d}"
+    for index, entry in enumerate(experience_entries, start=1):
+        entry["fact_id"] = f"experience-{index:03d}"
+    for index, entry in enumerate(skill_entries, start=1):
+        entry["fact_id"] = f"skill-{index:03d}"
+    sorted_source_block_ids = sorted(source_block_ids)
+    return (
+        {
+            "schema_version": "resume_fact_snapshot.v3",
+            "facts_schema_version": "resume_facts.v1",
+            "education": education_entries,
+            "experiences": experience_entries,
+            "skills": skill_entries,
+            "derived": {
+                "is_985_211": resume.is_985_211,
+                "highest_degree": resume.highest_degree,
+                "employment_months": resume.employment_months,
+                "employment_or_internship_months": (
+                    resume.employment_or_internship_months
+                ),
+            },
+            "source_block_ids": sorted_source_block_ids,
+        },
+        sorted_source_block_ids,
+    )
+
+
+def _create_fact_snapshot(
+    session: Session,
+    *,
+    resume: Resume,
+    created_by: str,
+) -> ResumeFactSnapshot:
+    payload, source_block_ids = _canonical_fact_payload(session, resume=resume)
+    canonical_facts_json = _canonical_json(payload)
+    snapshot = ResumeFactSnapshot(
+        resume_id=resume.id,
+        facts_version=resume.facts_version,
+        canonical_facts_json=canonical_facts_json,
+        facts_sha256=hashlib.sha256(canonical_facts_json.encode("utf-8")).hexdigest(),
+        source_block_ids=source_block_ids,
+        created_by=(created_by.strip() or "single_admin")[:100],
+    )
+    session.add(snapshot)
+    session.flush()
+    return snapshot
+
+
+def _source_text_by_ids(
+    session: Session,
+    *,
+    resume_id: str,
+    block_ids: list[str],
+) -> str:
+    clean_ids = [item.strip() for item in block_ids if item and item.strip()]
+    if len(clean_ids) != len(set(clean_ids)) or len(clean_ids) != len(block_ids):
+        raise FactValidationError("invalid_or_duplicate_evidence_block_id")
+    if not clean_ids:
+        raise FactValidationError("missing_evidence_block_id")
+    blocks = session.scalars(
+        select(ResumeSourceBlock).where(
+            ResumeSourceBlock.resume_id == resume_id,
+            ResumeSourceBlock.block_id.in_(clean_ids),
+        )
+    ).all()
+    if len(blocks) != len(clean_ids):
+        raise FactValidationError("evidence_block_not_found_for_resume")
+    return "\n".join(block.text for block in blocks)
+
+
+def _assert_raw_value_grounded(
+    *,
+    value: str | None,
+    source_text: str,
+    label: str,
+) -> None:
+    if value and not normalized_contains(source_text, value):
+        raise FactValidationError(f"{label}_not_grounded_in_evidence")
+
+
+def prepare_ai_draft_facts(
+    session: Session,
+    *,
+    resume_id: str,
+    facts: ResumeFactsSubmission,
+) -> tuple[ResumeFactsSubmission, bool]:
+    """Keep only fully source-grounded facts from an AI draft.
+
+    This runs before the atomic fact replacement. Manual submissions remain
+    strict: the worker alone may omit a bad model item and preserve the other
+    verified items for automatic activation.
+    """
+
+    payload: dict[str, object] = {
+        "schema_version": facts.schema_version,
+        "candidate_name_raw": None,
+        "candidate_name_evidence_block_ids": [],
+        "education": [],
+        "experiences": [],
+        "skills": [],
+    }
+    education_payload = payload["education"]
+    experience_payload = payload["experiences"]
+    skill_payload = payload["skills"]
+    assert isinstance(education_payload, list)
+    assert isinstance(experience_payload, list)
+    assert isinstance(skill_payload, list)
+    partial = False
+
+    if facts.candidate_name_raw:
+        try:
+            candidate_name_source_text = _source_text_by_ids(
+                session,
+                resume_id=resume_id,
+                block_ids=facts.candidate_name_evidence_block_ids,
+            )
+            _assert_raw_value_grounded(
+                value=facts.candidate_name_raw,
+                source_text=candidate_name_source_text,
+                label="candidate_name_raw",
+            )
+        except FactValidationError:
+            # A bad identity result must never block the otherwise grounded
+            # resume from entering the library. It is simply omitted, just as
+            # a bad AI education/skill item is omitted below.
+            partial = True
+        else:
+            payload["candidate_name_raw"] = facts.candidate_name_raw
+            payload["candidate_name_evidence_block_ids"] = (
+                facts.candidate_name_evidence_block_ids
+            )
+
+    for education in facts.education:
+        try:
+            evidence_text = _source_text_by_ids(
+                session,
+                resume_id=resume_id,
+                block_ids=education.evidence_block_ids,
+            )
+            _assert_raw_value_grounded(
+                value=education.school_name_raw,
+                source_text=evidence_text,
+                label="school_name_raw",
+            )
+            _assert_raw_value_grounded(
+                value=education.major_raw,
+                source_text=evidence_text,
+                label="major_raw",
+            )
+        except FactValidationError:
+            partial = True
+            continue
+        education_payload.append(education.model_dump())
+
+    for experience in facts.experiences:
+        try:
+            evidence_text = _source_text_by_ids(
+                session,
+                resume_id=resume_id,
+                block_ids=experience.evidence_block_ids,
+            )
+            _assert_raw_value_grounded(
+                value=experience.experience_name_raw,
+                source_text=evidence_text,
+                label="experience_name_raw",
+            )
+            _assert_raw_value_grounded(
+                value=experience.organization_name_raw,
+                source_text=evidence_text,
+                label="organization_name_raw",
+            )
+            _assert_raw_value_grounded(
+                value=experience.title_raw,
+                source_text=evidence_text,
+                label="title_raw",
+            )
+            _source_text_by_ids(
+                session,
+                resume_id=resume_id,
+                block_ids=(
+                    experience.classification_evidence_block_ids
+                    or experience.evidence_block_ids
+                ),
+            )
+        except FactValidationError:
+            partial = True
+            continue
+        valid_detail_items: list[dict[str, object]] = []
+        for detail in experience.detail_items:
+            try:
+                detail_source_text = _source_text_by_ids(
+                    session,
+                    resume_id=resume_id,
+                    block_ids=detail.evidence_block_ids,
+                )
+                _assert_raw_value_grounded(
+                    value=detail.detail_raw,
+                    source_text=detail_source_text,
+                    label="experience_detail_raw",
+                )
+            except FactValidationError:
+                partial = True
+                continue
+            valid_detail_items.append(detail.model_dump())
+        sanitized_experience = experience.model_dump()
+        sanitized_experience["detail_items"] = valid_detail_items
+        experience_payload.append(sanitized_experience)
+
+    for skill in facts.skills:
+        try:
+            evidence_text = _source_text_by_ids(
+                session,
+                resume_id=resume_id,
+                block_ids=skill.evidence_block_ids,
+            )
+            _assert_raw_value_grounded(
+                value=skill.skill_display,
+                source_text=evidence_text,
+                label="skill_display",
+            )
+        except FactValidationError:
+            partial = True
+            continue
+        skill_payload.append(skill.model_dump())
+
+    if not (education_payload or experience_payload or skill_payload):
+        raise FactValidationError("ai_extraction_no_grounded_facts")
+    return ResumeFactsSubmission.model_validate(payload), partial
+
+
+def _has_work_context(source_text: str, experience_type: str) -> bool:
+    key = normalized_key(source_text)
+    if experience_type == "internship":
+        return any(normalized_key(marker) in key for marker in INTERNSHIP_CONTEXT_MARKERS)
+    return any(normalized_key(marker) in key for marker in WORK_CONTEXT_MARKERS)
+
+
+def _only_non_work_context(source_text: str) -> bool:
+    key = normalized_key(source_text)
+    has_non_work = any(normalized_key(marker) in key for marker in NON_WORK_CONTEXT_MARKERS)
+    has_positive = any(
+        normalized_key(marker) in key
+        for marker in (*WORK_CONTEXT_MARKERS, *INTERNSHIP_CONTEXT_MARKERS)
+    )
+    return has_non_work and not has_positive
+
+
+def _replace_facts(
+    session: Session,
+    resume: Resume,
+    request: ResumeFactsSaveRequest,
+    *,
+    created_by: str,
+    force_pending_review: bool = False,
+    auto_activate: bool = False,
+) -> None:
+    facts = request.facts
+    old_snapshot = _fact_snapshot(resume)
+    has_ambiguous_work_context = False
+    candidate = session.scalar(
+        select(Candidate)
+        .where(Candidate.id == resume.candidate_id)
+        .with_for_update()
+    )
+    if candidate is None:
+        raise NotFoundError("candidate_not_found")
+
+    # The worker may name a fresh, unnamed candidate only after the same
+    # source-grounding checks used for every persisted fact. A pre-existing
+    # display name is user-owned/legacy data and must never be overwritten.
+    if force_pending_review and facts.candidate_name_raw:
+        candidate_name_source_text = _source_text_by_ids(
+            session,
+            resume_id=resume.id,
+            block_ids=facts.candidate_name_evidence_block_ids,
+        )
+        _assert_raw_value_grounded(
+            value=facts.candidate_name_raw,
+            source_text=candidate_name_source_text,
+            label="candidate_name_raw",
+        )
+        if not candidate.display_name or not candidate.display_name.strip():
+            candidate.display_name = facts.candidate_name_raw.strip()
+
+    session.execute(delete(ResumeEducation).where(ResumeEducation.resume_id == resume.id))
+    session.execute(delete(ResumeExperience).where(ResumeExperience.resume_id == resume.id))
+    session.execute(delete(ResumeSkill).where(ResumeSkill.resume_id == resume.id))
+    session.flush()
+
+    has_985_211 = False
+    has_unresolved_school = not facts.education
+    has_ai_rulebook_match = False
+    has_invalid_ai_rulebook_reference = False
+    for education in facts.education:
+        evidence_text = _source_text_by_ids(
+            session,
+            resume_id=resume.id,
+            block_ids=education.evidence_block_ids,
+        )
+        _assert_raw_value_grounded(
+            value=education.school_name_raw,
+            source_text=evidence_text,
+            label="school_name_raw",
+        )
+        _assert_raw_value_grounded(
+            value=education.major_raw,
+            source_text=evidence_text,
+            label="major_raw",
+        )
+        institution = resolve_institution(session, education.school_name_raw)
+        is_local_match = institution is not None
+        is_ai_rulebook_match = False
+        if not is_local_match and force_pending_review:
+            if education.ai_985_211_judgment:
+                institution = resolve_institution_by_roster_id(
+                    session,
+                    education.ai_institution_roster_id,
+                )
+                if institution is not None and institution.is_985_211:
+                    is_ai_rulebook_match = True
+                    has_ai_rulebook_match = True
+                else:
+                    institution = None
+                    has_invalid_ai_rulebook_reference = True
+            elif education.ai_institution_roster_id is not None:
+                has_invalid_ai_rulebook_reference = True
+        is_matched = institution is not None
+        if not is_matched:
+            has_unresolved_school = True
+        if institution is not None and institution.is_985_211:
+            has_985_211 = True
+        session.add(
+            ResumeEducation(
+                resume_id=resume.id,
+                school_name_raw=education.school_name_raw.strip(),
+                school_key=(
+                    institution.canonical_key
+                    if institution is not None
+                    else normalized_key(education.school_name_raw)
+                ),
+                institution_id=institution.id if institution is not None else None,
+                school_match_state=(
+                    "exact"
+                    if is_local_match
+                    else (
+                        "ai_rulebook"
+                        if is_ai_rulebook_match
+                        else (
+                            "ai_non_member"
+                            if force_pending_review
+                            else (
+                                "manual"
+                                if (
+                                    request.complete_review
+                                    and request.is_985_211_override is not None
+                                )
+                                else "unmatched"
+                            )
+                        )
+                    )
+                ),
+                degree=education.degree,
+                major_raw=education.major_raw.strip() if education.major_raw else None,
+                major_key=normalized_key(education.major_raw) or None,
+                start_month=education.start_month,
+                end_month=education.end_month,
+                evidence_block_ids=education.evidence_block_ids,
+            )
+        )
+
+    employment_intervals: list[tuple[str | None, str | None, bool]] = []
+    employment_or_internship_intervals: list[tuple[str | None, str | None, bool]] = []
+    for experience in facts.experiences:
+        evidence_text = _source_text_by_ids(
+            session,
+            resume_id=resume.id,
+            block_ids=experience.evidence_block_ids,
+        )
+        _assert_raw_value_grounded(
+            value=experience.experience_name_raw,
+            source_text=evidence_text,
+            label="experience_name_raw",
+        )
+        _assert_raw_value_grounded(
+            value=experience.organization_name_raw,
+            source_text=evidence_text,
+            label="organization_name_raw",
+        )
+        _assert_raw_value_grounded(
+            value=experience.title_raw,
+            source_text=evidence_text,
+            label="title_raw",
+        )
+        classification_text = _source_text_by_ids(
+            session,
+            resume_id=resume.id,
+            block_ids=(
+                experience.classification_evidence_block_ids
+                or experience.evidence_block_ids
+            ),
+        )
+        stored_detail_items: list[dict[str, object]] = []
+        for detail in experience.detail_items:
+            detail_source_text = _source_text_by_ids(
+                session,
+                resume_id=resume.id,
+                block_ids=detail.evidence_block_ids,
+            )
+            _assert_raw_value_grounded(
+                value=detail.detail_raw,
+                source_text=detail_source_text,
+                label="experience_detail_raw",
+            )
+            stored_detail_items.append(
+                {
+                    "detail_raw": detail.detail_raw.strip(),
+                    "evidence_block_ids": detail.evidence_block_ids,
+                }
+            )
+        stored_experience_type = experience.experience_type
+        if experience.experience_type in {"employment", "internship"}:
+            needs_override = (
+                not _has_work_context(classification_text, experience.experience_type)
+                or _only_non_work_context(classification_text)
+            )
+            if needs_override:
+                if force_pending_review:
+                    # Keep the grounded AI result useful even when one entry
+                    # may be a project rather than employment. Store it as
+                    # unknown so it cannot inflate filters or calculated
+                    # tenure, while the rest of the resume can be enabled.
+                    stored_experience_type = "unknown"
+                    has_ambiguous_work_context = True
+                elif not (
+                    request.complete_review
+                    and request.review_note
+                    and request.review_note.strip()
+                ):
+                    raise FactValidationError("work_context_requires_manual_review_note")
+        session.add(
+            ResumeExperience(
+                resume_id=resume.id,
+                experience_type=stored_experience_type,
+                experience_name_raw=(
+                    experience.experience_name_raw.strip()
+                    if experience.experience_name_raw
+                    else None
+                ),
+                experience_name_key=normalized_key(experience.experience_name_raw) or None,
+                organization_name_raw=(
+                    experience.organization_name_raw.strip()
+                    if experience.organization_name_raw
+                    else None
+                ),
+                organization_key=normalized_key(experience.organization_name_raw) or None,
+                title_raw=experience.title_raw.strip() if experience.title_raw else None,
+                title_key=normalized_key(experience.title_raw) or None,
+                start_month=experience.start_month,
+                end_month=experience.end_month,
+                is_current=experience.is_current,
+                evidence_block_ids=experience.evidence_block_ids,
+                classification_evidence_block_ids=experience.classification_evidence_block_ids,
+                detail_items=stored_detail_items,
+            )
+        )
+        interval = (experience.start_month, experience.end_month, experience.is_current)
+        if stored_experience_type == "employment":
+            employment_intervals.append(interval)
+            employment_or_internship_intervals.append(interval)
+        elif stored_experience_type == "internship":
+            employment_or_internship_intervals.append(interval)
+
+    seen_skill_keys: set[str] = set()
+    for skill in facts.skills:
+        evidence_text = _source_text_by_ids(
+            session,
+            resume_id=resume.id,
+            block_ids=skill.evidence_block_ids,
+        )
+        _assert_raw_value_grounded(
+            value=skill.skill_display,
+            source_text=evidence_text,
+            label="skill_display",
+        )
+        key = normalized_key(skill.skill_display)
+        if not key or key in seen_skill_keys:
+            continue
+        seen_skill_keys.add(key)
+        session.add(
+            ResumeSkill(
+                resume_id=resume.id,
+                skill_key=key,
+                skill_display=skill.skill_display.strip(),
+                evidence_block_ids=skill.evidence_block_ids,
+            )
+        )
+
+    if force_pending_review:
+        # The user chose a binary product rule: a validated positive hit is
+        # true; no positive hit (including ambiguous/missing school text) is
+        # false. The AI path only reaches this branch after source grounding.
+        resume.is_985_211 = has_985_211
+    elif has_985_211:
+        if request.is_985_211_override is False:
+            raise FactValidationError("cannot_override_matched_985_211_to_false")
+        resume.is_985_211 = True
+    elif has_unresolved_school:
+        if request.complete_review:
+            if request.is_985_211_override is None:
+                raise FactValidationError("school_review_requires_985_211_override")
+            resume.is_985_211 = request.is_985_211_override
+        else:
+            resume.is_985_211 = None
+    else:
+        # The local registry contains historical 985/211 institutions only.
+        # Reaching this branch is defensive, but it must still not manufacture
+        # a negative classification.
+        resume.is_985_211 = None
+
+    quality_flags = set(resume.quality_flags or [])
+    if force_pending_review:
+        quality_flags.discard("school_unresolved")
+    elif resume.is_985_211 is None:
+        quality_flags.add("school_unresolved")
+    else:
+        quality_flags.discard("school_unresolved")
+    if has_ai_rulebook_match:
+        quality_flags.add("ai_985_211_rulebook_match")
+    else:
+        quality_flags.discard("ai_985_211_rulebook_match")
+    if has_invalid_ai_rulebook_reference:
+        quality_flags.add("ai_985_211_invalid_rulebook_reference")
+    else:
+        quality_flags.discard("ai_985_211_invalid_rulebook_reference")
+    if has_ambiguous_work_context:
+        quality_flags.add("work_context_ambiguous")
+    else:
+        quality_flags.discard("work_context_ambiguous")
+    resume.quality_flags = sorted(quality_flags)
+    resume.highest_degree = highest_degree([item.degree for item in facts.education])
+    resume.employment_months = merged_month_count(employment_intervals)
+    resume.employment_or_internship_months = merged_month_count(
+        employment_or_internship_intervals
+    )
+    resume.facts_version += 1
+
+    if resume.extraction_status == "failed":
+        raise FactValidationError("failed_resume_cannot_be_completed")
+    if force_pending_review and auto_activate:
+        # The extraction worker has already rejected ungrounded facts. A
+        # successful AI result therefore becomes the candidate's active,
+        # searchable resume without a separate human-confirmation step.
+        new_status = "ready"
+        new_is_active = True
+        action = "ai_facts_auto_activated"
+    elif force_pending_review:
+        new_status = "needs_review"
+        new_is_active = False
+        action = "ai_facts_saved_pending_review"
+    elif resume.is_985_211 is None:
+        new_status = "needs_review"
+        new_is_active = False
+        action = "facts_saved_pending_school_review"
+    elif resume.extraction_status == "needs_review" and not request.complete_review:
+        new_status = "needs_review"
+        new_is_active = False
+        action = "facts_saved_pending_review"
+    else:
+        new_status = "ready"
+        new_is_active = True
+        action = "manual_review_completed" if request.complete_review else "facts_saved"
+
+    if new_is_active:
+        session.execute(
+            update(Resume)
+            .where(Resume.candidate_id == resume.candidate_id, Resume.id != resume.id)
+            .values(is_active=False)
+        )
+    resume.extraction_status = new_status
+    resume.is_active = new_is_active
+    session.flush()
+
+    _create_fact_snapshot(session, resume=resume, created_by=created_by)
+    # A current summary is only meaningful for the exact immutable fact
+    # snapshot it was generated from.  Saving facts always creates a new
+    # snapshot, so leave old summaries as history instead of presenting one as
+    # current for changed candidate data.
+    session.execute(
+        update(ResumeSummary)
+        .where(
+            ResumeSummary.resume_id == resume.id,
+            ResumeSummary.is_current.is_(True),
+        )
+        .values(is_current=False, status="stale")
+    )
+
+    session.add(
+        ResumeReviewAction(
+            resume_id=resume.id,
+            action=action,
+            note=request.review_note.strip() if request.review_note else None,
+            old_values=old_snapshot,
+            new_values=_fact_snapshot(resume),
+        )
+    )
+
+
+def save_facts(
+    session: Session,
+    *,
+    resume_id: str,
+    request: ResumeFactsSaveRequest,
+    created_by: str = "single_admin",
+    force_pending_review: bool = False,
+    auto_activate: bool = False,
+) -> Resume:
+    resume = get_resume(session, resume_id)
+    if resume.extraction_status == "failed":
+        raise FactValidationError("failed_resume_cannot_accept_facts")
+    if resume.extraction_status == "ready" and not resume.is_active:
+        # A historical ready version is immutable for the screening index.  It
+        # must not silently displace the candidate's newer active resume just
+        # because somebody re-saved its facts.
+        raise FactValidationError("inactive_ready_resume_requires_explicit_activation")
+    if request.complete_review:
+        if not request.review_note or not request.review_note.strip():
+            raise FactValidationError("review_note_required_to_complete_review")
+    if force_pending_review and request.complete_review:
+        raise FactValidationError("ai_extraction_cannot_complete_human_review")
+    if auto_activate and not force_pending_review:
+        raise FactValidationError("auto_activation_requires_ai_extraction")
+    _replace_facts(
+        session,
+        resume,
+        request,
+        created_by=created_by,
+        force_pending_review=force_pending_review,
+        auto_activate=auto_activate,
+    )
+    session.flush()
+    return resume
+
+
+def activate_ready_resume(
+    session: Session,
+    *,
+    resume_id: str,
+    note: str | None = None,
+) -> Resume:
+    """Explicitly select a historical ready version for screening again."""
+
+    resume = get_resume(session, resume_id)
+    if resume.extraction_status != "ready" or resume.is_985_211 is None:
+        raise FactValidationError("resume_must_be_ready_to_activate")
+    old_active_resume_id = session.scalar(
+        select(Resume.id).where(
+            Resume.candidate_id == resume.candidate_id,
+            Resume.is_active.is_(True),
+        )
+    )
+    session.execute(
+        update(Resume)
+        .where(Resume.candidate_id == resume.candidate_id)
+        .values(is_active=False)
+    )
+    resume.is_active = True
+    session.add(
+        ResumeReviewAction(
+            resume_id=resume.id,
+            action="resume_version_activated",
+            note=note.strip() if note else None,
+            old_values={"active_resume_id": old_active_resume_id},
+            new_values={"active_resume_id": resume.id},
+        )
+    )
+    session.flush()
+    return resume
+
+
+def reconcile_legacy_completed_ai_resumes(session: Session) -> int:
+    """Bring pre-auto-activation AI completions into the current ready state.
+
+    Older builds could save a fully grounded AI extraction while leaving the
+    resume in ``needs_review``. The current product has no human-confirmation
+    step, so those completed records must not stay hidden indefinitely. A
+    matching immutable snapshot is required before any transition; a newer
+    active version for the same candidate is always left in place.
+    """
+
+    statement = (
+        select(Resume)
+        .join(ResumeAiExtractionJob)
+        .where(
+            ResumeAiExtractionJob.status == "completed",
+            Resume.extraction_status == "needs_review",
+            Resume.is_active.is_(False),
+            Resume.facts_version > 0,
+        )
+        .order_by(Resume.created_at.desc(), Resume.id.desc())
+    )
+    reconciled = 0
+    for resume in session.scalars(statement).all():
+        snapshot_exists = session.scalar(
+            select(ResumeFactSnapshot.id).where(
+                ResumeFactSnapshot.resume_id == resume.id,
+                ResumeFactSnapshot.facts_version == resume.facts_version,
+            )
+        )
+        if snapshot_exists is None:
+            continue
+
+        old_snapshot = _fact_snapshot(resume)
+        if resume.is_985_211 is None:
+            # The product contract is now binary: a verified positive hit is
+            # true; every other grounded extraction is false.
+            resume.is_985_211 = False
+            flags = set(resume.quality_flags or [])
+            flags.discard("school_unresolved")
+            resume.quality_flags = sorted(flags)
+
+        active_resume_id = session.scalar(
+            select(Resume.id).where(
+                Resume.candidate_id == resume.candidate_id,
+                Resume.is_active.is_(True),
+            )
+        )
+        resume.extraction_status = "ready"
+        if active_resume_id is None:
+            session.execute(
+                update(Resume)
+                .where(Resume.candidate_id == resume.candidate_id)
+                .values(is_active=False)
+            )
+            resume.is_active = True
+            action = "legacy_ai_facts_auto_activated"
+        else:
+            # The newer active version remains the screening version. This
+            # historical upload is still visible in the resume library.
+            resume.is_active = False
+            action = "legacy_ai_facts_marked_ready"
+
+        session.add(
+            ResumeReviewAction(
+                resume_id=resume.id,
+                action=action,
+                note="Reconciled completed AI extraction from the pre-auto-activation workflow.",
+                old_values=old_snapshot,
+                new_values=_fact_snapshot(resume),
+            )
+        )
+        reconciled += 1
+    session.flush()
+    return reconciled
+
+
+def auto_extract_and_save_facts(
+    session: Session,
+    *,
+    resume_id: str,
+    settings: AppSettings,
+) -> Resume:
+    if not settings.deepseek_api_key:
+        raise ResumeServiceError("deepseek_api_key_not_configured")
+    resume = get_resume(session, resume_id)
+    if resume.extraction_status != "text_ready":
+        raise FactValidationError("resume_must_be_text_ready_for_ai_extraction")
+    source_blocks = session.scalars(
+        select(ResumeSourceBlock)
+        .where(ResumeSourceBlock.resume_id == resume.id)
+        .order_by(ResumeSourceBlock.page_no, ResumeSourceBlock.block_id)
+    ).all()
+    try:
+        facts = extract_resume_facts(
+            api_key=settings.deepseek_api_key,
+            model=settings.deepseek_model,
+            timeout_seconds=settings.deepseek_timeout_seconds,
+            blocks=[
+                EvidenceBlock(
+                    block_id=block.block_id,
+                    page_no=block.page_no,
+                    block_type=block.block_type,
+                    text=block.text,
+                )
+                for block in source_blocks
+            ],
+        )
+        return save_facts(
+            session,
+            resume_id=resume.id,
+            request=ResumeFactsSaveRequest(facts=facts),
+            created_by=f"ai:{settings.deepseek_model}",
+            force_pending_review=True,
+            auto_activate=True,
+        )
+    except (DeepSeekProviderError, FactValidationError) as exc:
+        old_snapshot = _fact_snapshot(resume)
+        flags = set(resume.quality_flags or [])
+        flags.add(f"ai_extraction_{str(exc)}")
+        resume.quality_flags = sorted(flags)
+        resume.extraction_status = "needs_review"
+        resume.is_active = False
+        session.flush()
+        session.add(
+            ResumeReviewAction(
+                resume_id=resume.id,
+                action="ai_extraction_failed",
+                note=str(exc),
+                old_values=old_snapshot,
+                new_values=_fact_snapshot(resume),
+            )
+        )
+        session.flush()
+        return resume

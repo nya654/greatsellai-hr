@@ -1,0 +1,23 @@
+{$RESUME_V3_DOMAIN} {
+    encode zstd gzip
+
+    # Keep the API on the same origin, while making its public surface
+    # explicit. The API container itself has no published host port.
+    @api path /v1 /v1/*
+    handle @api {
+        reverse_proxy api:8000
+    }
+
+    @health path /health
+    handle @health {
+        reverse_proxy api:8000
+    }
+
+    # All remaining requests are frontend routes. try_files preserves direct
+    # navigation and refreshes for the client-side router.
+    handle {
+        root * /srv
+        try_files {path} /index.html
+        file_server
+    }
+}

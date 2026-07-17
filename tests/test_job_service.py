@@ -1,0 +1,464 @@
+from __future__ import annotations
+
+import pytest
+
+from app.schemas import JobCreate, JobMatchCreate, JobRequirements
+from app.services import job_service
+from app.services.deepseek_provider import FACT_SNAPSHOT_SCHEMA_VERSION
+from test_filter_mvp_contract import _save_ready_resume
+
+
+def _job_payload(*, requirements: JobRequirements | None = None) -> JobCreate:
+    return JobCreate(
+        title="Backend Engineer",
+        jd_text=(
+            "Must have Python experience.\n"
+            "Must have Go experience.\n"
+            "Kubernetes experience is preferred."
+        ),
+        requirements=requirements or JobRequirements(),
+    )
+
+
+def _create_job(ai_client, *, requirements: JobRequirements | None = None) -> dict[str, object]:
+    database = ai_client.app.state.database
+    with database.session_factory() as session:
+        response = job_service.create_job(
+            session,
+            payload=_job_payload(requirements=requirements),
+        )
+        session.commit()
+        return response.model_dump()
+
+
+def test_manual_requirements_are_clause_grounded_and_confirmed(ai_client) -> None:
+    created = _create_job(
+        ai_client,
+        requirements=JobRequirements(
+            must_have=["Python experience", "Go experience"],
+            preferred=["Kubernetes experience"],
+        ),
+    )
+
+    assert created["status"] == "confirmed"
+    assert [clause["clause_id"] for clause in created["clauses"]] == [
+        "clause-001",
+        "clause-002",
+        "clause-003",
+    ]
+    assert [
+        (requirement["requirement_key"], requirement["clause_ids"], requirement["weight"])
+        for requirement in created["requirements"]
+    ] == [
+        ("req-001", ["clause-001"], 3500),
+        ("req-002", ["clause-002"], 3500),
+        ("req-003", ["clause-003"], 3000),
+    ]
+
+    database = ai_client.app.state.database
+    with database.session_factory() as session:
+        with pytest.raises(
+            job_service.JobServiceError,
+            match="job_requirement_not_grounded_in_jd",
+        ):
+            job_service.create_job(
+                session,
+                payload=_job_payload(
+                    requirements=JobRequirements(must_have=["Rust experience"])
+                ),
+            )
+        session.rollback()
+
+
+def test_confirmed_jobs_can_be_listed_for_the_workspace_switcher(ai_client) -> None:
+    first = _create_job(
+        ai_client,
+        requirements=JobRequirements(must_have=["Python experience"]),
+    )
+    second = _create_job(
+        ai_client,
+        requirements=JobRequirements(must_have=["Go experience"]),
+    )
+
+    response = ai_client.get("/v1/jobs/confirmed-versions")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert {item["job_version_id"] for item in payload} == {
+        first["job_version_id"],
+        second["job_version_id"],
+    }
+    assert all(item["status"] == "confirmed" for item in payload)
+
+
+def _fake_requirement_extraction(**kwargs: object) -> dict[str, object]:
+    clauses = kwargs["clauses"]
+    assert clauses == [
+        {"clause_id": "clause-001", "text": "Must have Python experience."},
+        {"clause_id": "clause-002", "text": "Must have Go experience."},
+        {
+            "clause_id": "clause-003",
+            "text": "Kubernetes experience is preferred.",
+        },
+    ]
+    return {
+        "schema_version": "jd_requirements.v1",
+        "clause_coverage": [
+            {"clause_id": "clause-001", "requirement_ids": ["requirement-001"]},
+            {"clause_id": "clause-002", "requirement_ids": ["requirement-002"]},
+            {"clause_id": "clause-003", "requirement_ids": ["requirement-003"]},
+        ],
+        "requirements": [
+            {
+                "requirement_id": "requirement-001",
+                "requirement_text": "Python experience",
+                "priority": "must_have",
+                "clause_ids": ["clause-001"],
+            },
+            {
+                "requirement_id": "requirement-002",
+                "requirement_text": "Go experience",
+                "priority": "must_have",
+                "clause_ids": ["clause-002"],
+            },
+            {
+                "requirement_id": "requirement-003",
+                "requirement_text": "Kubernetes experience",
+                "priority": "preferred",
+                "clause_ids": ["clause-003"],
+            },
+        ],
+    }
+
+
+def test_draft_ai_extraction_can_be_reviewed_then_confirmed(ai_client, monkeypatch) -> None:
+    draft = _create_job(ai_client)
+    assert draft["status"] == "draft"
+    assert draft["requirements"] == []
+
+    monkeypatch.setattr(
+        job_service,
+        "extract_jd_requirements_from_clauses",
+        _fake_requirement_extraction,
+    )
+    database = ai_client.app.state.database
+    with database.session_factory() as session:
+        extracted = job_service.extract_job_version_requirements(
+            session,
+            job_version_id=draft["job_version_id"],
+            settings=ai_client.app.state.settings,
+        )
+        session.commit()
+
+    assert extracted.status == "draft"
+    assert [item.requirement_key for item in extracted.requirements] == [
+        "requirement-001",
+        "requirement-002",
+        "requirement-003",
+    ]
+    assert sum(item.weight for item in extracted.requirements) == 10000
+
+    with database.session_factory() as session:
+        confirmed = job_service.confirm_job_version(
+            session,
+            job_version_id=draft["job_version_id"],
+        )
+        session.commit()
+    assert confirmed.status == "confirmed"
+
+    with database.session_factory() as session:
+        with pytest.raises(
+            job_service.JobServiceError,
+            match="confirmed_job_version_cannot_be_extracted",
+        ):
+            job_service.extract_job_version_requirements(
+                session,
+                job_version_id=draft["job_version_id"],
+                settings=ai_client.app.state.settings,
+            )
+
+
+def _fake_match_with_unknown_must_have(**kwargs: object) -> dict[str, object]:
+    snapshot = kwargs["fact_snapshot"]
+    assert isinstance(snapshot, dict)
+    assert snapshot["schema_version"] == FACT_SNAPSHOT_SCHEMA_VERSION
+    assert "raw_text" not in snapshot
+    assert kwargs["confirmed_requirements"] == [
+        {
+            "requirement_id": "requirement-001",
+            "requirement_text": "Python experience",
+            "priority": "must_have",
+            "clause_ids": ["clause-001"],
+        },
+        {
+            "requirement_id": "requirement-002",
+            "requirement_text": "Go experience",
+            "priority": "must_have",
+            "clause_ids": ["clause-002"],
+        },
+        {
+            "requirement_id": "requirement-003",
+            "requirement_text": "Kubernetes experience",
+            "priority": "preferred",
+            "clause_ids": ["clause-003"],
+        },
+    ]
+    return {
+        "schema_version": "jd_match.v1",
+        "requirement_matches": [
+            {
+                "requirement_id": "requirement-001",
+                "status": "met",
+                "rationale": "Python is an explicit skill in the fact snapshot.",
+                "fact_ids": ["skill-001"],
+                "uncertainties": [],
+            },
+            {
+                "requirement_id": "requirement-002",
+                "status": "unknown",
+                "rationale": "The snapshot does not state Go experience.",
+                "fact_ids": [],
+                "uncertainties": ["No Go fact is available."],
+            },
+            {
+                "requirement_id": "requirement-003",
+                "status": "partial",
+                "rationale": "A related infrastructure fact is available.",
+                "fact_ids": ["skill-001"],
+                "uncertainties": ["Kubernetes depth is not stated."],
+            },
+        ],
+        # The service, not the model, is responsible for forcing an
+        # information-insufficient result into recruiter review.
+        "needs_human_review": False,
+    }
+
+
+def test_snapshot_match_persists_evidence_and_unknown_hard_requirement(
+    ai_client,
+    monkeypatch,
+) -> None:
+    _, resume_id = _save_ready_resume(
+        ai_client,
+        source_text=(
+            "Education 清华大学 计算机 工作经历 "
+            "Acme Python Engineer Skills Python SQL Kubernetes"
+        ),
+    )
+    job = _create_job(ai_client)
+    monkeypatch.setattr(
+        job_service,
+        "extract_jd_requirements_from_clauses",
+        _fake_requirement_extraction,
+    )
+    database = ai_client.app.state.database
+    with database.session_factory() as session:
+        job_service.extract_job_version_requirements(
+            session,
+            job_version_id=job["job_version_id"],
+            settings=ai_client.app.state.settings,
+        )
+        session.commit()
+    with database.session_factory() as session:
+        job_service.confirm_job_version(
+            session,
+            job_version_id=job["job_version_id"],
+        )
+        session.commit()
+    monkeypatch.setattr(
+        job_service,
+        "match_resume_fact_snapshot_against_requirements",
+        _fake_match_with_unknown_must_have,
+    )
+
+    with database.session_factory() as session:
+        matched = job_service.run_job_match(
+            session,
+            resume_id=resume_id,
+            payload=JobMatchCreate(job_version_id=job["job_version_id"]),
+            settings=ai_client.app.state.settings,
+        )
+        session.commit()
+
+    assert matched.fact_snapshot_id
+    assert matched.facts_version == 1
+    assert matched.total_score == 50.0
+    assert matched.evidence_coverage == 65.0
+    assert matched.hard_requirement_status == "information_insufficient"
+    assert matched.must_have_passed is None
+    assert matched.status == "needs_review"
+    assert [
+        (
+            result.requirement_key,
+            result.outcome,
+            result.fact_ids,
+            result.score_contribution,
+        )
+        for result in matched.requirement_results
+    ] == [
+        ("requirement-001", "met", ["skill-001"], 35.0),
+        ("requirement-002", "unknown", [], 0.0),
+        ("requirement-003", "partial", ["skill-001"], 15.0),
+    ]
+    assert matched.requirement_results[0].requirement_text == "Python experience"
+    assert matched.requirement_results[0].clause_ids == ["clause-001"]
+
+    with database.session_factory() as session:
+        persisted = job_service.get_job_match(session, match_id=matched.match_id)
+    assert persisted.fact_snapshot_id == matched.fact_snapshot_id
+    assert persisted.requirement_results[0].fact_ids == ["skill-001"]
+
+
+def test_jd_ai_operations_require_a_server_side_key(client) -> None:
+    draft = _create_job(client)
+    database = client.app.state.database
+    with database.session_factory() as session:
+        with pytest.raises(
+            job_service.JobServiceError,
+            match="deepseek_api_key_not_configured",
+        ):
+            job_service.extract_job_version_requirements(
+                session,
+                job_version_id=draft["job_version_id"],
+                settings=client.app.state.settings,
+            )
+        with pytest.raises(
+            job_service.JobServiceError,
+            match="deepseek_api_key_not_configured",
+        ):
+            job_service.run_job_match(
+                session,
+                resume_id="not-a-real-resume",
+                payload=JobMatchCreate(job_version_id=draft["job_version_id"]),
+                settings=client.app.state.settings,
+            )
+
+
+def test_job_extract_api_returns_503_without_server_side_key(client) -> None:
+    created = client.post("/v1/jobs", json=_job_payload().model_dump())
+    assert created.status_code == 200, created.text
+    assert created.json()["status"] == "draft"
+
+    extracted = client.post(
+        f"/v1/job-versions/{created.json()['job_version_id']}/extract"
+    )
+    assert extracted.status_code == 503, extracted.text
+    assert extracted.json()["detail"] == "deepseek_api_key_not_configured"
+
+
+def test_job_api_extract_confirm_and_snapshot_match(ai_client, monkeypatch) -> None:
+    _, resume_id = _save_ready_resume(
+        ai_client,
+        source_text=(
+            "Education 清华大学 计算机 工作经历 "
+            "Acme Python Engineer Skills Python SQL Kubernetes"
+        ),
+    )
+    created = ai_client.post("/v1/jobs", json=_job_payload().model_dump())
+    assert created.status_code == 200, created.text
+    job_version_id = created.json()["job_version_id"]
+
+    monkeypatch.setattr(
+        job_service,
+        "extract_jd_requirements_from_clauses",
+        _fake_requirement_extraction,
+    )
+    extracted = ai_client.post(f"/v1/job-versions/{job_version_id}/extract")
+    assert extracted.status_code == 200, extracted.text
+    assert [item["requirement_key"] for item in extracted.json()["requirements"]] == [
+        "requirement-001",
+        "requirement-002",
+        "requirement-003",
+    ]
+
+    confirmed = ai_client.post(f"/v1/job-versions/{job_version_id}/confirm")
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["status"] == "confirmed"
+
+    monkeypatch.setattr(
+        job_service,
+        "match_resume_fact_snapshot_against_requirements",
+        _fake_match_with_unknown_must_have,
+    )
+    matched = ai_client.post(
+        f"/v1/resumes/{resume_id}/job-matches",
+        json={"job_version_id": job_version_id},
+    )
+    assert matched.status_code == 200, matched.text
+    match_payload = matched.json()
+    assert match_payload["hard_requirement_status"] == "information_insufficient"
+    assert match_payload["must_have_passed"] is None
+    assert match_payload["requirement_results"][0]["fact_ids"] == ["skill-001"]
+
+    fetched = ai_client.get(f"/v1/job-matches/{match_payload['match_id']}")
+    assert fetched.status_code == 200, fetched.text
+    assert fetched.json()["fact_snapshot_id"] == match_payload["fact_snapshot_id"]
+    assert fetched.json()["requirement_results"][0]["clause_ids"] == ["clause-001"]
+
+    by_resume = ai_client.get(f"/v1/resumes/{resume_id}/job-matches")
+    assert by_resume.status_code == 200, by_resume.text
+    assert [item["match_id"] for item in by_resume.json()] == [match_payload["match_id"]]
+
+    by_job_version = ai_client.get(f"/v1/job-versions/{job_version_id}/matches")
+    assert by_job_version.status_code == 200, by_job_version.text
+    assert [item["match_id"] for item in by_job_version.json()] == [
+        match_payload["match_id"]
+    ]
+
+
+def _fake_preferred_only_match(**kwargs: object) -> dict[str, object]:
+    requirements = kwargs["confirmed_requirements"]
+    assert requirements == [
+        {
+            "requirement_id": "req-001",
+            "requirement_text": "Kubernetes experience",
+            "priority": "preferred",
+            "clause_ids": ["clause-003"],
+        }
+    ]
+    return {
+        "schema_version": "jd_match.v1",
+        "requirement_matches": [
+            {
+                "requirement_id": "req-001",
+                "status": "met",
+                "rationale": "Kubernetes is explicitly listed as a skill.",
+                "fact_ids": ["skill-001"],
+                "uncertainties": [],
+            }
+        ],
+        "needs_human_review": False,
+    }
+
+
+def test_preferred_only_jd_has_no_hard_requirement_verdict(ai_client, monkeypatch) -> None:
+    _, resume_id = _save_ready_resume(
+        ai_client,
+        source_text=(
+            "Education \u6e05\u534e\u5927\u5b66 \u8ba1\u7b97\u673a \u5de5\u4f5c\u7ecf\u5386 "
+            "Acme Python Engineer Skills Python SQL Kubernetes"
+        ),
+    )
+    job = _create_job(
+        ai_client,
+        requirements=JobRequirements(preferred=["Kubernetes experience"]),
+    )
+    assert job["status"] == "confirmed"
+    monkeypatch.setattr(
+        job_service,
+        "match_resume_fact_snapshot_against_requirements",
+        _fake_preferred_only_match,
+    )
+    database = ai_client.app.state.database
+    with database.session_factory() as session:
+        matched = job_service.run_job_match(
+            session,
+            resume_id=resume_id,
+            payload=JobMatchCreate(job_version_id=job["job_version_id"]),
+            settings=ai_client.app.state.settings,
+        )
+        session.commit()
+
+    assert matched.hard_requirement_status == "not_applicable"
+    assert matched.must_have_passed is None
+    assert matched.status == "succeeded"

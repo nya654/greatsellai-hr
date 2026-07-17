@@ -1,0 +1,100 @@
+name: resume-screening-v3
+
+x-app-environment: &app-environment
+  RESUME_V3_ENVIRONMENT: production
+  RESUME_V3_AUTO_CREATE_SCHEMA: "0"
+  RESUME_V3_SEED_REGISTRY_ON_STARTUP: "0"
+  RESUME_V3_DATABASE_URL: postgresql+psycopg://resume_v3:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}@db:5432/resume_v3
+  RESUME_V3_DATA_DIR: /var/lib/resume-v3
+  RESUME_V3_ADMIN_TOKEN: ${RESUME_V3_ADMIN_TOKEN:?set RESUME_V3_ADMIN_TOKEN in .env.production}
+  RESUME_V3_SESSION_SECRET: ${RESUME_V3_SESSION_SECRET:?set RESUME_V3_SESSION_SECRET in .env.production}
+  RESUME_V3_SESSION_COOKIE_SECURE: ${RESUME_V3_SESSION_COOKIE_SECURE:-1}
+  DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+  DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
+  DEEPSEEK_TIMEOUT_SECONDS: ${DEEPSEEK_TIMEOUT_SECONDS:-90}
+  TENCENT_SECRET_ID: ${TENCENT_SECRET_ID:-}
+  TENCENT_SECRET_KEY: ${TENCENT_SECRET_KEY:-}
+  TENCENT_OCR_REGION: ${TENCENT_OCR_REGION:-ap-guangzhou}
+  TENCENT_OCR_TIMEOUT_SECONDS: ${TENCENT_OCR_TIMEOUT_SECONDS:-20}
+  OCR_SPARSE_TEXT_CHARS_PER_PAGE: ${OCR_SPARSE_TEXT_CHARS_PER_PAGE:-500}
+  RESUME_V3_AI_EXTRACTION_JOB_MAX_ATTEMPTS: ${RESUME_V3_AI_EXTRACTION_JOB_MAX_ATTEMPTS:-3}
+  RESUME_V3_AI_EXTRACTION_JOB_LEASE_SECONDS: ${RESUME_V3_AI_EXTRACTION_JOB_LEASE_SECONDS:-180}
+  RESUME_V3_AI_EXTRACTION_WORKER_POLL_SECONDS: ${RESUME_V3_AI_EXTRACTION_WORKER_POLL_SECONDS:-2}
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: resume_v3
+      POSTGRES_USER: resume_v3
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U resume_v3 -d resume_v3"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    build: .
+    restart: "no"
+    environment: *app-environment
+    command: ["/bin/sh", "-c", "alembic upgrade head && python -m app.seed_institutions"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build: .
+    restart: unless-stopped
+    environment: *app-environment
+    volumes:
+      - uploads_data:/var/lib/resume-v3/uploads
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "from urllib.request import urlopen; assert urlopen('http://127.0.0.1:8000/health').status == 200",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build: .
+    restart: unless-stopped
+    environment: *app-environment
+    command: ["python", "-m", "app.ai_extraction_worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  caddy:
+    build:
+      context: .
+      dockerfile: deploy/Caddy.Dockerfile
+    restart: unless-stopped
+    environment:
+      RESUME_V3_DOMAIN: ${RESUME_V3_DOMAIN:?set RESUME_V3_DOMAIN in .env.production}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  uploads_data:
+  caddy_data:
+  caddy_config:

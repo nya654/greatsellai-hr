@@ -34,6 +34,7 @@ from app.services.deepseek_provider import (
     DeepSeekProviderError,
     score_resume_fact_snapshot,
 )
+from app.services.resume_eligibility import has_unreliable_source_text
 
 
 class ScoreServiceError(RuntimeError):
@@ -426,6 +427,8 @@ def _load_ready_resume_and_snapshot(
         raise ScoreServiceError("resume_not_found")
     if resume.extraction_status != "ready" or not resume.is_active:
         raise ScoreServiceError("resume_must_be_active_and_ready_for_scoring")
+    if has_unreliable_source_text(resume.quality_flags):
+        raise ScoreServiceError("resume_source_text_unreliable")
     snapshot = session.scalar(
         select(ResumeFactSnapshot)
         .where(ResumeFactSnapshot.resume_id == resume.id)

@@ -300,6 +300,14 @@ export function createApiClient(options: ApiClientOptions = {}) {
       return request<ResumeDetail>(`/resumes/${resourcePath(resumeId)}/queue-ai-extraction`, { method: "POST" });
     },
 
+    /**
+     * Creates a fresh, inactive parse version from the immutable original file.
+     * The server deliberately keeps the previous version intact for auditability.
+     */
+    reparseSource(resumeId: string): Promise<ResumeDetail> {
+      return request<ResumeDetail>(`/resumes/${resourcePath(resumeId)}/reparse-source`, { method: "POST" });
+    },
+
     saveFacts(resumeId: string, input: ResumeFactsSaveRequest): Promise<ResumeDetail> {
       return request<ResumeDetail>(`/resumes/${resourcePath(resumeId)}/facts`, {
         method: "PUT",

@@ -525,6 +525,7 @@ def _score_current_candidate(
             "deepseek_api_key_not_configured": "评分模型尚未配置。",
             "resume_not_found": "当前候选人不存在。",
             "resume_must_be_active_and_ready_for_scoring": "当前候选人的简历尚未完成可评分解析。",
+            "resume_source_text_unreliable": "当前简历的原文文本待校正，暂不能用于 AI 评分。",
             "resume_fact_snapshot_not_current": "当前候选人的事实版本尚未准备完成。",
             "resume_fact_snapshot_invalid": "当前候选人的事实版本不可用于评分。",
         }

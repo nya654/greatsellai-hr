@@ -130,6 +130,7 @@ def list_resume_library(
                 ai_extraction_status=ai_status,
                 ai_extraction_error=ai_error,
                 is_active=resume.is_active,
+                quality_flags=resume.quality_flags or [],
                 summary_preview=_summary_preview(summary.content) if summary else None,
                 summary_created_at=_isoformat(summary.created_at) if summary else None,
                 score_total=score.total_score if score else None,

@@ -15,6 +15,7 @@ from app.services.deepseek_provider import (
     DeepSeekProviderError,
     summarize_resume_fact_snapshot,
 )
+from app.services.resume_eligibility import has_unreliable_source_text
 
 
 class SummaryServiceError(RuntimeError):
@@ -51,6 +52,8 @@ def _ready_resume_snapshot(
         raise SummaryServiceError("resume_not_found")
     if resume.extraction_status != "ready" or not resume.is_active:
         raise SummaryServiceError("resume_must_be_active_and_ready_for_summary")
+    if has_unreliable_source_text(resume.quality_flags):
+        raise SummaryServiceError("resume_source_text_unreliable")
     snapshot = session.scalar(
         select(ResumeFactSnapshot)
         .where(ResumeFactSnapshot.resume_id == resume.id)

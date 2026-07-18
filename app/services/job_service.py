@@ -40,6 +40,7 @@ from app.services.deepseek_provider import (
     match_resume_fact_snapshot_against_requirements,
 )
 from app.services.normalization import normalized_contains
+from app.services.resume_eligibility import has_unreliable_source_text
 
 
 class JobServiceError(RuntimeError):
@@ -584,6 +585,8 @@ def _ready_resume_snapshot(
         raise JobServiceError("resume_not_found")
     if resume.extraction_status != "ready" or not resume.is_active:
         raise JobServiceError("resume_must_be_active_and_ready_for_job_match")
+    if has_unreliable_source_text(resume.quality_flags):
+        raise JobServiceError("resume_source_text_unreliable")
     snapshot = session.scalar(
         select(ResumeFactSnapshot)
         .where(ResumeFactSnapshot.resume_id == resume.id)

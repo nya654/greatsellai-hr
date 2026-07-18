@@ -97,6 +97,7 @@ from app.services.resume_service import (
     get_idempotent_upload_resume,
     get_resume,
     normalize_upload_idempotency_key,
+    reparse_active_resume_as_new_version,
     reconcile_legacy_completed_ai_resumes,
     register_upload_idempotency_key,
     save_facts,
@@ -910,6 +911,59 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
             ) from exc
         _commit_or_raise(session)
         return _resume_detail(resume)
+
+    @app.post(
+        "/v1/resumes/{resume_id}/reparse-source",
+        response_model=ResumeDetail,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def post_reparse_resume_source(
+        resume_id: str,
+        session: Session = Depends(get_session),
+    ) -> ResumeDetail:
+        """Create a fresh parser-repair version without mutating evidence.
+
+        An already-active resume can have summaries, scores and JD matches
+        grounded in its current source blocks.  A parser correction therefore
+        creates a separate version; the worker activates it only after a new
+        grounded AI extraction succeeds.
+        """
+
+        replacement_storage_key: str | None = None
+        try:
+            replacement = reparse_active_resume_as_new_version(
+                session,
+                resume_id=resume_id,
+                settings=settings,
+            )
+            replacement_storage_key = replacement.storage_key
+            _commit_or_raise(session)
+        except NotFoundError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(exc),
+            ) from exc
+        except ResumeServiceError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT
+                    if str(exc) == "unsupported_document_type"
+                    else status.HTTP_409_CONFLICT
+                ),
+                detail=str(exc),
+            ) from exc
+        except HTTPException:
+            # A failed commit leaves no durable Resume row for this copied
+            # original, so remove the just-created file as well.
+            discard_uploaded_pdf(settings, storage_key=replacement_storage_key)
+            raise
+        except Exception:
+            session.rollback()
+            discard_uploaded_pdf(settings, storage_key=replacement_storage_key)
+            raise
+        return _resume_detail(replacement)
 
     @app.post(
         "/v1/resumes/{resume_id}/queue-ai-extraction",

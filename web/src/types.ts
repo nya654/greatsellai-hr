@@ -358,6 +358,8 @@ export interface ResumeLibraryItem {
   ai_extraction_status: AiExtractionStatus;
   ai_extraction_error: string | null;
   is_active: boolean;
+  /** Source extraction warnings. These take precedence over an old active state. */
+  quality_flags: string[];
   summary_preview: string | null;
   summary_created_at: string | null;
   score_total: number | null;

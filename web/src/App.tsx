@@ -148,6 +148,39 @@ function aiExtractionStatusLabel(status: AiExtractionStatus): string {
   }
 }
 
+/**
+ * These flags describe a source-text failure, not an ordinary extraction
+ * caveat such as an unresolved school.  When present, conclusions generated
+ * from that text must not be presented as reliable merely because an older
+ * resume version was once activated.
+ */
+const SOURCE_TEXT_UNRELIABLE_FLAGS = new Set([
+  "source_text_unreliable",
+]);
+const PAGE_SOURCE_TEXT_UNRELIABLE_FLAG = /^page_\d+_source_text_unreliable$/i;
+const POSSIBLE_MOJIBAKE_FLAG = /^page_\d+_possible_mojibake$/i;
+const REPARSE_SOURCE_SUPERSEDED_FLAG =
+  "reparse_source_superseded_before_completion";
+
+function hasSourceTextQualityIssue(
+  qualityFlags: readonly string[] | null | undefined,
+): boolean {
+  return Boolean(
+    qualityFlags?.some(
+      (flag) =>
+        SOURCE_TEXT_UNRELIABLE_FLAGS.has(flag) ||
+        PAGE_SOURCE_TEXT_UNRELIABLE_FLAG.test(flag) ||
+        POSSIBLE_MOJIBAKE_FLAG.test(flag),
+    ),
+  );
+}
+
+function hasSupersededReparseVersion(
+  qualityFlags: readonly string[] | null | undefined,
+): boolean {
+  return Boolean(qualityFlags?.includes(REPARSE_SOURCE_SUPERSEDED_FLAG));
+}
+
 function uploadStatusFromResponse(
   response: ResumeUploadResponse,
 ): UploadStatus {
@@ -258,8 +291,18 @@ function humanizeError(error: unknown): string {
         "这份简历没有足够的可提取文字，暂时不能由 AI 提取。",
       resume_source_text_unavailable:
         "这份简历没有可用的提取文字，暂时不能由 AI 提取。",
+      resume_source_text_unreliable:
+        "这份简历的提取文本待校正，暂不能用于筛选、评分、总结或 JD 匹配。",
       completed_resume_cannot_be_reextracted:
         "这份简历已启用，不能被后台 AI 任务覆盖。",
+      resume_must_be_active_and_ready_for_source_reparse:
+        "当前版本尚未准备完成，暂时不能创建新的解析版本。",
+      source_resume_ai_extraction_already_running:
+        "当前版本仍在 AI 提取中，请完成后再创建新的解析版本。",
+      source_resume_reparse_already_running:
+        "这份简历已经在创建新的解析版本，请稍后刷新。",
+      resume_original_hash_mismatch:
+        "原始文件校验未通过，暂时不能重新解析。请重新上传原件。",
       resume_original_file_not_found:
         "找不到这份简历的原始文件。请重新上传该文件。",
       content_type_not_supported: "仅支持 PDF、Word、图片、Excel 和 HTML 简历文件。",
@@ -516,6 +559,7 @@ function App() {
   const [pdfError, setPdfError] = useState<string | null>(null);
   const [summaries, setSummaries] = useState<ResumeSummary[]>([]);
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const [reparsingSource, setReparsingSource] = useState(false);
   const [libraryRefreshToken, setLibraryRefreshToken] = useState(0);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [globalQuery, setGlobalQuery] = useState("");
@@ -636,9 +680,20 @@ function App() {
   }, [authState, refreshSavedFilters, runSearch]);
 
   useEffect(() => {
-    if (!drawerOpen || drawerTab !== "summary" || !selectedResumeId) return;
+    if (
+      !drawerOpen ||
+      drawerTab !== "summary" ||
+      !selectedResumeId ||
+      !review ||
+      review.resume_id !== selectedResumeId
+    )
+      return;
+    if (hasSourceTextQualityIssue(review.quality_flags)) {
+      setSummaries([]);
+      return;
+    }
     void loadSummaries(selectedResumeId);
-  }, [drawerOpen, drawerTab, loadSummaries, selectedResumeId]);
+  }, [drawerOpen, drawerTab, loadSummaries, review, selectedResumeId]);
 
   useEffect(() => {
     setSummaries([]);
@@ -875,6 +930,36 @@ function App() {
     }
   };
 
+  const reparseSelectedSource = useCallback(async () => {
+    if (!selectedResumeId || reparsingSource) return;
+    setReparsingSource(true);
+    try {
+      const parsed = await api.reparseSource(selectedResumeId);
+      summaryRequestRef.current += 1;
+      setReview(null);
+      setSummaries([]);
+      setSelectedResume((current) => ({
+        resumeId: parsed.resume_id,
+        candidateId: parsed.candidate_id,
+        candidateName:
+          parsed.candidate_display_name?.trim() ||
+          current?.candidateName ||
+          "未命名候选人",
+      }));
+      setDrawerTab("original");
+      setLibraryRefreshToken((current) => current + 1);
+      await refreshReview(parsed.resume_id);
+      notify(
+        "success",
+        "已创建新的解析版本，正在基于原件重新提取。原版本会保留，不会被覆盖。",
+      );
+    } catch (error) {
+      notify("error", humanizeError(error));
+    } finally {
+      setReparsingSource(false);
+    }
+  }, [notify, refreshReview, reparsingSource, selectedResumeId]);
+
   const handleGlobalSearch = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.key !== "Enter") return;
     const terms = globalQuery
@@ -1012,7 +1097,9 @@ function App() {
         onClose={() => setDrawerOpen(false)}
         onCreateManualSummary={createManualSummary}
         onGenerateSummary={() => void generateSummary()}
+        onReparseSource={() => void reparseSelectedSource()}
         onTabChange={setDrawerTab}
+        reparsingSource={reparsingSource}
       />
       <RecruitingAgentDrawer
         isOpen={agentOpen}
@@ -2193,6 +2280,12 @@ function resumeLibraryStatus(item: ResumeLibraryItem): {
   label: string;
   tone: "ready" | "progress" | "attention" | "waiting";
 } {
+  if (hasSourceTextQualityIssue(item.quality_flags)) {
+    return { label: "文本待校正", tone: "attention" };
+  }
+  if (hasSupersededReparseVersion(item.quality_flags)) {
+    return { label: "当前版本已更新", tone: "attention" };
+  }
   if (item.is_active && item.extraction_status === "ready") {
     return { label: "已启用", tone: "ready" };
   }
@@ -2326,12 +2419,22 @@ function ResumeLibraryPage({
               <tbody>
                 {items.map((item) => {
                   const status = resumeLibraryStatus(item);
+                  const sourceTextIssue = hasSourceTextQualityIssue(
+                    item.quality_flags,
+                  );
+                  const supersededReparse = hasSupersededReparseVersion(
+                    item.quality_flags,
+                  );
                   return (
                     <tr
                       aria-label={`打开 ${item.display_name?.trim() || "未命名候选人"} 的 AI 总结和原始简历`}
-                      className={
-                        selectedResumeId === item.resume_id ? "is-selected" : ""
-                      }
+                      className={[
+                        selectedResumeId === item.resume_id ? "is-selected" : "",
+                        sourceTextIssue ? "has-source-quality-issue" : "",
+                        supersededReparse ? "has-superseded-reparse" : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
                       key={item.resume_id}
                       onClick={() => onOpenResume(item)}
                       onKeyDown={(event) => {
@@ -2356,7 +2459,15 @@ function ResumeLibraryPage({
                         </div>
                       </td>
                       <td className="library-summary-cell">
-                        {item.summary_preview ? (
+                        {sourceTextIssue ? (
+                          <span className="library-quality-copy">
+                            提取文本疑似乱码，暂不展示 AI 总结。
+                          </span>
+                        ) : supersededReparse ? (
+                          <span className="library-quality-copy">
+                            此解析版本已过期，不展示旧结论。
+                          </span>
+                        ) : item.summary_preview ? (
                           <p
                             className="library-summary-preview"
                             title={item.summary_preview}
@@ -2372,7 +2483,15 @@ function ResumeLibraryPage({
                         )}
                       </td>
                       <td>
-                        {item.score_total !== null ? (
+                        {sourceTextIssue ? (
+                          <span className="library-quality-copy">
+                            请先打开并重新解析
+                          </span>
+                        ) : supersededReparse ? (
+                          <span className="library-quality-copy">
+                            请使用候选人的当前版本
+                          </span>
+                        ) : item.score_total !== null ? (
                           <div
                             className="library-score"
                             title={item.score_template_name ?? undefined}
@@ -2403,7 +2522,13 @@ function ResumeLibraryPage({
                       <td>
                         <span
                           className={`library-status is-${status.tone}`}
-                          title={item.ai_extraction_error ?? undefined}
+                          title={
+                            sourceTextIssue
+                              ? "提取文本疑似乱码，请先重新解析原件。"
+                              : supersededReparse
+                                ? "候选人已有更新版本，此解析版本不会被启用。"
+                                : item.ai_extraction_error ?? undefined
+                          }
                         >
                           {status.label}
                         </span>
@@ -2517,6 +2642,8 @@ function CandidateDrawer({
   summaryLoading,
   onGenerateSummary,
   onCreateManualSummary,
+  onReparseSource,
+  reparsingSource,
 }: {
   candidate: SelectedResume | null;
   review: ResumeReviewDetail | null;
@@ -2535,10 +2662,14 @@ function CandidateDrawer({
     summaryId: string,
     content: Record<string, string>,
   ) => Promise<void>;
+  onReparseSource: () => void;
+  reparsingSource: boolean;
 }) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const currentSummary =
     summaries.find((item) => item.is_current) ?? summaries[0] ?? null;
+  const sourceTextIssue = hasSourceTextQualityIssue(review?.quality_flags);
+  const supersededReparse = hasSupersededReparseVersion(review?.quality_flags);
   useEffect(() => {
     if (!isOpen) return;
     const frame = window.requestAnimationFrame(() =>
@@ -2561,7 +2692,7 @@ function CandidateDrawer({
         candidate ? `${candidate.candidateName} 的简历详情` : "简历详情"
       }
       aria-modal="true"
-      className={`candidate-drawer${isOpen ? " is-open" : ""}`}
+      className={`candidate-drawer${isOpen ? " is-open" : ""}${sourceTextIssue ? " has-source-quality-notice" : ""}`}
       inert={!isOpen}
       role="dialog"
     >
@@ -2569,7 +2700,13 @@ function CandidateDrawer({
         <div className="drawer-title-wrap">
           <h2>
             {candidate?.candidateName ?? "候选人详情"}
-            {review?.is_active && <span className="tiny-badge">已启用</span>}
+            {sourceTextIssue ? (
+              <span className="tiny-badge is-attention">文本待校正</span>
+            ) : supersededReparse ? (
+              <span className="tiny-badge is-attention">当前版本已更新</span>
+            ) : review?.is_active ? (
+              <span className="tiny-badge">已启用</span>
+            ) : null}
           </h2>
           <p>{review ? review.original_filename : "正在读取简历详情…"}</p>
         </div>
@@ -2591,6 +2728,13 @@ function CandidateDrawer({
           </button>
         </div>
       </header>
+      {sourceTextIssue && (
+        <SourceTextQualityNotice
+          busy={reparsingSource}
+          onReparse={onReparseSource}
+        />
+      )}
+      {supersededReparse && !sourceTextIssue && <SupersededReparseNotice />}
       <div className="drawer-body">
         <div aria-label="详情标签" className="tabs" role="tablist">
           {(
@@ -2623,20 +2767,156 @@ function CandidateDrawer({
               review={review}
             />
           ) : drawerTab === "summary" ? (
-            <DrawerSummary
-              currentSummary={currentSummary}
-              loading={summaryLoading}
-              onCreateManual={onCreateManualSummary}
-              onGenerate={onGenerateSummary}
-              onOpenEvidence={() => onTabChange("evidence")}
-              summaries={summaries}
-            />
+            sourceTextIssue ? (
+              <SourceTextQualityBlockedSummary
+                busy={reparsingSource}
+                onOpenEvidence={() => onTabChange("evidence")}
+                onReparse={onReparseSource}
+              />
+            ) : supersededReparse ? (
+              <SupersededReparseBlockedSummary
+                onOpenEvidence={() => onTabChange("evidence")}
+              />
+            ) : (
+              <DrawerSummary
+                currentSummary={currentSummary}
+                loading={summaryLoading}
+                onCreateManual={onCreateManualSummary}
+                onGenerate={onGenerateSummary}
+                onOpenEvidence={() => onTabChange("evidence")}
+                summaries={summaries}
+              />
+            )
           ) : (
             <EvidenceTab loading={reviewLoading} review={review} />
           )}
         </div>
       </div>
     </aside>
+  );
+}
+
+function SourceTextQualityNotice({
+  busy,
+  onReparse,
+}: {
+  busy: boolean;
+  onReparse: () => void;
+}) {
+  return (
+    <section className="source-quality-notice" role="alert">
+      <span aria-hidden="true" className="source-quality-notice-icon">
+        <Icon name="document" size={18} />
+      </span>
+      <div className="source-quality-notice-copy">
+        <strong>提取文本疑似乱码</strong>
+        <p>
+          当前版本的 AI 总结、评分和 JD 匹配不应作为筛选依据。请从原件创建新的解析版本，旧版本会保留供追溯。
+        </p>
+      </div>
+      <button
+        className="button source-quality-reparse-button"
+        disabled={busy}
+        onClick={onReparse}
+        type="button"
+      >
+        {busy ? (
+          <>
+            <i className="spinner" />正在创建
+          </>
+        ) : (
+          <>
+            <Icon name="refresh" size={15} />重新解析为新版本
+          </>
+        )}
+      </button>
+    </section>
+  );
+}
+
+function SourceTextQualityBlockedSummary({
+  busy,
+  onOpenEvidence,
+  onReparse,
+}: {
+  busy: boolean;
+  onOpenEvidence: () => void;
+  onReparse: () => void;
+}) {
+  return (
+    <div className="empty-state source-quality-blocked-summary">
+      <div className="empty-state-inner">
+        <span className="empty-glyph">
+          <Icon name="document" size={23} />
+        </span>
+        <h2>AI 总结已暂停展示</h2>
+        <p>
+          这份简历的提取文本疑似乱码。为避免误导，本版本的 AI 结论不会在这里展示。
+        </p>
+        <div className="source-quality-summary-actions">
+          <button
+            className="button button-primary"
+            disabled={busy}
+            onClick={onReparse}
+            type="button"
+          >
+            {busy ? (
+              <>
+                <i className="spinner" />正在创建
+              </>
+            ) : (
+              <>
+                <Icon name="refresh" size={16} />重新解析为新版本
+              </>
+            )}
+          </button>
+          <button className="button button-ghost" onClick={onOpenEvidence} type="button">
+            查看提取依据
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SupersededReparseNotice() {
+  return (
+    <section className="source-quality-notice source-quality-notice-stale" role="status">
+      <span aria-hidden="true" className="source-quality-notice-icon">
+        <Icon name="history" size={18} />
+      </span>
+      <div className="source-quality-notice-copy">
+        <strong>当前版本已更新</strong>
+        <p>
+          这份重新解析版本完成前，候选人已有更新版本。系统没有让旧任务覆盖当前版本，请从候选人的当前版本继续处理。
+        </p>
+      </div>
+    </section>
+  );
+}
+
+function SupersededReparseBlockedSummary({
+  onOpenEvidence,
+}: {
+  onOpenEvidence: () => void;
+}) {
+  return (
+    <div className="empty-state source-quality-blocked-summary">
+      <div className="empty-state-inner">
+        <span className="empty-glyph">
+          <Icon name="history" size={23} />
+        </span>
+        <h2>此解析版本未启用</h2>
+        <p>
+          候选人已有更新版本。为避免旧解析结果覆盖当前版本，本版本的 AI 结论不会在这里展示。
+        </p>
+        <div className="source-quality-summary-actions">
+          <button className="button button-ghost" onClick={onOpenEvidence} type="button">
+            查看提取依据
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

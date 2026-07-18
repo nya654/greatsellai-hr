@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import Candidate, Resume, ResumeScore, ResumeSummary
@@ -19,6 +19,7 @@ from app.schemas import (
     ExperienceFilter,
 )
 from app.services.normalization import normalized_contains, normalized_key
+from app.services.resume_eligibility import is_resume_screening_eligible
 
 
 _CURRENT_SCORE_STATUSES = {"succeeded", "overridden"}
@@ -195,6 +196,11 @@ def search_candidates(
 
     results: list[_SearchResult] = []
     for resume in session.scalars(statement).all():
+        # ``ready`` only means structured facts were persisted.  It does not
+        # override a parser warning that the source text itself was garbled.
+        # Do not let that version enter the recruiter-facing screening index.
+        if not is_resume_screening_eligible(resume):
+            continue
         matched_filters: list[str] = []
         matched_evidence: list[CandidateSearchMatch] = []
 
@@ -391,13 +397,27 @@ def search_candidates(
         if len(results) > len(page_results) and page_results
         else None
     )
-    needs_review_count = session.scalar(
-        select(func.count(func.distinct(Resume.candidate_id))).where(
-            Resume.extraction_status == "needs_review"
-        )
+    needs_review_candidate_ids = set(
+        session.scalars(
+            select(Resume.candidate_id).where(Resume.extraction_status == "needs_review")
+        ).all()
     )
+    # An older bad extraction may already be ``ready`` and active.  Surface it
+    # in the same review counter so it is not silently lost after exclusion
+    # from search results.
+    unreliable_active_candidate_ids = {
+        resume.candidate_id
+        for resume in session.scalars(
+            select(Resume).where(
+                Resume.is_active.is_(True),
+                Resume.extraction_status == "ready",
+            )
+        ).all()
+        if not is_resume_screening_eligible(resume)
+    }
+    needs_review_candidate_ids.update(unreliable_active_candidate_ids)
     return CandidateSearchResponse(
         items=page_items,
         next_cursor=next_cursor,
-        needs_review_count=int(needs_review_count or 0),
+        needs_review_count=len(needs_review_candidate_ids),
     )

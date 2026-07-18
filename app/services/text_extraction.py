@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.metadata
+import math
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,6 +19,14 @@ from app.services.tencent_ocr_provider import (
 
 
 NON_WHITESPACE = re.compile(r"\S")
+_LATIN1_MOJIBAKE_PAIR = re.compile(r"[\u00c2-\u00f4][\u0080-\u00bf]")
+_CJK_RADICAL_RANGES = (
+    (0x2E80, 0x2EFF),  # CJK Radicals Supplement
+    (0x2F00, 0x2FD5),  # Kangxi Radicals
+    (0x2FF0, 0x2FFF),  # Ideographic Description Characters
+    (0x31C0, 0x31EF),  # CJK Strokes
+)
+_NON_BLOCKING_QUALITY_FLAG_SUFFIXES = ("_pymupdf_text_recovered",)
 
 
 class PdfExtractionError(RuntimeError):
@@ -41,7 +51,80 @@ class PdfExtractionResult:
 
     @property
     def status(self) -> str:
-        return "text_ready" if not self.quality_flags else "needs_review"
+        return (
+            "text_ready"
+            if all(
+                flag.endswith(_NON_BLOCKING_QUALITY_FLAG_SUFFIXES)
+                for flag in self.quality_flags
+            )
+            else "needs_review"
+        )
+
+
+@dataclass(frozen=True)
+class _TextQuality:
+    """Small, explainable signal set for choosing a native PDF extractor.
+
+    A page can be long but unusable when a PDF font's ToUnicode map is wrong.
+    In that case pypdf commonly returns Kangxi/CJK radical glyphs, private-use
+    code points, or replacement characters instead of the visible text.
+    """
+
+    non_whitespace_chars: int
+    textual_chars: int
+    replacement_chars: int
+    private_use_chars: int
+    control_chars: int
+    unassigned_chars: int
+    cjk_radical_chars: int
+    symbol_chars: int
+    latin1_mojibake_pairs: int
+
+    @property
+    def unicode_damage(self) -> int:
+        """Weighted count used only to compare two extractions of one page."""
+
+        return (
+            self.replacement_chars * 8
+            + self.private_use_chars * 6
+            + self.control_chars * 8
+            + self.unassigned_chars * 8
+            + self.cjk_radical_chars * 3
+            + self.symbol_chars
+            + self.latin1_mojibake_pairs * 3
+        )
+
+    @property
+    def score(self) -> int:
+        """Higher is more likely to be text a recruiter can actually read."""
+
+        return (
+            self.non_whitespace_chars
+            + self.textual_chars
+            - self.unicode_damage * 4
+        )
+
+    @property
+    def unicode_suspect(self) -> bool:
+        """Whether this page merits a second native extractor attempt.
+
+        The thresholds intentionally require a pattern, rather than reacting to
+        one emoji or an isolated replacement character. That keeps ordinary
+        English PDFs on the pypdf fast path.
+        """
+
+        non_whitespace = max(self.non_whitespace_chars, 1)
+        return any(
+            (
+                self.replacement_chars > max(1, math.ceil(non_whitespace * 0.01)),
+                self.private_use_chars >= max(3, math.ceil(non_whitespace * 0.01)),
+                self.control_chars >= 2,
+                self.unassigned_chars >= 2,
+                self.cjk_radical_chars >= max(4, math.ceil(non_whitespace * 0.005)),
+                self.symbol_chars >= max(8, math.ceil(non_whitespace * 0.04)),
+                self.latin1_mojibake_pairs >= max(3, math.ceil(non_whitespace * 0.01)),
+            )
+        )
 
 
 def extract_pdf_text(
@@ -82,26 +165,56 @@ def extract_pdf_text(
         page_texts.append(text)
 
     parser_labels = [f"pypdf-{importlib.metadata.version('pypdf')}"]
+    pymupdf_recovered_page_numbers: set[int] = set()
+    pypdf_qualities = [_assess_text_quality(text) for text in page_texts]
     sparse_page_numbers = [
         page_no
-        for page_no, text in enumerate(page_texts, start=1)
-        if _non_whitespace_char_count(text) < ocr_sparse_text_chars_per_page
+        for page_no, quality in enumerate(pypdf_qualities, start=1)
+        if quality.non_whitespace_chars < ocr_sparse_text_chars_per_page
     ]
-    if sparse_page_numbers:
-        native_fallbacks = _extract_pymupdf_page_texts(path, sparse_page_numbers)
-        for page_no in sparse_page_numbers:
+    unicode_suspect_page_numbers = [
+        page_no
+        for page_no, quality in enumerate(pypdf_qualities, start=1)
+        if quality.unicode_suspect
+    ]
+    native_fallback_page_numbers = sorted(
+        set(sparse_page_numbers).union(unicode_suspect_page_numbers)
+    )
+    if native_fallback_page_numbers:
+        native_fallbacks = _extract_pymupdf_page_texts(
+            path,
+            native_fallback_page_numbers,
+        )
+        for page_no in native_fallback_page_numbers:
+            page_index = page_no - 1
+            current_quality = _assess_text_quality(page_texts[page_index])
             fallback_text = native_fallbacks.get(page_no, "")
-            if _non_whitespace_char_count(fallback_text) > _non_whitespace_char_count(
-                page_texts[page_no - 1]
+            fallback_quality = _assess_text_quality(fallback_text)
+            if not _should_prefer_recovery(
+                current_quality,
+                fallback_quality,
+                sparse_text_chars=ocr_sparse_text_chars_per_page,
             ):
-                page_texts[page_no - 1] = fallback_text
-                if "pymupdf" not in parser_labels:
-                    parser_labels.append("pymupdf")
+                continue
+
+            page_texts[page_index] = fallback_text
+            if current_quality.unicode_suspect:
+                if not fallback_quality.unicode_suspect:
+                    pymupdf_recovered_page_numbers.add(page_no)
+                _append_parser_label(parser_labels, "pymupdf-unicode-fallback")
+            else:
+                _append_parser_label(parser_labels, "pymupdf-sparse-fallback")
 
     ocr_failed_pages: set[int] = set()
     if tencent_ocr_config is not None:
         for page_no, text in enumerate(page_texts, start=1):
-            if _non_whitespace_char_count(text) >= ocr_sparse_text_chars_per_page:
+            page_index = page_no - 1
+            current_quality = _assess_text_quality(text)
+            if (
+                current_quality.non_whitespace_chars
+                >= ocr_sparse_text_chars_per_page
+                and not current_quality.unicode_suspect
+            ):
                 continue
             try:
                 ocr_text = extract_pdf_page_text(
@@ -112,10 +225,14 @@ def extract_pdf_text(
             except TencentOcrError:
                 ocr_failed_pages.add(page_no)
                 continue
-            if _non_whitespace_char_count(ocr_text) > _non_whitespace_char_count(text):
-                page_texts[page_no - 1] = ocr_text
-                if "tencent-ocr" not in parser_labels:
-                    parser_labels.append("tencent-ocr")
+            ocr_quality = _assess_text_quality(ocr_text)
+            if _should_prefer_recovery(
+                current_quality,
+                ocr_quality,
+                sparse_text_chars=ocr_sparse_text_chars_per_page,
+            ):
+                page_texts[page_index] = ocr_text
+                _append_parser_label(parser_labels, "tencent-ocr")
 
     pages: list[ExtractedPage] = []
     flags: list[str] = []
@@ -130,8 +247,13 @@ def extract_pdf_text(
         )
         if non_whitespace_chars < min_text_chars_per_page:
             flags.append(f"page_{page_no}_insufficient_text")
+        quality = _assess_text_quality(text)
         if text and text.count("\ufffd") / max(len(text), 1) > 0.01:
             flags.append(f"page_{page_no}_possible_mojibake")
+        if page_no in pymupdf_recovered_page_numbers:
+            flags.append(f"page_{page_no}_pymupdf_text_recovered")
+        if quality.unicode_suspect:
+            flags.append(f"page_{page_no}_source_text_unreliable")
         if (
             page_no in ocr_failed_pages
             and non_whitespace_chars < min_text_chars_per_page
@@ -162,6 +284,95 @@ def extract_pdf_text(
 
 def _non_whitespace_char_count(text: str) -> int:
     return len(NON_WHITESPACE.findall(text))
+
+
+def _assess_text_quality(text: str) -> _TextQuality:
+    non_whitespace_chars = 0
+    textual_chars = 0
+    replacement_chars = 0
+    private_use_chars = 0
+    control_chars = 0
+    unassigned_chars = 0
+    cjk_radical_chars = 0
+    symbol_chars = 0
+
+    for character in text:
+        if character.isspace():
+            continue
+
+        non_whitespace_chars += 1
+        category = unicodedata.category(character)
+        if category[:1] in {"L", "M", "N"}:
+            textual_chars += 1
+        if character == "\ufffd":
+            replacement_chars += 1
+        if category == "Co":
+            private_use_chars += 1
+        elif category == "Cc":
+            control_chars += 1
+        elif category == "Cn":
+            unassigned_chars += 1
+        elif category == "So":
+            symbol_chars += 1
+        if _is_cjk_radical(character):
+            cjk_radical_chars += 1
+
+    return _TextQuality(
+        non_whitespace_chars=non_whitespace_chars,
+        textual_chars=textual_chars,
+        replacement_chars=replacement_chars,
+        private_use_chars=private_use_chars,
+        control_chars=control_chars,
+        unassigned_chars=unassigned_chars,
+        cjk_radical_chars=cjk_radical_chars,
+        symbol_chars=symbol_chars,
+        latin1_mojibake_pairs=len(_LATIN1_MOJIBAKE_PAIR.findall(text)),
+    )
+
+
+def _is_cjk_radical(character: str) -> bool:
+    codepoint = ord(character)
+    return any(start <= codepoint <= end for start, end in _CJK_RADICAL_RANGES)
+
+
+def _should_prefer_recovery(
+    current: _TextQuality,
+    candidate: _TextQuality,
+    *,
+    sparse_text_chars: int,
+) -> bool:
+    """Choose a fallback only when it fixes a meaningful extraction problem.
+
+    Sparse pages retain the existing behaviour: more usable text wins. For a
+    long but malformed page, a slightly shorter PyMuPDF/OCR result is allowed
+    to win only when it removes substantial Unicode damage and still preserves
+    at least half of the page's text volume.
+    """
+
+    if candidate.non_whitespace_chars == 0:
+        return False
+
+    if current.unicode_suspect:
+        minimum_candidate_chars = max(20, math.ceil(current.non_whitespace_chars * 0.5))
+        minimum_score_gain = max(25, math.ceil(current.non_whitespace_chars * 0.04))
+        return (
+            candidate.non_whitespace_chars >= minimum_candidate_chars
+            and candidate.unicode_damage < current.unicode_damage
+            and candidate.score >= current.score + minimum_score_gain
+        )
+
+    if current.non_whitespace_chars < sparse_text_chars:
+        return (
+            candidate.non_whitespace_chars > current.non_whitespace_chars
+            and candidate.score >= current.score
+        )
+
+    return False
+
+
+def _append_parser_label(parser_labels: list[str], label: str) -> None:
+    if label not in parser_labels:
+        parser_labels.append(label)
 
 
 def _extract_pymupdf_page_texts(path: Path, page_numbers: list[int]) -> dict[int, str]:

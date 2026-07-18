@@ -518,6 +518,11 @@ class ResumeLibraryItem(ApiModel):
     ai_extraction_status: str
     ai_extraction_error: str | None = None
     is_active: bool
+    # Keep source-quality state on the list row.  A resume can be active from
+    # an older extraction even when its stored source text has since been
+    # identified as unreliable, so the client must not infer trust from
+    # ``is_active`` alone.
+    quality_flags: list[str] = Field(default_factory=list)
     summary_preview: str | None = None
     summary_created_at: str | None = None
     score_total: float | None = None

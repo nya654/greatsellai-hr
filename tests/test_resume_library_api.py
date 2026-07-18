@@ -56,6 +56,7 @@ def test_resume_library_returns_current_ai_summary_preview_and_score(
         "ai_extraction_status",
         "ai_extraction_error",
         "is_active",
+        "quality_flags",
         "summary_preview",
         "summary_created_at",
         "score_total",
@@ -72,6 +73,7 @@ def test_resume_library_returns_current_ai_summary_preview_and_score(
     assert item["ai_extraction_status"] == "queued"
     assert item["ai_extraction_error"] is None
     assert item["is_active"] is True
+    assert item["quality_flags"] == []
     assert item["summary_preview"] == "Backend-oriented candidate."
     assert item["summary_created_at"] == summary.json()["created_at"]
     assert item["score_total"] == 50.0
@@ -103,6 +105,30 @@ def test_resume_library_keeps_pending_upload_visible_without_ai_outputs(client) 
     assert item["is_active"] is False
     assert item["summary_preview"] is None
     assert item["score_total"] is None
+
+
+def test_resume_library_exposes_source_quality_flags_for_an_active_version(
+    ai_client,
+) -> None:
+    _, resume_id = _save_ready_resume(
+        ai_client,
+        source_text=(
+            "教育经历 清华大学 计算机 本科。工作经历 "
+            "Acme Python Engineer。技能 Python SQL"
+        ),
+    )
+    database = ai_client.app.state.database
+    with database.session_factory() as session:
+        resume = session.get(Resume, resume_id)
+        assert resume is not None
+        resume.quality_flags = ["source_text_unreliable"]
+        session.commit()
+
+    response = ai_client.get("/v1/resume-library")
+    assert response.status_code == 200, response.text
+    item = response.json()["items"][0]
+    assert item["is_active"] is True
+    assert item["quality_flags"] == ["source_text_unreliable"]
 
 
 def test_legacy_completed_ai_extraction_is_automatically_activated(ai_client) -> None:

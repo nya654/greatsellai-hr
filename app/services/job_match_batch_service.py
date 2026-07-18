@@ -16,6 +16,7 @@ from app.services.job_service import (
     JobVersionNotFoundError,
     run_job_match,
 )
+from app.services.resume_eligibility import has_unreliable_source_text
 
 
 BATCH_QUEUED = "queued"
@@ -86,8 +87,13 @@ def enqueue_job_version_match_batch(
         return _batch_response(existing)
 
     now = _utcnow()
-    snapshots = session.execute(
-        select(Resume.id, ResumeFactSnapshot.id, ResumeFactSnapshot.facts_version)
+    snapshot_rows = session.execute(
+        select(
+            Resume.id,
+            ResumeFactSnapshot.id,
+            ResumeFactSnapshot.facts_version,
+            Resume.quality_flags,
+        )
         .join(
             ResumeFactSnapshot,
             and_(
@@ -98,6 +104,14 @@ def enqueue_job_version_match_batch(
         .where(Resume.is_active.is_(True), Resume.extraction_status == "ready")
         .order_by(Resume.created_at.asc(), Resume.id.asc())
     ).all()
+    # Do not queue a model call when the parser has declared the source text
+    # untrustworthy.  This also prevents a cached old match from re-entering a
+    # new recruiter-facing batch.
+    snapshots = [
+        (resume_id, snapshot_id, facts_version)
+        for resume_id, snapshot_id, facts_version, quality_flags in snapshot_rows
+        if not has_unreliable_source_text(quality_flags)
+    ]
     batch = JobMatchBatch(
         job_version_id=job_version.id,
         status=BATCH_QUEUED if snapshots else BATCH_COMPLETED,
@@ -292,8 +306,8 @@ def _process_claimed_item(
             if item is None:
                 session.rollback()
                 return
-            latest_snapshot = session.scalar(
-                select(ResumeFactSnapshot)
+            latest_snapshot_row = session.execute(
+                select(ResumeFactSnapshot, Resume.quality_flags)
                 .join(Resume)
                 .where(
                     Resume.id == item.resume_id,
@@ -302,9 +316,12 @@ def _process_claimed_item(
                     ResumeFactSnapshot.resume_id == Resume.id,
                     ResumeFactSnapshot.facts_version == Resume.facts_version,
                 )
-            )
-            if latest_snapshot is None:
+            ).first()
+            if latest_snapshot_row is None:
                 raise JobServiceError("resume_no_longer_ready_for_job_match")
+            latest_snapshot, quality_flags = latest_snapshot_row
+            if has_unreliable_source_text(quality_flags):
+                raise JobServiceError("resume_source_text_unreliable")
             item.fact_snapshot_id = latest_snapshot.id
             item.facts_version = latest_snapshot.facts_version
             cached_match = session.scalar(

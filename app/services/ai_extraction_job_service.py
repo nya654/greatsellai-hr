@@ -25,6 +25,7 @@ from app.services.resume_service import (
     _source_text_by_ids,
     get_resume,
     prepare_ai_draft_facts,
+    reparse_clone_auto_activation_allowed,
     save_facts,
 )
 
@@ -610,13 +611,17 @@ def _save_completed_ai_facts(
                 resume_id=resume.id,
                 facts=facts,
             )
+            auto_activate = reparse_clone_auto_activation_allowed(
+                session,
+                resume=resume,
+            )
             saved_resume = save_facts(
                 session,
                 resume_id=resume.id,
                 request=ResumeFactsSaveRequest(facts=prepared_facts),
                 created_by=f"ai:{model}",
                 force_pending_review=True,
-                auto_activate=True,
+                auto_activate=auto_activate,
             )
             quality_flags = set(saved_resume.quality_flags or [])
             if is_partial_draft:
@@ -627,11 +632,24 @@ def _save_completed_ai_facts(
                 quality_flags.add("ai_draft_details_pending")
             else:
                 quality_flags.discard("ai_draft_details_pending")
+            if auto_activate:
+                quality_flags.discard("reparse_source_superseded_before_completion")
+            else:
+                # The original candidate version changed while the new source
+                # text was being analyzed.  Preserve both records and require
+                # an explicit fresh reparse instead of allowing a stale job to
+                # replace newer screening data.
+                quality_flags.add("reparse_source_superseded_before_completion")
             saved_resume.quality_flags = sorted(quality_flags)
-            # All facts have been source-grounded before saving. A completed
-            # extraction must therefore be the active screening version.
-            if saved_resume.extraction_status != "ready" or not saved_resume.is_active:
-                raise AiExtractionJobError("ai_extraction_must_auto_activate")
+            # Ordinary uploads auto-activate as before. Parser-repair clones
+            # only do so when their source version still owns the candidate's
+            # screening slot; otherwise their grounded facts stay as an
+            # inactive reviewable version.
+            if auto_activate:
+                if saved_resume.extraction_status != "ready" or not saved_resume.is_active:
+                    raise AiExtractionJobError("ai_extraction_must_auto_activate")
+            elif saved_resume.extraction_status != "needs_review" or saved_resume.is_active:
+                raise AiExtractionJobError("stale_reparse_must_remain_inactive")
             job.status = AI_EXTRACTION_COMPLETED
             job.lease_owner = None
             job.lease_expires_at = None

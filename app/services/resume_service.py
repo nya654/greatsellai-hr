@@ -22,6 +22,7 @@ from app.models import (
     ResumeSourceBlock,
     ResumeSummary,
     ResumeUploadIdempotencyKey,
+    utcnow,
 )
 from app.schemas import ResumeFactsSaveRequest, ResumeFactsSubmission
 from app.services.deepseek_provider import (
@@ -416,6 +417,279 @@ def reparse_inactive_resume_source_text(
     )
     session.flush()
     return resume
+
+
+_SOURCE_REPARSE_REQUESTED_ACTION = "resume_source_reparse_requested"
+_SOURCE_REPARSE_CLONE_CREATED_ACTION = "resume_source_reparse_clone_created"
+
+
+def reparse_active_resume_as_new_version(
+    session: Session,
+    *,
+    resume_id: str,
+    settings: AppSettings,
+) -> Resume:
+    """Create a separately stored parser-repair version of an active resume.
+
+    A resume's ``ResumeSourceBlock`` rows are its live evidence contract.  It
+    is therefore unsafe to overwrite those rows after facts, scores, summaries
+    or JD matches have been created.  Instead this function copies the
+    original into a new ``Resume`` row, extracts fresh source text there, and
+    queues a new AI facts job.  The original evidence and historical outputs
+    remain untouched; it is immediately marked source-unreliable so it cannot
+    continue to influence screening while the new version is being rebuilt.
+
+    The new job carries an audit-only activation guard through a review action.
+    The worker checks that the source version is still the active version just
+    before auto-activation; a later upload or edit can therefore never be
+    displaced by a delayed parser-repair job.
+    """
+
+    source_resume = session.scalar(
+        select(Resume).where(Resume.id == resume_id).with_for_update()
+    )
+    if source_resume is None:
+        raise NotFoundError("resume_not_found")
+    if not source_resume.is_active or source_resume.extraction_status != "ready":
+        raise ResumeServiceError("resume_must_be_active_and_ready_for_source_reparse")
+    source_job = source_resume.ai_extraction_job
+    if source_job is not None and source_job.status in {"queued", "running"}:
+        # A ready active version already has a facts snapshot.  Any lingering
+        # upload-time AI job can no longer write to it (the worker's version
+        # guard rejects active resumes), so retire it instead of making a
+        # parser repair wait behind stale work.
+        source_job.status = "needs_attention"
+        source_job.next_attempt_at = None
+        source_job.lease_owner = None
+        source_job.lease_expires_at = None
+        source_job.last_error = "source_reparse_superseded_ai_extraction"
+        source_job.completed_at = utcnow()
+    _assert_no_pending_source_reparse(session, source_resume=source_resume)
+
+    upload_root = settings.upload_dir.resolve()
+    try:
+        source_path = (upload_root / source_resume.storage_key).resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ResumeServiceError("resume_original_file_not_found") from exc
+    if source_path.parent != upload_root or not source_path.is_file():
+        raise ResumeServiceError("resume_original_file_not_found")
+
+    suffix = source_path.suffix.lower()
+    if suffix not in SUPPORTED_DOCUMENT_EXTENSIONS:
+        raise ResumeServiceError("unsupported_document_type")
+    try:
+        content = source_path.read_bytes()
+    except OSError as exc:
+        raise ResumeServiceError("resume_original_file_not_found") from exc
+    if hashlib.sha256(content).hexdigest() != source_resume.sha256:
+        raise ResumeServiceError("resume_original_hash_mismatch")
+
+    # This endpoint is only exposed for a source-quality repair.  Make the
+    # existing version non-eligible immediately while the replacement is
+    # rebuilt, rather than leaving known-bad facts searchable for the worker's
+    # full AI turnaround.  Its evidence and all historical outputs remain
+    # intact for audit; only the screening eligibility signal changes.
+    source_old_snapshot = _fact_snapshot(source_resume)
+    source_old_quality_flags = sorted(set(source_resume.quality_flags or []))
+    source_new_quality_flags = sorted(
+        {*source_old_quality_flags, "source_text_unreliable"}
+    )
+    source_resume.quality_flags = source_new_quality_flags
+
+    settings.ensure_directories()
+    storage_key = f"{uuid4().hex}{suffix}"
+    storage_path = settings.upload_dir / storage_key
+    try:
+        _write_upload_atomically(storage_path=storage_path, content=content)
+        try:
+            extracted = extract_document_text(
+                storage_path,
+                min_text_chars_per_page=settings.min_text_chars_per_page,
+                ocr_sparse_text_chars_per_page=settings.ocr_sparse_text_chars_per_page,
+                tencent_ocr_config=(
+                    TencentOcrConfig(
+                        secret_id=settings.tencent_secret_id,
+                        secret_key=settings.tencent_secret_key,
+                        region=settings.tencent_ocr_region,
+                        timeout_seconds=settings.tencent_ocr_timeout_seconds,
+                    )
+                    if settings.tencent_secret_id and settings.tencent_secret_key
+                    else None
+                ),
+            )
+        except DocumentExtractionError as exc:
+            replacement = Resume(
+                candidate_id=source_resume.candidate_id,
+                original_filename=source_resume.original_filename,
+                storage_key=storage_key,
+                sha256=source_resume.sha256,
+                source_page_count=0,
+                parsed_page_count=0,
+                extraction_status="failed",
+                quality_flags=[str(exc)],
+                parser_version="reparse",
+                raw_text=None,
+                is_985_211=None,
+            )
+            session.add(replacement)
+            session.flush()
+        else:
+            replacement = Resume(
+                candidate_id=source_resume.candidate_id,
+                original_filename=source_resume.original_filename,
+                storage_key=storage_key,
+                sha256=source_resume.sha256,
+                source_page_count=extracted.source_page_count,
+                parsed_page_count=extracted.parsed_page_count,
+                extraction_status=extracted.status,
+                quality_flags=extracted.quality_flags,
+                parser_version=extracted.parser_version,
+                raw_text=_database_safe_text(extracted.raw_text) or None,
+                is_985_211=None,
+            )
+            session.add(replacement)
+            session.flush()
+            for page in extracted.pages:
+                page_text = _database_safe_text(page.text)
+                if not page_text:
+                    continue
+                session.add(
+                    ResumeSourceBlock(
+                        resume_id=replacement.id,
+                        block_id=f"page-{page.page_no:03d}",
+                        page_no=page.page_no,
+                        block_type="page_text",
+                        text=page_text,
+                    )
+                )
+            session.flush()
+
+        session.add(
+            ResumeReviewAction(
+                resume_id=source_resume.id,
+                action=_SOURCE_REPARSE_REQUESTED_ACTION,
+                actor="system:parser-repair",
+                note=None,
+                old_values={
+                    **source_old_snapshot,
+                    "quality_flags": source_old_quality_flags,
+                },
+                new_values={
+                    "replacement_resume_id": replacement.id,
+                    "quality_flags": source_new_quality_flags,
+                },
+            )
+        )
+        session.add(
+            ResumeReviewAction(
+                resume_id=replacement.id,
+                action=_SOURCE_REPARSE_CLONE_CREATED_ACTION,
+                actor="system:parser-repair",
+                note=None,
+                old_values={
+                    "source_resume_id": source_resume.id,
+                    "source_facts_version": source_resume.facts_version,
+                    "source_parser_version": source_resume.parser_version,
+                },
+                new_values=_fact_snapshot(replacement),
+            )
+        )
+
+        if replacement.source_blocks:
+            # Imported lazily to avoid the module cycle: the worker itself
+            # depends on this module for grounded fact persistence.
+            from app.services.ai_extraction_job_service import (
+                enqueue_uploaded_resume_ai_extraction,
+            )
+
+            enqueue_uploaded_resume_ai_extraction(
+                session,
+                resume=replacement,
+                settings=settings,
+            )
+        session.flush()
+        return replacement
+    except Exception:
+        discard_uploaded_pdf(settings, storage_key=storage_key)
+        raise
+
+
+def reparse_clone_auto_activation_allowed(
+    session: Session,
+    *,
+    resume: Resume,
+) -> bool:
+    """Return whether an AI job may auto-activate a parser-repair clone.
+
+    Normal uploads have no parser-repair marker and keep the existing automatic
+    activation path.  A repair clone is allowed to replace its source only if
+    that exact source facts version remains active.  Locking the source row
+    prevents a concurrent upload, activation, or facts edit from racing the
+    check with the clone's activation transaction.
+    """
+
+    action = session.scalar(
+        select(ResumeReviewAction)
+        .where(
+            ResumeReviewAction.resume_id == resume.id,
+            ResumeReviewAction.action == _SOURCE_REPARSE_CLONE_CREATED_ACTION,
+        )
+        .order_by(ResumeReviewAction.created_at.desc(), ResumeReviewAction.id.desc())
+    )
+    if action is None:
+        return True
+    guard = action.old_values if isinstance(action.old_values, dict) else {}
+    source_resume_id = guard.get("source_resume_id")
+    source_facts_version = guard.get("source_facts_version")
+    if (
+        not isinstance(source_resume_id, str)
+        or not source_resume_id
+        or isinstance(source_facts_version, bool)
+        or not isinstance(source_facts_version, int)
+    ):
+        return False
+    source_resume = session.scalar(
+        select(Resume).where(Resume.id == source_resume_id).with_for_update()
+    )
+    return bool(
+        source_resume is not None
+        and source_resume.candidate_id == resume.candidate_id
+        and source_resume.is_active
+        and source_resume.extraction_status == "ready"
+        and source_resume.facts_version == source_facts_version
+    )
+
+
+def _assert_no_pending_source_reparse(
+    session: Session,
+    *,
+    source_resume: Resume,
+) -> None:
+    """Reject duplicate repair jobs for the same active source version."""
+
+    actions = session.scalars(
+        select(ResumeReviewAction)
+        .where(
+            ResumeReviewAction.resume_id == source_resume.id,
+            ResumeReviewAction.action == _SOURCE_REPARSE_REQUESTED_ACTION,
+        )
+        .order_by(ResumeReviewAction.created_at.desc(), ResumeReviewAction.id.desc())
+        .limit(20)
+    ).all()
+    for action in actions:
+        replacement_id = (
+            action.new_values.get("replacement_resume_id")
+            if isinstance(action.new_values, dict)
+            else None
+        )
+        if not isinstance(replacement_id, str) or not replacement_id:
+            continue
+        replacement = session.get(Resume, replacement_id)
+        if replacement is None or replacement.candidate_id != source_resume.candidate_id:
+            continue
+        job = replacement.ai_extraction_job
+        if job is not None and job.status in {"queued", "running"}:
+            raise ResumeServiceError("source_resume_reparse_already_running")
 
 
 def _fact_snapshot(resume: Resume) -> dict[str, object]:

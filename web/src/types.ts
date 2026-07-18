@@ -655,6 +655,15 @@ export interface JobMatch {
   fact_snapshot_id: string | null;
   facts_version: number;
   job_version: number;
+  /**
+   * Evidence-normalized JD fit score. Older API responses only contain
+   * `total_score`, so consumers must retain a backwards-compatible fallback.
+   */
+  match_score?: number | null;
+  /** Percentage of weighted JD conditions with verifiable resume evidence. */
+  match_confidence?: number | null;
+  /** Server-provided screening lane when available. */
+  match_lane?: "recommended" | "pending" | "unmet" | null;
   total_score: number;
   must_have_passed: boolean | null;
   evidence_coverage: number | null;

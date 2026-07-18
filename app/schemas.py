@@ -953,6 +953,12 @@ class JobMatchResponse(ApiModel):
     total_score: float
     must_have_passed: bool | None
     evidence_coverage: float | None
+    # `total_score` is retained as the historical, all-requirements score.  It
+    # treats an unknown requirement as a zero contribution.  The UI should use
+    # `match_score` together with `match_confidence` for candidate ranking.
+    match_score: float
+    match_confidence: float | None
+    match_lane: Literal["recommended", "pending", "unmet"]
     hard_requirement_status: str | None
     analysis: dict[str, object]
     requirement_results: list[JobMatchRequirementResponse]

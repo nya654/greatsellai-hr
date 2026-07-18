@@ -59,6 +59,19 @@ class JobMatchNotFoundError(JobServiceError):
     pass
 
 
+# A JD match has two intentionally separate dimensions:
+# - match score: how well the requirements with actual evidence match;
+# - match confidence: how much of the JD has explicit evidence at all.
+#
+# Keep the legacy `total_score` persisted for auditability and backwards
+# compatibility.  Its old semantics make unknown requirements contribute zero,
+# so it must not be used as the default ranking score.
+MATCH_CONFIDENCE_RECOMMENDED_THRESHOLD = 60.0
+MATCH_LANE_RECOMMENDED = "recommended"
+MATCH_LANE_PENDING = "pending"
+MATCH_LANE_UNMET = "unmet"
+
+
 _YEAR_PATTERN = re.compile(r"(?<!\d)(\d{1,2})\s*(?:years?|年)(?!\w)", re.IGNORECASE)
 _MONTH_PATTERN = re.compile(r"(?<!\d)(\d{1,3})\s*(?:months?|个月)(?!\w)", re.IGNORECASE)
 
@@ -603,7 +616,73 @@ def _ready_resume_snapshot(
     return resume, snapshot, payload
 
 
+def derive_job_match_score(
+    *,
+    total_score: float,
+    evidence_coverage: float | None,
+) -> float:
+    """Return the evidence-normalized JD match score on a 0–100 scale.
+
+    `total_score` remains the old all-requirements score.  Since unknown
+    requirements used to contribute zero there, normalize it by the percentage
+    of requirements for which the model found enough evidence.  A resume with
+    no confirmed evidence deliberately receives a score of zero instead of a
+    division error or an artificial perfect score.
+    """
+
+    if evidence_coverage is None or evidence_coverage <= 0:
+        return 0.0
+    return round(total_score / evidence_coverage * 100, 2)
+
+
+def classify_job_match_lane(
+    *,
+    hard_requirement_status: str | None,
+    match_confidence: float | None,
+) -> str:
+    """Assign a match to one of the three HR review lanes.
+
+    An explicit failed hard requirement is the only route to the last lane.
+    An unproven hard requirement is *not* a rejection: it stays in the review
+    lane even when other evidence coverage is high.
+    """
+
+    if hard_requirement_status == "unmet":
+        return MATCH_LANE_UNMET
+    if (
+        hard_requirement_status in {"pass", "not_applicable"}
+        and match_confidence is not None
+        and match_confidence >= MATCH_CONFIDENCE_RECOMMENDED_THRESHOLD
+    ):
+        return MATCH_LANE_RECOMMENDED
+    return MATCH_LANE_PENDING
+
+
+def _job_match_ranking_key(job_match: JobMatch) -> tuple[int, float, float]:
+    """Default order for the JD workspace's three candidate lanes."""
+
+    match_confidence = job_match.evidence_coverage
+    lane = classify_job_match_lane(
+        hard_requirement_status=job_match.hard_requirement_status,
+        match_confidence=match_confidence,
+    )
+    lane_rank = {
+        MATCH_LANE_RECOMMENDED: 0,
+        MATCH_LANE_PENDING: 1,
+        MATCH_LANE_UNMET: 2,
+    }[lane]
+    return (
+        lane_rank,
+        -derive_job_match_score(
+            total_score=job_match.total_score,
+            evidence_coverage=match_confidence,
+        ),
+        -(match_confidence or 0.0),
+    )
+
+
 def _match_response(job_match: JobMatch) -> JobMatchResponse:
+    match_confidence = job_match.evidence_coverage
     return JobMatchResponse(
         match_id=job_match.id,
         job_id=job_match.job_id,
@@ -621,6 +700,15 @@ def _match_response(job_match: JobMatch) -> JobMatchResponse:
         total_score=job_match.total_score,
         must_have_passed=job_match.must_have_passed,
         evidence_coverage=job_match.evidence_coverage,
+        match_score=derive_job_match_score(
+            total_score=job_match.total_score,
+            evidence_coverage=match_confidence,
+        ),
+        match_confidence=match_confidence,
+        match_lane=classify_job_match_lane(
+            hard_requirement_status=job_match.hard_requirement_status,
+            match_confidence=match_confidence,
+        ),
         hard_requirement_status=job_match.hard_requirement_status,
         analysis=job_match.analysis or {},
         requirement_results=[
@@ -795,6 +883,10 @@ def list_job_version_matches(
         .where(JobMatch.job_version_id == job_version_id)
         .order_by(JobMatch.created_at.desc(), JobMatch.id.desc())
     ).all()
+    # Python sorting intentionally retains the query's newest-first order for
+    # exact ties while making the three UI lanes deterministic.  This also
+    # keeps derived score semantics out of the persisted schema.
+    matches.sort(key=_job_match_ranking_key)
     return [_match_response(match) for match in matches]
 
 
@@ -805,8 +897,10 @@ __all__ = [
     "JobServiceError",
     "JobVersionNotFoundError",
     "confirm_job_version",
+    "classify_job_match_lane",
     "create_job",
     "create_job_version",
+    "derive_job_match_score",
     "extract_job_version_requirements",
     "generate_job_description",
     "get_job_match",

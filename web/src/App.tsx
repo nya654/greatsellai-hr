@@ -48,6 +48,7 @@ type DrawerTab = "original" | "summary";
 type SchoolFilter = "any" | "yes" | "no";
 type ToastKind = "success" | "error";
 type JobWorkspaceMode = "create" | "view";
+type JobAuthoringMode = "ai" | "original";
 
 interface FilterDraft {
   school: SchoolFilter;
@@ -3735,6 +3736,8 @@ function MatchPage({
   const [generatedRequirements, setGeneratedRequirements] =
     useState<JobRequirements | null>(null);
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const [jobAuthoringMode, setJobAuthoringMode] =
+    useState<JobAuthoringMode>("ai");
   const [jobWorkspaceMode, setJobWorkspaceMode] =
     useState<JobWorkspaceMode>("create");
   const [jobVersion, setJobVersion] = useState<JobVersion | null>(null);
@@ -3751,6 +3754,7 @@ function MatchPage({
     setEditedGeneratedJd(false);
     setGeneratedRequirements(null);
     setGenerationError(null);
+    setJobAuthoringMode("ai");
   };
   const selectJobVersion = (next: JobVersion) => {
     resetJobAuthoring();
@@ -3766,6 +3770,14 @@ function MatchPage({
     setMatch(null);
     setMatchBatch(null);
     setJobMatches([]);
+  };
+  const chooseJobAuthoringMode = (next: JobAuthoringMode) => {
+    setJobAuthoringMode(next);
+    setJobBrief("");
+    setJdText("");
+    setEditedGeneratedJd(false);
+    setGeneratedRequirements(null);
+    setGenerationError(null);
   };
   const requirementsAreReady = (requirements: JobRequirements | null) =>
     Boolean(
@@ -3856,6 +3868,36 @@ function MatchPage({
       setLoading(false);
     }
   };
+  const publishOriginalJob = async () => {
+    if (!title.trim() || !jdText.trim()) {
+      notify("error", "请填写岗位名称和完整原版 JD 后再发布。");
+      return;
+    }
+    setGenerationError(null);
+    setLoading(true);
+    try {
+      const published = await api.publishOriginalJob({
+        title: title.trim(),
+        // This deliberately retains every valid character entered in the JD.
+        // The endpoint performs validation without normalizing the source text.
+        jd_text: jdText,
+      });
+      setConfirmedJobVersions((current) => [
+        published,
+        ...current.filter(
+          (item) => item.job_version_id !== published.job_version_id,
+        ),
+      ]);
+      selectJobVersion(published);
+      notify("success", "原版 JD 已发布，内容未经过 AI 处理。");
+    } catch (error) {
+      const message = humanizeError(error);
+      setGenerationError(message);
+      notify("error", message);
+    } finally {
+      setLoading(false);
+    }
+  };
   const runMatch = async () => {
     if (!selected) {
       notify("error", "请先在筛选工作台打开一份已启用简历。");
@@ -3863,6 +3905,10 @@ function MatchPage({
     }
     if (!jobVersion || jobVersion.status !== "confirmed") {
       notify("error", "请先启用岗位，再运行匹配。");
+      return;
+    }
+    if (!jobVersion.requirements.length) {
+      notify("error", "原版 JD 未生成匹配条件，不能运行 AI 匹配。");
       return;
     }
     setLoading(true);
@@ -3885,6 +3931,10 @@ function MatchPage({
   const runAllMatches = async () => {
     if (!jobVersion || jobVersion.status !== "confirmed") {
       notify("error", "请先启用岗位，再批量匹配简历。");
+      return;
+    }
+    if (!jobVersion.requirements.length) {
+      notify("error", "原版 JD 未生成匹配条件，不能批量运行 AI 匹配。");
       return;
     }
     setLoading(true);
@@ -3939,7 +3989,11 @@ function MatchPage({
     };
   }, []);
   useEffect(() => {
-    if (!jobVersion || jobVersion.status !== "confirmed") {
+    if (
+      !jobVersion ||
+      jobVersion.status !== "confirmed" ||
+      !jobVersion.requirements.length
+    ) {
       setJobMatches([]);
       return;
     }
@@ -3962,6 +4016,12 @@ function MatchPage({
   }, [jobVersion?.job_version_id, jobVersion?.status, matchBatch?.completed_count, notify]);
   const jobIsEnabled =
     jobWorkspaceMode === "view" && jobVersion?.status === "confirmed";
+  const jobIsOriginal = Boolean(
+    jobIsEnabled && jobVersion && jobVersion.requirements.length === 0,
+  );
+  const jobCanMatch = Boolean(
+    jobIsEnabled && jobVersion && jobVersion.requirements.length > 0,
+  );
   const generatedJobIsReady = requirementsAreReady(generatedRequirements);
   return (
     <div className="page-frame">
@@ -4011,6 +4071,7 @@ function MatchPage({
                     {confirmedJobVersions.map((item) => (
                       <option key={item.job_version_id} value={item.job_version_id}>
                         {item.title} · v{item.version}
+                        {!item.requirements.length ? " · 原版" : ""}
                       </option>
                     ))}
                   </select>
@@ -4023,9 +4084,15 @@ function MatchPage({
                 <div className="panel-heading">
                   <div>
                     <h2>{jobVersion.title}</h2>
-                    <p>已启用，当前匹配结果仅基于这份岗位 JD。</p>
+                    <p>
+                      {jobIsOriginal
+                        ? "原版内容已发布，未调用 AI，也不包含用于简历匹配的条件。"
+                        : "已启用，当前匹配结果仅基于这份岗位 JD。"}
+                    </p>
                   </div>
-                  <span className="status-pill">已启用</span>
+                  <span className="status-pill">
+                    {jobIsOriginal ? "原版已发布" : "已启用"}
+                  </span>
                 </div>
                 <label className="field-label" htmlFor="active-job-text">
                   岗位 JD 原文
@@ -4040,7 +4107,34 @@ function MatchPage({
               </div>
             ) : (
               <>
-                <div className="jd-steps">
+                <div
+                  aria-label="选择 JD 创建方式"
+                  className="review-actions"
+                  role="group"
+                >
+                  <button
+                    aria-pressed={jobAuthoringMode === "ai"}
+                    className={`button${jobAuthoringMode === "ai" ? " button-primary" : ""}`}
+                    disabled={loading}
+                    onClick={() => chooseJobAuthoringMode("ai")}
+                    type="button"
+                  >
+                    <Icon name="spark" size={16} />
+                    AI 生成 JD
+                  </button>
+                  <button
+                    aria-pressed={jobAuthoringMode === "original"}
+                    className={`button${jobAuthoringMode === "original" ? " button-primary" : ""}`}
+                    disabled={loading}
+                    onClick={() => chooseJobAuthoringMode("original")}
+                    type="button"
+                  >
+                    <Icon name="briefcase" size={16} />
+                    原版发布
+                  </button>
+                </div>
+                {jobAuthoringMode === "ai" && (
+                  <div className="jd-steps">
                   <span className={`jd-step${jdText ? " is-done" : " is-current"}`}>
                     1 描述需求
                   </span>
@@ -4052,8 +4146,10 @@ function MatchPage({
                   <span className={`jd-step${generatedJobIsReady ? " is-current" : ""}`}>
                     3 启用匹配
                   </span>
-                </div>
-                <div className="form-grid">
+                  </div>
+                )}
+                {jobAuthoringMode === "ai" ? (
+                  <div className="form-grid">
                   <div className="field-stack span-full">
                     <label className="field-label" htmlFor="job-title">
                       岗位名称
@@ -4109,14 +4205,53 @@ function MatchPage({
                       </p>
                     </div>
                   )}
-                </div>
+                  </div>
+                ) : (
+                  <div className="form-grid">
+                    <div className="field-stack span-full">
+                      <label className="field-label" htmlFor="original-job-title">
+                        岗位名称
+                      </label>
+                      <input
+                        className="field"
+                        id="original-job-title"
+                        onChange={(event) => {
+                          setGenerationError(null);
+                          setTitle(event.target.value);
+                        }}
+                        placeholder="例如：大模型应用架构师"
+                        value={title}
+                      />
+                    </div>
+                    <div className="field-stack span-full">
+                      <label className="field-label" htmlFor="original-job-text">
+                        原版 JD
+                      </label>
+                      <textarea
+                        className="textarea-field"
+                        id="original-job-text"
+                        onChange={(event) => {
+                          setGenerationError(null);
+                          setJdText(event.target.value);
+                        }}
+                        placeholder="粘贴需要原样发布的岗位 JD。系统不会调用 AI，也不会修改任何内容。"
+                        value={jdText}
+                      />
+                      <p className="candidate-meta">
+                        发布后按原文保存。这个版本不生成 AI 匹配条件。
+                      </p>
+                    </div>
+                  </div>
+                )}
                 {generationError && (
                   <p className="library-error" role="alert">
                     {generationError}
                   </p>
                 )}
                 <div className="review-actions">
-                  <button
+                  {jobAuthoringMode === "ai" ? (
+                    <>
+                      <button
                     className={`button${generatedJobIsReady ? " button-ghost" : " button-primary"}`}
                     disabled={loading}
                     onClick={() => void generateJobDescription()}
@@ -4134,8 +4269,8 @@ function MatchPage({
                       </>
                     )}
                   </button>
-                  {jdText && (
-                    <button
+                      {jdText && (
+                        <button
                       className="button button-primary"
                       disabled={loading || !generatedJobIsReady}
                       onClick={() => void enableJob()}
@@ -4143,13 +4278,34 @@ function MatchPage({
                     >
                       <Icon name="check" size={16} />
                       启用岗位
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <button
+                      className="button button-primary"
+                      disabled={loading}
+                      onClick={() => void publishOriginalJob()}
+                      type="button"
+                    >
+                      {loading ? (
+                        <>
+                          <i className="spinner" />
+                          正在发布…
+                        </>
+                      ) : (
+                        <>
+                          <Icon name="check" size={16} />
+                          发布原版 JD
+                        </>
+                      )}
                     </button>
                   )}
                 </div>
               </>
             )}
           </section>
-          {jobWorkspaceMode === "create" && generatedJobIsReady && (
+          {jobWorkspaceMode === "create" && jobAuthoringMode === "ai" && generatedJobIsReady && (
             <section className="panel">
               <div className="panel-heading">
                 <div>
@@ -4175,7 +4331,17 @@ function MatchPage({
               </div>
             </section>
           )}
-          {jobIsEnabled && jobVersion.requirements.length > 0 && (
+          {jobIsOriginal && (
+            <section className="panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>原版发布</h2>
+                  <p>已按原文发布，未调用 AI，未生成用于简历匹配的条件。</p>
+                </div>
+              </div>
+            </section>
+          )}
+          {jobCanMatch && jobVersion && (
             <section className="panel">
               <div className="panel-heading">
                 <div>
@@ -4203,7 +4369,7 @@ function MatchPage({
             </section>
           )}
           {match && <MatchResult match={match} />}
-          {jobIsEnabled && (
+          {jobCanMatch && (
             <MatchLeaderboard
               loading={matchesLoading}
               matches={jobMatches}
@@ -4215,7 +4381,11 @@ function MatchPage({
           <div className="panel-heading">
             <div>
               <h2>匹配操作</h2>
-              <p>启用岗位后，可对当前候选人或全部简历运行 AI 匹配。</p>
+              <p>
+                {jobIsOriginal
+                  ? "原版发布未生成匹配条件，因此不会调用 AI 匹配。"
+                  : "启用岗位后，可对当前候选人或全部简历运行 AI 匹配。"}
+              </p>
             </div>
           </div>
           <div className="fact-list">
@@ -4223,7 +4393,7 @@ function MatchPage({
               <strong>当前岗位</strong>
               <span>
                 {jobIsEnabled && jobVersion
-                  ? `${jobVersion.title} · v${jobVersion.version} · 已启用`
+                  ? `${jobVersion.title} · v${jobVersion.version} · ${jobIsOriginal ? "原版已发布" : "已启用"}`
                   : "尚未启用"}
               </span>
             </div>
@@ -4244,7 +4414,7 @@ function MatchPage({
           <div className="review-actions">
             <button
               className="button"
-              disabled={!jobIsEnabled || loading}
+              disabled={!jobCanMatch || loading}
               onClick={() => void runAllMatches()}
               type="button"
             >
@@ -4254,12 +4424,12 @@ function MatchPage({
             <button
               className="button button-primary"
               disabled={
-                !selected || !jobIsEnabled || loading
+                !selected || !jobCanMatch || loading
               }
               onClick={() => void runMatch()}
               type="button"
             >
-              {loading && jobIsEnabled ? (
+              {loading && jobCanMatch ? (
                 <>
                   <i className="spinner" />
                   正在匹配…

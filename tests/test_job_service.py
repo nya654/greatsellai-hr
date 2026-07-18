@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.models import JobVersion
 from app.schemas import JobCreate, JobMatchCreate, JobRequirements
 from app.services import job_service
 from app.services.deepseek_provider import FACT_SNAPSHOT_SCHEMA_VERSION
@@ -89,6 +90,104 @@ def test_confirmed_jobs_can_be_listed_for_the_workspace_switcher(ai_client) -> N
         second["job_version_id"],
     }
     assert all(item["status"] == "confirmed" for item in payload)
+
+
+def test_original_jd_publish_persists_verbatim_without_calling_any_provider(
+    ai_client,
+    monkeypatch,
+) -> None:
+    def provider_must_not_run(**_: object) -> dict[str, object]:
+        raise AssertionError("original JD publishing must not call an LLM provider")
+
+    monkeypatch.setattr(job_service, "generate_jd_from_brief", provider_must_not_run)
+    monkeypatch.setattr(
+        job_service,
+        "extract_jd_requirements_from_clauses",
+        provider_must_not_run,
+    )
+    monkeypatch.setattr(
+        job_service,
+        "match_resume_fact_snapshot_against_requirements",
+        provider_must_not_run,
+    )
+    raw_jd = "  Original source JD.\r\n\r\n- Preserve this whitespace.\r\n  "
+
+    created = ai_client.post(
+        "/v1/jobs/publish-original",
+        json={"title": " Source JD ", "jd_text": raw_jd},
+    )
+
+    assert created.status_code == 200, created.text
+    payload = created.json()
+    assert payload["title"] == "Source JD"
+    assert payload["raw_text"] == raw_jd
+    assert payload["status"] == "confirmed"
+    assert payload["requirements"] == []
+
+    database = ai_client.app.state.database
+    with database.session_factory() as session:
+        persisted = session.get(JobVersion, payload["job_version_id"])
+        assert persisted is not None
+        assert persisted.raw_text == raw_jd
+        assert persisted.job.jd_text == raw_jd
+        assert persisted.status == "confirmed"
+        assert persisted.requirements == []
+
+    matching = ai_client.post(
+        f"/v1/job-versions/{payload['job_version_id']}/match-all"
+    )
+    assert matching.status_code == 409, matching.text
+    assert matching.json()["detail"] == "job_version_has_no_requirements"
+
+
+@pytest.mark.parametrize(
+    "jd_text, expected_error",
+    [
+        (" \t\r\n", "original_jd_text_must_not_be_blank"),
+        ("Valid JD\x00but unsafe", "original_jd_text_must_not_contain_nul"),
+    ],
+)
+def test_original_jd_publish_rejects_blank_or_nul_source_text(
+    client,
+    jd_text: str,
+    expected_error: str,
+) -> None:
+    response = client.post(
+        "/v1/jobs/publish-original",
+        json={"title": "Source JD", "jd_text": jd_text},
+    )
+
+    assert response.status_code == 422, response.text
+    assert expected_error in response.text
+
+
+def test_original_jd_is_listed_but_not_selected_as_default_match_target(client) -> None:
+    matchable = client.post(
+        "/v1/jobs",
+        json={
+            "title": "Matchable JD",
+            "jd_text": "Must have Python experience.",
+            "requirements": {"must_have": ["Python experience"], "preferred": []},
+        },
+    )
+    assert matchable.status_code == 200, matchable.text
+
+    original = client.post(
+        "/v1/jobs/publish-original",
+        json={"title": "Source JD", "jd_text": "No AI extraction for this JD."},
+    )
+    assert original.status_code == 200, original.text
+
+    listed = client.get("/v1/jobs/confirmed-versions")
+    assert listed.status_code == 200, listed.text
+    assert {item["job_version_id"] for item in listed.json()} == {
+        matchable.json()["job_version_id"],
+        original.json()["job_version_id"],
+    }
+
+    default_target = client.get("/v1/jobs/latest-confirmed-version")
+    assert default_target.status_code == 200, default_target.text
+    assert default_target.json()["job_version_id"] == matchable.json()["job_version_id"]
 
 
 def _fake_requirement_extraction(**kwargs: object) -> dict[str, object]:

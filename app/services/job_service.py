@@ -26,6 +26,8 @@ from app.schemas import (
     JobMatchCreate,
     JobMatchRequirementResponse,
     JobMatchResponse,
+    JobRequirements,
+    OriginalJobPublishRequest,
     JobRequirementInput,
     JobRequirementResponse,
     JobVersionRequirementsUpdate,
@@ -356,6 +358,42 @@ def create_job(session: Session, *, payload: JobCreate) -> JobVersionResponse:
     return _version_response(job_version)
 
 
+def publish_original_job(
+    session: Session,
+    *,
+    payload: OriginalJobPublishRequest,
+) -> JobVersionResponse:
+    """Persist a source JD exactly as provided, without deriving requirements.
+
+    An original JD is intentionally confirmed so it is available in the JD
+    workspace immediately.  It has no structured requirements, however, and
+    therefore cannot be used by the matching services.  This path must remain
+    model-free: do not route it through JD generation or requirement extraction.
+    """
+
+    job = Job(
+        title=payload.title,
+        jd_text=payload.jd_text,
+        requirements=JobRequirements().model_dump(),
+        version=1,
+    )
+    session.add(job)
+    session.flush()
+    job_version = JobVersion(
+        job_id=job.id,
+        version=1,
+        title=payload.title,
+        raw_text=payload.jd_text,
+        status="confirmed",
+        confirmed_at=_utcnow(),
+    )
+    session.add(job_version)
+    session.flush()
+    _create_clauses(session, job_version=job_version)
+    session.flush()
+    return _version_response(job_version)
+
+
 def generate_job_description(
     *,
     payload: JobGenerationRequest,
@@ -406,9 +444,20 @@ def get_job_version(session: Session, *, job_version_id: str) -> JobVersionRespo
 
 
 def get_latest_confirmed_job_version(session: Session) -> JobVersionResponse:
+    """Return the newest confirmed JD that is actually matchable.
+
+    Original-published JDs are deliberately confirmed with zero requirements.
+    They remain available through ``list_confirmed_job_versions`` for display,
+    but must not become the implicit/default target for the Agent or matching
+    workflow.
+    """
+
     job_version = session.scalar(
         select(JobVersion)
-        .where(JobVersion.status == "confirmed")
+        .where(
+            JobVersion.status == "confirmed",
+            JobVersion.requirements.any(),
+        )
         .order_by(JobVersion.confirmed_at.desc(), JobVersion.created_at.desc())
     )
     if job_version is None:
@@ -764,6 +813,7 @@ __all__ = [
     "list_job_version_matches",
     "list_resume_job_matches",
     "list_job_versions",
+    "publish_original_job",
     "run_job_match",
     "update_job_version_requirements",
 ]

@@ -15,6 +15,7 @@ import type {
   MailboxConfigUpdate,
   MailboxImportHistory,
   MailboxSync,
+  OriginalJobPublishInput,
   ResumeActivateRequest,
   ResumeDetail,
   ResumeFactsSaveRequest,
@@ -390,6 +391,13 @@ export function createApiClient(options: ApiClientOptions = {}) {
       input: JobDescriptionGenerateInput,
     ): Promise<JobDescriptionGeneration> {
       return request<JobDescriptionGeneration>("/jobs/generate-jd", {
+        method: "POST",
+        body: input,
+      });
+    },
+
+    publishOriginalJob(input: OriginalJobPublishInput): Promise<JobVersion> {
+      return request<JobVersion>("/jobs/publish-original", {
         method: "POST",
         body: input,
       });

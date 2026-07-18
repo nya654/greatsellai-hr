@@ -45,6 +45,7 @@ from app.schemas import (
     JobMatchBatchResponse,
     JobMatchCreate,
     JobMatchResponse,
+    OriginalJobPublishRequest,
     JobVersionRequirementsUpdate,
     JobVersionResponse,
     ResumeDetail,
@@ -152,6 +153,7 @@ from app.services.job_service import (
     list_job_version_matches,
     list_job_versions,
     list_resume_job_matches,
+    publish_original_job,
     run_job_match,
     update_job_version_requirements,
 )
@@ -1294,6 +1296,25 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
 
         try:
             response = create_job(session, payload=payload)
+        except JobServiceError as exc:
+            session.rollback()
+            _raise_job_service_error(exc)
+        _commit_or_raise(session)
+        return response
+
+    @app.post(
+        "/v1/jobs/publish-original",
+        response_model=JobVersionResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def post_publish_original_job(
+        payload: OriginalJobPublishRequest,
+        session: Session = Depends(get_session),
+    ) -> JobVersionResponse:
+        """Publish an externally supplied JD as-is, without calling an AI model."""
+
+        try:
+            response = publish_original_job(session, payload=payload)
         except JobServiceError as exc:
             session.rollback()
             _raise_job_service_error(exc)

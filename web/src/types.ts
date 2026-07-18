@@ -487,6 +487,12 @@ export interface JobDescriptionGenerateInput {
   brief: string;
 }
 
+/** A source JD published exactly as supplied, without any AI request. */
+export interface OriginalJobPublishInput {
+  title: string;
+  jd_text: string;
+}
+
 export interface JobCreate {
   title: string;
   jd_text: string;

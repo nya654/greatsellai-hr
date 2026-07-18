@@ -642,6 +642,37 @@ class JobCreate(ApiModel):
     requirements: JobRequirements = Field(default_factory=JobRequirements)
 
 
+class OriginalJobPublishRequest(ApiModel):
+    """Publish an externally supplied JD without invoking any AI workflow.
+
+    ``jd_text`` deliberately is not normalized or stripped: this endpoint is
+    for retaining the source JD exactly as supplied.  Validation only rejects
+    unusable values while leaving every valid character and whitespace intact.
+    """
+
+    title: str = Field(min_length=1, max_length=200)
+    jd_text: str = Field(min_length=1, max_length=20000)
+
+    @field_validator("title")
+    @classmethod
+    def non_blank_title_without_nul(cls, value: str) -> str:
+        if "\x00" in value:
+            raise ValueError("original_job_title_must_not_contain_nul")
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("original_job_title_must_not_be_blank")
+        return normalized
+
+    @field_validator("jd_text")
+    @classmethod
+    def non_blank_jd_without_nul(cls, value: str) -> str:
+        if "\x00" in value:
+            raise ValueError("original_jd_text_must_not_contain_nul")
+        if not value.strip():
+            raise ValueError("original_jd_text_must_not_be_blank")
+        return value
+
+
 class JobGenerationRequest(ApiModel):
     """Business context used to create an editable, recruiter-ready JD."""
 

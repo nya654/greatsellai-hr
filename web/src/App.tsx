@@ -1198,11 +1198,18 @@ function RecruitingAgentDrawer({
     void api
       .listConfirmedJobVersions()
       .then((items) => {
-        setJobs(items);
+        // Original-published JDs intentionally have no AI matching conditions.
+        // Keep them out of the Agent selector so a matching tool cannot target
+        // a version that is display-only.
+        const matchableJobs = items.filter(
+          (item) => item.requirements.length > 0,
+        );
+        setJobs(matchableJobs);
         setJobVersionId((current) =>
-          current && items.some((item) => item.job_version_id === current)
+          current &&
+          matchableJobs.some((item) => item.job_version_id === current)
             ? current
-            : (items[0]?.job_version_id ?? ""),
+            : (matchableJobs[0]?.job_version_id ?? ""),
         );
       })
       .catch(() => setJobs([]));
@@ -1284,7 +1291,7 @@ function RecruitingAgentDrawer({
             onChange={(event) => setJobVersionId(event.target.value)}
             value={jobVersionId}
           >
-            <option value="">自动选择最近确认的 JD</option>
+            <option value="">自动选择最近可匹配的 JD</option>
             {jobs.map((item) => (
               <option key={item.job_version_id} value={item.job_version_id}>
                 {item.title} · v{item.version}

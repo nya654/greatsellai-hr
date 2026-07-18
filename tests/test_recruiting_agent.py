@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from app.services.recruiting_agent_service import ResolvedJob
+from app.services.recruiting_agent_service import ResolvedJob, _resolve_job
 
 
 def test_agent_fails_visibly_when_model_is_not_configured(client: TestClient) -> None:
@@ -107,6 +107,24 @@ def test_agent_unexpected_exception_never_becomes_raw_internal_server_error(
 
     assert response.status_code == 503
     assert response.json()["detail"] == "agent_service_unavailable"
+
+
+def test_agent_never_uses_an_original_jd_without_matching_requirements(
+    client: TestClient,
+) -> None:
+    original = client.post(
+        "/v1/jobs/publish-original",
+        json={
+            "title": "Original source JD",
+            "jd_text": "This source JD must not invoke AI matching.",
+        },
+    )
+    assert original.status_code == 200, original.text
+    job_version_id = original.json()["job_version_id"]
+
+    database = client.app.state.database
+    with database.session_factory() as session:
+        assert _resolve_job(session, job_version_id) is None
 
 
 def test_agent_starts_current_job_batch_with_runtime_settings(

@@ -161,7 +161,10 @@ def _resolve_job(session: Session, requested_job_version_id: str | None) -> Reso
         )
     except (JobServiceError, JobVersionNotFoundError):
         return None
-    if item.status != "confirmed":
+    # Source JDs published as-is intentionally have no extracted conditions.
+    # They are visible in the JD workspace, but must never become an Agent
+    # matching target: matching tools require at least one structured clause.
+    if item.status != "confirmed" or not item.requirements:
         return None
     return ResolvedJob(job_version_id=item.job_version_id, title=item.title)
 

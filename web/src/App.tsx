@@ -20,7 +20,9 @@ import type {
   CandidateSearchRequest,
   CandidateSearchResponse,
   DegreeLevel,
+  ExperienceType,
   JobMatchBatch,
+  JobMatchBatchItem,
   JobMatch,
   JobRequirements,
   JobVersion,
@@ -44,21 +46,26 @@ import type {
 import { Icon, type IconName } from "./icons";
 
 type View = "library" | "filter" | "upload" | "inbox" | "score" | "match";
-type DrawerTab = "original" | "summary";
+type DrawerTab = "original" | "summary" | "evidence";
 type SchoolFilter = "any" | "yes" | "no";
+type MatchMode = "all" | "any";
 type ToastKind = "success" | "error";
 type JobWorkspaceMode = "create" | "view";
 
 interface FilterDraft {
   school: SchoolFilter;
   minEmploymentMonths: number;
+  minEmploymentOrInternshipMonths: number;
   degrees: DegreeLevel[];
   schoolName: string;
   major: string;
+  experienceTypes: ExperienceType[];
   company: string;
   title: string;
   skills: string[];
+  skillsMode: MatchMode;
   keywords: string[];
+  keywordsMode: MatchMode;
 }
 
 interface SelectedResume {
@@ -99,19 +106,22 @@ const emptySearch: CandidateSearchResponse = {
 const defaultFilterDraft: FilterDraft = {
   school: "any",
   minEmploymentMonths: 0,
+  minEmploymentOrInternshipMonths: 0,
   degrees: [],
   schoolName: "",
   major: "",
+  experienceTypes: [],
   company: "",
   title: "",
   skills: [],
+  skillsMode: "all",
   keywords: [],
+  keywordsMode: "all",
 };
 
 /**
- * Each PDF is parsed synchronously by the current API. Keeping a queue avoids
- * competing writes in the local SQLite setup, while still letting a recruiter
- * add a whole folder of resumes in one action.
+ * Each supported resume file is normalized by the API. Keeping a queue avoids
+ * competing writes while still letting a recruiter add a whole folder in one action.
  */
 const BATCH_UPLOAD_CONCURRENCY = 1;
 const MAX_BATCH_FILES = 100;
@@ -171,6 +181,16 @@ const degreeOptions: Array<{ value: DegreeLevel; label: string }> = [
   { value: "bachelor", label: "本科" },
   { value: "master", label: "硕士" },
   { value: "doctor", label: "博士" },
+];
+
+const experienceTypeOptions: Array<{
+  value: ExperienceType;
+  label: string;
+}> = [
+  { value: "employment", label: "正式工作" },
+  { value: "internship", label: "实习" },
+  { value: "project", label: "项目" },
+  { value: "competition", label: "竞赛" },
 ];
 
 const degreeLabels: Record<DegreeLevel, string> = {
@@ -407,6 +427,10 @@ function draftToSearchRequest(
   if (draft.minEmploymentMonths > 0) {
     request.min_employment_months = draft.minEmploymentMonths;
   }
+  if (draft.minEmploymentOrInternshipMonths > 0) {
+    request.min_employment_or_internship_months =
+      draft.minEmploymentOrInternshipMonths;
+  }
   if (draft.degrees.length || draft.schoolName.trim() || draft.major.trim()) {
     request.education_any_of = [
       {
@@ -418,10 +442,16 @@ function draftToSearchRequest(
       },
     ];
   }
-  if (draft.company.trim() || draft.title.trim()) {
+  if (
+    draft.experienceTypes.length ||
+    draft.company.trim() ||
+    draft.title.trim()
+  ) {
     request.experience_any_of = [
       {
-        experience_types: ["employment", "internship"],
+        experience_types: draft.experienceTypes.length
+          ? draft.experienceTypes
+          : undefined,
         organization_name_contains: draft.company.trim()
           ? [draft.company.trim()]
           : [],
@@ -429,8 +459,14 @@ function draftToSearchRequest(
       },
     ];
   }
-  if (draft.skills.length) request.skills_all_of = draft.skills;
-  if (draft.keywords.length) request.keywords_all_of = draft.keywords;
+  if (draft.skills.length) {
+    if (draft.skillsMode === "all") request.skills_all_of = draft.skills;
+    else request.skills_any_of = draft.skills;
+  }
+  if (draft.keywords.length) {
+    if (draft.keywordsMode === "all") request.keywords_all_of = draft.keywords;
+    else request.keywords_any_of = draft.keywords;
+  }
   return request;
 }
 
@@ -445,13 +481,18 @@ function searchRequestToDraft(request: CandidateSearchRequest): FilterDraft {
           ? "no"
           : "any",
     minEmploymentMonths: request.min_employment_months ?? 0,
+    minEmploymentOrInternshipMonths:
+      request.min_employment_or_internship_months ?? 0,
     degrees: education?.degree_in ?? [],
     schoolName: education?.school_name_contains?.[0] ?? "",
     major: education?.major_contains?.[0] ?? "",
+    experienceTypes: experience?.experience_types ?? [],
     company: experience?.organization_name_contains?.[0] ?? "",
     title: experience?.title_contains?.[0] ?? "",
-    skills: request.skills_all_of ?? [],
-    keywords: request.keywords_all_of ?? [],
+    skills: request.skills_all_of ?? request.skills_any_of ?? [],
+    skillsMode: request.skills_any_of?.length ? "any" : "all",
+    keywords: request.keywords_all_of ?? request.keywords_any_of ?? [],
+    keywordsMode: request.keywords_any_of?.length ? "any" : "all",
   };
 }
 
@@ -647,7 +688,7 @@ function App() {
   }, []);
 
   const openCandidate = useCallback(
-    (item: CandidateSearchItem) => {
+    (item: CandidateSearchItem, tab: DrawerTab = "summary") => {
       summaryRequestRef.current += 1;
       setReview(null);
       setSummaries([]);
@@ -656,7 +697,7 @@ function App() {
         candidateId: item.candidate_id,
         candidateName: item.display_name?.trim() || "未命名候选人",
       });
-      setDrawerTab("summary");
+      setDrawerTab(tab);
       setDrawerOpen(true);
       void refreshReview(item.resume_id);
     },
@@ -799,7 +840,9 @@ function App() {
       const summary = await api.generateSummary(selectedResumeId);
       setSummaries((current) => [
         summary,
-        ...current.filter((item) => item.summary_id !== summary.summary_id),
+        ...current
+          .filter((item) => item.summary_id !== summary.summary_id)
+          .map((item) => ({ ...item, is_current: false })),
       ]);
       setLibraryRefreshToken((current) => current + 1);
       notify("success", "AI 简历总结已生成。");
@@ -807,6 +850,28 @@ function App() {
       notify("error", humanizeError(error));
     } finally {
       setSummaryLoading(false);
+    }
+  };
+
+  const createManualSummary = async (
+    summaryId: string,
+    content: Record<string, string>,
+  ) => {
+    try {
+      const summary = await api.createManualSummaryVersion(summaryId, {
+        content,
+      });
+      setSummaries((current) => [
+        summary,
+        ...current
+          .filter((item) => item.summary_id !== summary.summary_id)
+          .map((item) => ({ ...item, is_current: false })),
+      ]);
+      setLibraryRefreshToken((current) => current + 1);
+      notify("success", "人工总结已保存为新的可追溯版本。");
+    } catch (error) {
+      notify("error", humanizeError(error));
+      throw error;
     }
   };
 
@@ -945,6 +1010,7 @@ function App() {
         summaries={summaries}
         summaryLoading={summaryLoading}
         onClose={() => setDrawerOpen(false)}
+        onCreateManualSummary={createManualSummary}
         onGenerateSummary={() => void generateSummary()}
         onTabChange={setDrawerTab}
       />
@@ -1427,7 +1493,7 @@ function FilterWorkspace({
   onSave: (name: string) => Promise<void>;
   onApplySaved: (filter: SavedFilter) => void;
   onDeleteSaved: (filter: SavedFilter) => Promise<void>;
-  onOpenCandidate: (item: CandidateSearchItem) => void;
+  onOpenCandidate: (item: CandidateSearchItem, tab?: DrawerTab) => void;
   onLoadMore: () => void;
   onUpload: () => void;
 }) {
@@ -1657,7 +1723,7 @@ function FilterPanel({
         <section className="filter-section">
           <div className="filter-section-heading">
             <h3>工作经历</h3>
-            <span>{formatMonths(draft.minEmploymentMonths)}</span>
+            <span>按同一条经历匹配</span>
           </div>
           <div className="field-stack">
             <label className="field-label" htmlFor="min-experience">
@@ -1681,6 +1747,57 @@ function FilterPanel({
               <span>不限</span>
               <span>20 年</span>
             </div>
+          </div>
+          <div className="field-stack">
+            <label className="field-label" htmlFor="min-work-internship">
+              最低工作 + 实习年限
+            </label>
+            <input
+              className="range-input"
+              id="min-work-internship"
+              max="240"
+              min="0"
+              onChange={(event) =>
+                update({
+                  minEmploymentOrInternshipMonths: clampMonths(
+                    Number(event.target.value),
+                  ),
+                })
+              }
+              step="12"
+              type="range"
+              value={draft.minEmploymentOrInternshipMonths}
+            />
+            <div className="range-values">
+              <span>{formatMonths(draft.minEmploymentOrInternshipMonths)}</span>
+              <span>20 年</span>
+            </div>
+          </div>
+          <div className="field-stack">
+            <span className="field-label">经历类型</span>
+            <div className="choice-grid" aria-label="经历类型条件">
+              {experienceTypeOptions.map((option) => (
+                <label className="choice-row" key={option.value}>
+                  <input
+                    checked={draft.experienceTypes.includes(option.value)}
+                    onChange={() =>
+                      update({
+                        experienceTypes: draft.experienceTypes.includes(
+                          option.value,
+                        )
+                          ? draft.experienceTypes.filter(
+                              (value) => value !== option.value,
+                            )
+                          : [...draft.experienceTypes, option.value],
+                      })
+                    }
+                    type="checkbox"
+                  />
+                  {option.label}
+                </label>
+              ))}
+            </div>
+            <span className="field-hint">不选则不限经历类型。</span>
           </div>
           <div className="field-stack">
             <label className="field-label" htmlFor="company-name">
@@ -1711,7 +1828,28 @@ function FilterPanel({
         <section className="filter-section">
           <div className="filter-section-heading">
             <h3>技能与原文</h3>
-            <span>全部满足</span>
+            <span>支持全部或任一</span>
+          </div>
+          <div className="field-stack">
+            <span className="field-label">技能匹配方式</span>
+            <div className="choice-grid choice-grid-inline" role="radiogroup">
+              {(
+                [
+                  ["all", "全部具备"],
+                  ["any", "任一具备"],
+                ] as Array<[MatchMode, string]>
+              ).map(([value, label]) => (
+                <label className="choice-row" key={value}>
+                  <input
+                    checked={draft.skillsMode === value}
+                    name="skills-match-mode"
+                    onChange={() => update({ skillsMode: value })}
+                    type="radio"
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
           </div>
           <ChipInput
             label="核心技能"
@@ -1719,6 +1857,27 @@ function FilterPanel({
             placeholder="输入技能后按 Enter"
             values={draft.skills}
           />
+          <div className="field-stack">
+            <span className="field-label">原文关键词匹配方式</span>
+            <div className="choice-grid choice-grid-inline" role="radiogroup">
+              {(
+                [
+                  ["all", "全部出现"],
+                  ["any", "任一出现"],
+                ] as Array<[MatchMode, string]>
+              ).map(([value, label]) => (
+                <label className="choice-row" key={value}>
+                  <input
+                    checked={draft.keywordsMode === value}
+                    name="keywords-match-mode"
+                    onChange={() => update({ keywordsMode: value })}
+                    type="radio"
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+          </div>
           <ChipInput
             label="原文关键词"
             onChange={(keywords) => update({ keywords })}
@@ -1822,7 +1981,7 @@ function ResultsPane({
   search: CandidateSearchResponse;
   searching: boolean;
   selectedResumeId: string | null;
-  onOpenCandidate: (item: CandidateSearchItem) => void;
+  onOpenCandidate: (item: CandidateSearchItem, tab?: DrawerTab) => void;
   onLoadMore: () => void;
   onUpload: () => void;
 }) {
@@ -1860,7 +2019,10 @@ function ResultsPane({
                 <th scope="col">985 / 211</th>
                 <th scope="col">最高学历</th>
                 <th scope="col">正式工作年限</th>
+                <th scope="col">AI 总结</th>
+                <th scope="col">最近评分</th>
                 <th scope="col">命中证据</th>
+                <th scope="col">原件</th>
                 <th scope="col" aria-label="查看详情" />
               </tr>
             </thead>
@@ -1887,7 +2049,7 @@ function ResultsPane({
                         {item.display_name?.trim() || "未命名候选人"}
                       </span>
                       <span className="candidate-meta">
-                        Resume #{item.resume_id.slice(0, 8)}
+                        {item.original_filename}
                       </span>
                     </div>
                   </td>
@@ -1908,6 +2070,34 @@ function ResultsPane({
                     </span>
                   </td>
                   <td>{formatMonths(item.employment_months)}</td>
+                  <td className="library-summary-cell">
+                    {item.summary_preview ? (
+                      <p
+                        className="library-summary-preview"
+                        title={item.summary_preview}
+                      >
+                        {item.summary_preview}
+                      </p>
+                    ) : (
+                      <span className="library-empty-copy">尚未生成</span>
+                    )}
+                  </td>
+                  <td>
+                    {item.score_total !== null ? (
+                      <div
+                        className="library-score"
+                        title={item.score_template_name ?? undefined}
+                      >
+                        <strong>{item.score_total.toFixed(1)}</strong>
+                        <span>/ 100</span>
+                        {item.score_template_name && (
+                          <small>{item.score_template_name}</small>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="library-empty-copy">尚未评分</span>
+                    )}
+                  </td>
                   <td>
                     <div className="match-tags">
                       {item.matched_evidence.length ? (
@@ -1926,6 +2116,20 @@ function ResultsPane({
                         <span className="candidate-meta">无附加条件</span>
                       )}
                     </div>
+                  </td>
+                  <td>
+                    <button
+                      aria-label={`查看 ${item.display_name ?? "候选人"} 的原始文件`}
+                      className="button button-ghost match-open-button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onOpenCandidate(item, "original");
+                      }}
+                      type="button"
+                    >
+                      <Icon name="document" size={15} />
+                      原件
+                    </button>
                   </td>
                   <td>
                     <Icon name="chevron-right" size={18} />
@@ -2312,6 +2516,7 @@ function CandidateDrawer({
   summaries,
   summaryLoading,
   onGenerateSummary,
+  onCreateManualSummary,
 }: {
   candidate: SelectedResume | null;
   review: ResumeReviewDetail | null;
@@ -2326,6 +2531,10 @@ function CandidateDrawer({
   summaries: ResumeSummary[];
   summaryLoading: boolean;
   onGenerateSummary: () => void;
+  onCreateManualSummary: (
+    summaryId: string,
+    content: Record<string, string>,
+  ) => Promise<void>;
 }) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const currentSummary =
@@ -2388,6 +2597,7 @@ function CandidateDrawer({
             [
               ["original", "原始文件"],
               ["summary", "AI 总结"],
+              ["evidence", "提取依据"],
             ] as Array<[DrawerTab, string]>
           ).map(([tab, label]) => (
             <button
@@ -2412,12 +2622,17 @@ function CandidateDrawer({
               pdfUrl={pdfUrl}
               review={review}
             />
-          ) : (
+          ) : drawerTab === "summary" ? (
             <DrawerSummary
               currentSummary={currentSummary}
               loading={summaryLoading}
+              onCreateManual={onCreateManualSummary}
               onGenerate={onGenerateSummary}
+              onOpenEvidence={() => onTabChange("evidence")}
+              summaries={summaries}
             />
+          ) : (
+            <EvidenceTab loading={reviewLoading} review={review} />
           )}
         </div>
       </div>
@@ -2506,13 +2721,42 @@ function OriginalDocumentTab({
 
 function DrawerSummary({
   currentSummary,
+  summaries,
   loading,
   onGenerate,
+  onCreateManual,
+  onOpenEvidence,
 }: {
   currentSummary: ResumeSummary | null;
+  summaries: ResumeSummary[];
   loading: boolean;
   onGenerate: () => void;
+  onCreateManual: (
+    summaryId: string,
+    content: Record<string, string>,
+  ) => Promise<void>;
+  onOpenEvidence: () => void;
 }) {
+  const [selectedSummaryId, setSelectedSummaryId] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const selectedSummary =
+    summaries.find((item) => item.summary_id === selectedSummaryId) ??
+    currentSummary;
+
+  useEffect(() => {
+    if (!currentSummary) {
+      setSelectedSummaryId("");
+      setEditing(false);
+      setDraft({});
+      return;
+    }
+    setSelectedSummaryId(currentSummary.summary_id);
+    setEditing(false);
+    setDraft(summaryContentToDraft(currentSummary.content));
+  }, [currentSummary?.summary_id]);
+
   if (loading) return <TableSkeleton />;
   if (!currentSummary) {
     return (
@@ -2539,39 +2783,149 @@ function DrawerSummary({
     <div className="detail-summary">
       <div className="panel-heading">
         <div>
-          <h2>当前总结</h2>
+          <h2>{selectedSummary?.is_current ? "当前总结" : "历史总结"}</h2>
           <p>
-            {currentSummary.source === "manual" ? "人工版本" : "AI 版本"} ·
-            生成于 {formatLibraryDate(currentSummary.created_at)}
+            {selectedSummary?.source === "manual" ? "人工版本" : "AI 版本"} ·
+            生成于 {selectedSummary ? formatLibraryDate(selectedSummary.created_at) : "—"}
           </p>
         </div>
-        <button className="button" onClick={onGenerate} type="button">
-          <Icon name="refresh" size={15} />
-          重新生成
-        </button>
+        <div className="drawer-summary-actions">
+          <button className="button" onClick={onGenerate} type="button">
+            <Icon name="refresh" size={15} />
+            重新生成
+          </button>
+          <button
+            className="button button-ghost"
+            onClick={() => {
+              setDraft(summaryContentToDraft(selectedSummary?.content ?? {}));
+              setEditing((current) => !current);
+            }}
+            type="button"
+          >
+            {editing ? "取消编辑" : "人工编辑"}
+          </button>
+        </div>
       </div>
-      <SummaryContent content={currentSummary.content} />
+      {summaries.length > 1 && (
+        <div className="summary-history-control">
+          <label className="field-label" htmlFor="summary-history">
+            总结版本
+          </label>
+          <div className="select-wrap">
+            <select
+              className="select-field"
+              id="summary-history"
+              onChange={(event) => {
+                const next = summaries.find(
+                  (item) => item.summary_id === event.target.value,
+                );
+                if (!next) return;
+                setSelectedSummaryId(next.summary_id);
+                setDraft(summaryContentToDraft(next.content));
+                setEditing(false);
+              }}
+              value={selectedSummary?.summary_id ?? ""}
+            >
+              {summaries.map((item) => (
+                <option key={item.summary_id} value={item.summary_id}>
+                  {item.is_current ? "当前 · " : "历史 · "}
+                  {item.source === "manual" ? "人工" : "AI"} · {formatLibraryDate(item.created_at)}
+                </option>
+              ))}
+            </select>
+            <Icon name="chevron-down" size={16} />
+          </div>
+        </div>
+      )}
+      {editing && selectedSummary ? (
+        <form
+          className="summary-editor"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const content = Object.fromEntries(
+              Object.entries(draft).filter(([, value]) => value.trim()),
+            );
+            if (!Object.keys(content).length) return;
+            setSaving(true);
+            void onCreateManual(selectedSummary.summary_id, content)
+              .then(() => setEditing(false))
+              .catch(() => undefined)
+              .finally(() => setSaving(false));
+          }}
+        >
+          {summarySectionOrder.map((key) => (
+            <label className="field-stack" key={key}>
+              <span className="field-label">{summarySectionLabels[key]}</span>
+              <textarea
+                className="textarea-field summary-editor-textarea"
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    [key]: event.target.value,
+                  }))
+                }
+                value={draft[key] ?? ""}
+              />
+            </label>
+          ))}
+          <div className="review-actions">
+            <button
+              className="button button-primary"
+              disabled={saving}
+              type="submit"
+            >
+              {saving ? <><i className="spinner" />正在保存</> : <><Icon name="check" size={16} />保存人工版本</>}
+            </button>
+          </div>
+        </form>
+      ) : selectedSummary ? (
+        <SummaryContent
+          content={selectedSummary.content}
+          onOpenEvidence={onOpenEvidence}
+        />
+      ) : null}
     </div>
   );
 }
 
-function SummaryContent({ content }: { content: Record<string, unknown> }) {
-  const sectionLabels: Record<string, string> = {
-    candidate_positioning: "候选人定位",
-    education_background: "教育背景",
-    work_and_internship: "工作与实习",
-    core_skills: "核心技能",
-    representative_projects: "代表项目",
-    strengths: "优势亮点",
-    verification_items: "建议核验",
-  };
+const summarySectionLabels: Record<string, string> = {
+  candidate_positioning: "候选人定位",
+  education_background: "教育背景",
+  work_and_internship: "工作与实习",
+  core_skills: "核心技能",
+  representative_projects: "代表项目",
+  strengths: "优势亮点",
+  verification_items: "建议核验",
+};
+
+const summarySectionOrder = Object.keys(summarySectionLabels);
+
+function summaryContentToDraft(content: Record<string, unknown>): Record<string, string> {
+  const sections = summarySections(content);
+  return Object.fromEntries(
+    summarySectionOrder.map((key) => [
+      key,
+      sections.find((section) => section.key === key)?.rendered ?? "",
+    ]),
+  );
+}
+
+function summaryFactIds(value: unknown): string[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  const rawFactIds = (value as Record<string, unknown>).fact_ids;
+  return Array.isArray(rawFactIds)
+    ? rawFactIds.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function summarySections(content: Record<string, unknown>) {
   const source =
     content.sections &&
     typeof content.sections === "object" &&
     !Array.isArray(content.sections)
       ? (content.sections as Record<string, unknown>)
       : content;
-  const entries = Object.entries(source)
+  return Object.entries(source)
     .filter(([key]) => key !== "schema_version")
     .flatMap(([key, value]) => {
       const rendered =
@@ -2587,25 +2941,143 @@ function SummaryContent({ content }: { content: Record<string, unknown> }) {
         ? [
             {
               key,
-              label: sectionLabels[key] ?? key.replace(/_/g, " "),
+              label: summarySectionLabels[key] ?? key.replace(/_/g, " "),
               rendered,
+              factIds: summaryFactIds(value),
             },
           ]
         : [];
     });
+}
+
+function SummaryContent({
+  content,
+  onOpenEvidence,
+}: {
+  content: Record<string, unknown>;
+  onOpenEvidence?: () => void;
+}) {
+  const entries = summarySections(content);
   return (
     <article className="summary-card">
       {entries.length ? (
         <dl>
           {entries.flatMap((section) => [
             <dt key={`${section.key}-dt`}>{section.label}</dt>,
-            <dd key={`${section.key}-dd`}>{section.rendered}</dd>,
+            <dd key={`${section.key}-dd`}>
+              <p>{section.rendered}</p>
+              {section.factIds.length > 0 && (
+                <button
+                  className="summary-evidence-link"
+                  onClick={onOpenEvidence}
+                  type="button"
+                >
+                  依据 {section.factIds.join("、")}
+                </button>
+              )}
+            </dd>,
           ])}
         </dl>
       ) : (
         <p className="candidate-meta">AI 没有返回可展示的总结内容。</p>
       )}
     </article>
+  );
+}
+
+function evidenceBlockLabel(ids: string[]): string {
+  return ids.length ? `原文依据：${ids.join("、")}` : "未标注原文依据";
+}
+
+function EvidenceTab({
+  review,
+  loading,
+}: {
+  review: ResumeReviewDetail | null;
+  loading: boolean;
+}) {
+  if (loading) return <TableSkeleton />;
+  if (!review) {
+    return (
+      <div className="empty-state">
+        <div className="empty-state-inner">
+          <span className="empty-glyph"><Icon name="document" size={23} /></span>
+          <h2>暂时无法读取提取依据</h2>
+          <p>请稍后重新打开这份简历。</p>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="detail-review">
+      <section className="content-section">
+        <h3>已提取的简历事实</h3>
+        <div className="detail-grid">
+          <div className="fact-list">
+            <div className="fact-row">
+              <strong>教育经历</strong>
+              {review.education.length ? review.education.map((item, index) => (
+                <span key={`${item.school_name_raw}-${index}`}>
+                  {item.school_name_raw} · {degreeLabels[item.degree]}
+                  {item.major_raw ? ` · ${item.major_raw}` : ""} · {evidenceBlockLabel(item.evidence_block_ids)}
+                </span>
+              )) : <span>未提取到可验证教育经历</span>}
+            </div>
+            <div className="fact-row">
+              <strong>核心技能</strong>
+              {review.skills.length ? review.skills.map((item, index) => (
+                <span key={`${item.skill_display}-${index}`}>
+                  {item.skill_display} · {evidenceBlockLabel(item.evidence_block_ids)}
+                </span>
+              )) : <span>未提取到可验证技能</span>}
+            </div>
+          </div>
+          <div className="fact-list">
+            <div className="fact-row">
+              <strong>事实版本</strong>
+              <span>v{review.facts_version}，仅当前版本用于筛选、评分与匹配。</span>
+            </div>
+            <div className="fact-row">
+              <strong>年限统计</strong>
+              <span>正式工作 {formatMonths(review.employment_months)}；工作 + 实习 {formatMonths(review.employment_or_internship_months)}。</span>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section className="content-section">
+        <h3>经历与职责</h3>
+        <div className="fact-list">
+          {review.experiences.length ? review.experiences.map((item, index) => (
+            <div className="fact-row fact-row-experience" key={`${item.experience_name_raw ?? item.title_raw ?? "experience"}-${index}`}>
+              <strong>
+                {item.organization_name_raw || item.experience_name_raw || "未命名经历"}
+                {item.title_raw ? ` · ${item.title_raw}` : ""}
+              </strong>
+              <span>{item.experience_type} · {evidenceBlockLabel(item.evidence_block_ids)}</span>
+              {item.detail_items.length > 0 && (
+                <ul className="fact-row-detail-list">
+                  {item.detail_items.map((detail, detailIndex) => (
+                    <li key={`${detail.detail_raw}-${detailIndex}`}>
+                      <span>{detail.detail_raw}</span>
+                      <small>{evidenceBlockLabel(detail.evidence_block_ids)}</small>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )) : <span className="candidate-meta">未提取到可验证经历。</span>}
+        </div>
+      </section>
+      <section className="evidence-panel">
+        <h3>原文证据块</h3>
+        {review.source_blocks.map((block) => (
+          <div className="evidence-item" key={block.block_id}>
+            <b>{block.block_id} · 第 {block.page_no} 页</b>
+            {block.text}
+          </div>
+        ))}
+      </section>
+    </div>
   );
 }
 
@@ -3287,7 +3759,7 @@ function UploadPage({
               <span className="workflow-step">1</span>
               <div>
                 <strong>逐份保存原始文件</strong>
-                <span>只允许 PDF，页面数与文件质量会被单独检查。</span>
+              <span>支持 PDF、Word、图片、Excel 和 HTML，文件质量会单独检查。</span>
               </div>
             </li>
             <li>
@@ -3295,8 +3767,7 @@ function UploadPage({
               <div>
                 <strong>AI 识别姓名与结构化事实</strong>
                 <span>
-                  基于 PDF
-                  原生文字识别候选人姓名、教育、经历和技能；姓名不明确时保留为未命名候选人。
+                  基于可提取的原文识别候选人姓名、教育、经历和技能；姓名不明确时保留为未命名候选人。
                 </span>
               </div>
             </li>
@@ -3335,6 +3806,8 @@ function ScorePage({
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [scoring, setScoring] = useState(false);
   const [score, setScore] = useState<ResumeScore | null>(null);
+  const [scoreHistory, setScoreHistory] = useState<ResumeScore[]>([]);
+  const [loadingScoreHistory, setLoadingScoreHistory] = useState(false);
 
   const loadTemplates = useCallback(async () => {
     setLoadingTemplates(true);
@@ -3352,6 +3825,32 @@ function ScorePage({
   useEffect(() => {
     void loadTemplates();
   }, [loadTemplates]);
+
+  const loadScoreHistory = useCallback(async () => {
+    if (!selected) {
+      setScore(null);
+      setScoreHistory([]);
+      return;
+    }
+    setLoadingScoreHistory(true);
+    try {
+      const history = await api.listScores(selected.resumeId);
+      setScoreHistory(history);
+      setScore((current) =>
+        current && current.resume_id === selected.resumeId
+          ? current
+          : (history[0] ?? null),
+      );
+    } catch (error) {
+      notify("error", humanizeError(error));
+    } finally {
+      setLoadingScoreHistory(false);
+    }
+  }, [notify, selected?.resumeId]);
+
+  useEffect(() => {
+    void loadScoreHistory();
+  }, [loadScoreHistory]);
 
   const totalWeight = dimensions.reduce(
     (total, item) => total + Number(item.weight || 0),
@@ -3412,12 +3911,40 @@ function ScorePage({
         template_id: templateId,
       });
       setScore(response);
+      setScoreHistory((current) => [
+        response,
+        ...current.filter((item) => item.score_id !== response.score_id),
+      ]);
       onScoreCreated();
       notify("success", "AI 评分已完成。");
     } catch (error) {
       notify("error", humanizeError(error));
     } finally {
       setScoring(false);
+    }
+  };
+  const overrideDimension = async (
+    scoreId: string,
+    dimensionKey: string,
+    rawScore: number,
+    reason: string,
+  ) => {
+    try {
+      const updated = await api.overrideScoreDimension(scoreId, dimensionKey, {
+        raw_score: rawScore,
+        reason,
+      });
+      setScore(updated);
+      setScoreHistory((current) =>
+        current.map((item) =>
+          item.score_id === updated.score_id ? updated : item,
+        ),
+      );
+      onScoreCreated();
+      notify("success", "已保留人工调整和调整原因。");
+    } catch (error) {
+      notify("error", humanizeError(error));
+      throw error;
     }
   };
 
@@ -3641,7 +4168,12 @@ function ScorePage({
               </button>
             </div>
           </section>
-          {score && <ScoreResult score={score} />}
+          {score && (
+            <ScoreResult
+              onOverride={overrideDimension}
+              score={score}
+            />
+          )}
         </div>
         <aside className="panel">
           <div className="panel-heading">
@@ -3673,23 +4205,104 @@ function ScorePage({
               <p className="candidate-meta">还没有可用评分规则。</p>
             )}
           </div>
+          {selected && (
+            <section className="score-history-panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>评分历史</h2>
+                  <p>每次 AI 评分和人工调整都会保留，旧结论不会被覆盖。</p>
+                </div>
+                <button
+                  className="button button-ghost"
+                  disabled={loadingScoreHistory}
+                  onClick={() => void loadScoreHistory()}
+                  type="button"
+                >
+                  {loadingScoreHistory ? <i className="spinner" /> : <Icon name="refresh" size={15} />}
+                  刷新
+                </button>
+              </div>
+              <div className="fact-list">
+                {scoreHistory.length ? scoreHistory.map((item) => (
+                  <button
+                    className={`fact-row${score?.score_id === item.score_id ? " is-selected" : ""}`}
+                    key={item.score_id}
+                    onClick={() => setScore(item)}
+                    type="button"
+                  >
+                    <strong>{item.total_score.toFixed(1)} / 100 · {item.status === "overridden" ? "含人工调整" : "AI 评分"}</strong>
+                    <span>模板 v{item.template_version} · 事实 v{item.facts_version} · {formatLibraryDate(item.created_at)}</span>
+                  </button>
+                )) : <p className="candidate-meta">当前简历还没有评分记录。</p>}
+              </div>
+            </section>
+          )}
         </aside>
       </div>
     </div>
   );
 }
 
-function ScoreResult({ score }: { score: ResumeScore }) {
+function ScoreResult({
+  score,
+  onOverride,
+}: {
+  score: ResumeScore;
+  onOverride: (
+    scoreId: string,
+    dimensionKey: string,
+    rawScore: number,
+    reason: string,
+  ) => Promise<void>;
+}) {
   const scoreStyle = {
     "--score": Math.max(0, Math.min(100, score.total_score)),
   } as CSSProperties;
+  const [editingDimensionKey, setEditingDimensionKey] = useState<string | null>(
+    null,
+  );
+  const [draftRawScore, setDraftRawScore] = useState("");
+  const [draftReason, setDraftReason] = useState("");
+  const [savingOverride, setSavingOverride] = useState(false);
+  const riskFlags = score.analysis.risk_flags ?? [];
+
+  useEffect(() => {
+    setEditingDimensionKey(null);
+    setDraftRawScore("");
+    setDraftReason("");
+  }, [score.score_id]);
+
+  const beginOverride = (dimension: ResumeScore["dimension_scores"][number]) => {
+    setEditingDimensionKey(dimension.key);
+    setDraftRawScore(String(dimension.final_raw_score));
+    setDraftReason(dimension.manual_reason ?? "");
+  };
+  const saveOverride = async (
+    dimension: ResumeScore["dimension_scores"][number],
+  ) => {
+    const rawScore = Number(draftRawScore);
+    if (!Number.isFinite(rawScore) || rawScore < 0 || rawScore > dimension.max_raw_score) {
+      return;
+    }
+    if (!draftReason.trim()) return;
+    setSavingOverride(true);
+    try {
+      await onOverride(score.score_id, dimension.key, rawScore, draftReason.trim());
+      setEditingDimensionKey(null);
+    } catch {
+      // The caller has already presented an actionable error message.
+    } finally {
+      setSavingOverride(false);
+    }
+  };
   return (
     <section className="panel">
       <div className="panel-heading">
         <div>
           <h2>本次评分</h2>
           <p>
-            规则版本 {score.template_version} · {score.status}
+            模板 v{score.template_version} · 事实 v{score.facts_version} · {score.status === "overridden" ? "含人工调整" : "AI 原始评分"}
+            {!score.is_current_facts_version ? " · 简历事实已更新，请重新评分" : ""}
           </p>
         </div>
       </div>
@@ -3703,25 +4316,143 @@ function ScoreResult({ score }: { score: ResumeScore }) {
           <span>{score.total_score.toFixed(1)}</span>
         </div>
         <div className="score-dimension-list">
-          {score.dimension_scores.map((dimension) => (
-            <div className="score-dimension" key={dimension.key}>
-              <span>{dimension.label}</span>
-              <div className="score-bar">
-                <i
-                  style={{
-                    width: `${Math.max(0, Math.min(100, dimension.final_raw_score))}%`,
-                  }}
-                />
+          {score.dimension_scores.map((dimension) => {
+            const hasManualAdjustment =
+              dimension.manual_reason !== null ||
+              dimension.final_raw_score !== dimension.ai_raw_score;
+            return (
+              <div className="score-dimension-detail" key={dimension.key}>
+                <div className="score-dimension">
+                  <span>{dimension.label}</span>
+                  <div className="score-bar">
+                    <i
+                      style={{
+                        width: `${Math.max(0, Math.min(100, (dimension.final_raw_score / dimension.max_raw_score) * 100))}%`,
+                      }}
+                    />
+                  </div>
+                  <strong>{dimension.final_raw_score.toFixed(0)} / {dimension.max_raw_score}</strong>
+                </div>
+                <div className="score-dimension-meta">
+                  <span>AI 原始分 {dimension.ai_raw_score.toFixed(0)} / {dimension.max_raw_score} · 权重 {dimension.weight}%</span>
+                  {hasManualAdjustment && <span className="score-manual-mark">人工调整后 {dimension.final_raw_score.toFixed(0)} / {dimension.max_raw_score}</span>}
+                </div>
+                <p className="score-dimension-rationale">{dimension.rationale || "信息不足，未提供可验证判断依据。"}</p>
+                <div className="score-evidence-row">
+                  <span>
+                    {dimension.fact_evidence.length
+                      ? `事实依据：${dimension.fact_evidence.map((fact) => fact.summary).join("；")}`
+                      : "事实依据不足"}
+                  </span>
+                  {dimension.uncertainties.length > 0 && (
+                    <span>待核实：{dimension.uncertainties.join("；")}</span>
+                  )}
+                </div>
+                {dimension.manual_reason && (
+                  <p className="score-manual-reason">人工调整原因：{dimension.manual_reason}</p>
+                )}
+                {editingDimensionKey === dimension.key ? (
+                  <form
+                    className="score-override-form"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void saveOverride(dimension);
+                    }}
+                  >
+                    <label className="field-stack">
+                      <span className="field-label">人工原始分（0 至 {dimension.max_raw_score}）</span>
+                      <input
+                        className="field"
+                        max={dimension.max_raw_score}
+                        min="0"
+                        onChange={(event) => setDraftRawScore(event.target.value)}
+                        step="0.1"
+                        type="number"
+                        value={draftRawScore}
+                      />
+                    </label>
+                    <label className="field-stack">
+                      <span className="field-label">调整原因</span>
+                      <textarea
+                        className="textarea-field score-override-reason"
+                        onChange={(event) => setDraftReason(event.target.value)}
+                        placeholder="说明为什么需要调整此维度分数"
+                        value={draftReason}
+                      />
+                    </label>
+                    <div className="review-actions">
+                      <button
+                        className="button button-ghost"
+                        disabled={savingOverride}
+                        onClick={() => setEditingDimensionKey(null)}
+                        type="button"
+                      >
+                        取消
+                      </button>
+                      <button
+                        className="button button-primary"
+                        disabled={
+                          savingOverride ||
+                          !draftReason.trim() ||
+                          !Number.isFinite(Number(draftRawScore))
+                        }
+                        type="submit"
+                      >
+                        {savingOverride ? <><i className="spinner" />正在保存</> : <><Icon name="check" size={16} />保存人工调整</>}
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <button
+                    className="text-button score-override-button"
+                    onClick={() => beginOverride(dimension)}
+                    type="button"
+                  >
+                    人工调整此维度
+                  </button>
+                )}
               </div>
-              <strong>{dimension.final_raw_score.toFixed(0)}</strong>
-            </div>
-          ))}
+            );
+          })}
           <div className="evidence-item">
             <b>AI 分析</b>
             {typeof score.analysis.overall_summary === "string"
               ? score.analysis.overall_summary
               : "评分已生成。请结合各维度依据完成判断。"}
           </div>
+          {riskFlags.length > 0 && (
+            <div className="score-risk-list">
+              <b>待关注项</b>
+              <ul>
+                {riskFlags.map((item, index) => (
+                  <li key={`${item.message}-${index}`}>
+                    {item.message}
+                    {item.fact_evidence.length > 0 && (
+                      <small>
+                        依据：{item.fact_evidence.map((fact) => fact.summary).join("；")}
+                      </small>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {score.audit_trail.length > 0 && (
+            <div className="score-audit-list">
+              <b>人工调整记录</b>
+              <ul>
+                {score.audit_trail.map((entry) => (
+                  <li key={entry.audit_id}>
+                    <strong>{entry.dimension_key ?? "评分维度"}</strong>
+                    <span>
+                      {entry.previous_final_raw_score ?? "—"} → {entry.final_raw_score ?? "—"} · {entry.reason ?? "未填写原因"}
+                    </span>
+                    <small>{entry.actor} · {formatLibraryDate(entry.created_at)}</small>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       </div>
     </section>
@@ -3747,10 +4478,12 @@ function MatchPage({
   const [jobWorkspaceMode, setJobWorkspaceMode] =
     useState<JobWorkspaceMode>("create");
   const [jobVersion, setJobVersion] = useState<JobVersion | null>(null);
+  const [versioningJobId, setVersioningJobId] = useState<string | null>(null);
   const [confirmedJobVersions, setConfirmedJobVersions] = useState<JobVersion[]>([]);
   const [loading, setLoading] = useState(false);
   const [match, setMatch] = useState<JobMatch | null>(null);
   const [matchBatch, setMatchBatch] = useState<JobMatchBatch | null>(null);
+  const [batchItems, setBatchItems] = useState<JobMatchBatchItem[]>([]);
   const [jobMatches, setJobMatches] = useState<JobMatch[]>([]);
   const [matchesLoading, setMatchesLoading] = useState(false);
   const resetJobAuthoring = () => {
@@ -3765,23 +4498,72 @@ function MatchPage({
     resetJobAuthoring();
     setJobWorkspaceMode("view");
     setJobVersion(next);
+    setVersioningJobId(null);
     setMatch(null);
     setMatchBatch(null);
+    setBatchItems([]);
+    setBatchItems([]);
   };
   const beginNewJob = () => {
     resetJobAuthoring();
     setJobWorkspaceMode("create");
     setJobVersion(null);
+    setVersioningJobId(null);
     setMatch(null);
     setMatchBatch(null);
+    setBatchItems([]);
     setJobMatches([]);
+  };
+  const beginNextJobVersion = () => {
+    if (!jobVersion) return;
+    setJobWorkspaceMode("create");
+    setVersioningJobId(jobVersion.job_id);
+    setTitle(jobVersion.title);
+    setJobBrief(jobVersion.raw_text);
+    setJdText("");
+    setEditedGeneratedJd(false);
+    setGeneratedRequirements(null);
+    setGenerationError(null);
+    setMatch(null);
+    setMatchBatch(null);
+    setBatchItems([]);
   };
   const requirementsAreReady = (requirements: JobRequirements | null) =>
     Boolean(
       requirements &&
-        ((requirements.must_have?.length ?? 0) > 0 ||
-          (requirements.preferred?.length ?? 0) > 0),
+        ((requirements.must_have?.some((item) => item.trim()) ?? false) ||
+          (requirements.preferred?.some((item) => item.trim()) ?? false)),
     );
+  const updateGeneratedRequirement = (
+    priority: "must_have" | "preferred",
+    index: number,
+    value: string,
+  ) => {
+    setGeneratedRequirements((current) => {
+      const next = {
+        must_have: [...(current?.must_have ?? [])],
+        preferred: [...(current?.preferred ?? [])],
+      };
+      next[priority][index] = value;
+      return next;
+    });
+  };
+  const addGeneratedRequirement = (priority: "must_have" | "preferred") => {
+    setGeneratedRequirements((current) => ({
+      must_have: [...(current?.must_have ?? [])],
+      preferred: [...(current?.preferred ?? [])],
+      [priority]: [...(current?.[priority] ?? []), ""],
+    }));
+  };
+  const removeGeneratedRequirement = (
+    priority: "must_have" | "preferred",
+    index: number,
+  ) => {
+    setGeneratedRequirements((current) => ({
+      must_have: (current?.must_have ?? []).filter((_, itemIndex) => itemIndex !== (priority === "must_have" ? index : -1)),
+      preferred: (current?.preferred ?? []).filter((_, itemIndex) => itemIndex !== (priority === "preferred" ? index : -1)),
+    }));
+  };
   const invalidateGeneratedRequirements = () => {
     if (!generatedRequirements) return;
     setGeneratedRequirements(null);
@@ -3839,11 +4621,24 @@ function MatchPage({
     setGenerationError(null);
     setLoading(true);
     try {
-      const created = await api.createJob({
+      const requirements = generatedRequirements
+        ? {
+            must_have: (generatedRequirements.must_have ?? [])
+              .map((item) => item.trim())
+              .filter(Boolean),
+            preferred: (generatedRequirements.preferred ?? [])
+              .map((item) => item.trim())
+              .filter(Boolean),
+          }
+        : undefined;
+      const payload = {
         title: title.trim(),
         jd_text: jdText.trim(),
-        requirements: generatedRequirements ?? undefined,
-      });
+        requirements,
+      };
+      const created = versioningJobId
+        ? await api.createJobVersion(versioningJobId, payload)
+        : await api.createJob(payload);
       if (created.status !== "confirmed") {
         const message =
           "岗位已保存，但服务尚未返回可启用版本。请重新生成 JD 后再试。";
@@ -3942,6 +4737,7 @@ function MatchPage({
         jobVersion.job_version_id,
       );
       setMatchBatch(response);
+      setBatchItems([]);
       notify(
         "success",
         `已将 ${response.total_count} 份简历加入岗位匹配队列。`,
@@ -3953,18 +4749,28 @@ function MatchPage({
     }
   };
   useEffect(() => {
-    if (!matchBatch || ["completed", "partial"].includes(matchBatch.status))
-      return;
+    if (!matchBatch) return;
     let cancelled = false;
     const refresh = async () => {
       try {
-        const next = await api.getJobMatchBatch(matchBatch.batch_id);
-        if (!cancelled) setMatchBatch(next);
+        const [next, items] = await Promise.all([
+          api.getJobMatchBatch(matchBatch.batch_id),
+          api.listJobMatchBatchItems(matchBatch.batch_id),
+        ]);
+        if (!cancelled) {
+          setMatchBatch(next);
+          setBatchItems(items);
+        }
       } catch {
         // Keep the last durable status visible; the next manual action can retry.
       }
     };
     void refresh();
+    if (["completed", "partial"].includes(matchBatch.status)) {
+      return () => {
+        cancelled = true;
+      };
+    }
     const timer = window.setInterval(() => void refresh(), 2000);
     return () => {
       cancelled = true;
@@ -4089,9 +4895,19 @@ function MatchPage({
                         : "已启用，当前匹配结果仅基于这份岗位 JD。"}
                     </p>
                   </div>
-                  <span className="status-pill">
-                    {jobIsOriginal ? "原版已发布" : "已启用"}
-                  </span>
+                  <div className="jd-view-actions">
+                    <span className="status-pill">
+                      {jobIsOriginal ? "原版已发布" : "已启用"}
+                    </span>
+                    <button
+                      className="button button-ghost"
+                      onClick={beginNextJobVersion}
+                      type="button"
+                    >
+                      <Icon name="plus" size={15} />
+                      基于此新建版本
+                    </button>
+                  </div>
                 </div>
                 <label className="field-label" htmlFor="active-job-text">
                   岗位 JD 原文
@@ -4106,6 +4922,11 @@ function MatchPage({
               </div>
             ) : (
               <>
+                {versioningJobId && (
+                  <p className="version-context" role="status">
+                    正在基于当前岗位创建新版本。原版本和已有匹配结果会完整保留。
+                  </p>
+                )}
                 <div className="jd-steps">
                   <span className={`jd-step${jdText ? " is-done" : " is-current"}`}>
                     1 描述需求
@@ -4222,7 +5043,7 @@ function MatchPage({
                       type="button"
                     >
                       <Icon name="check" size={16} />
-                      启用岗位
+                      {versioningJobId ? "发布新版本" : "启用岗位"}
                     </button>
                   )}
                 </div>
@@ -4234,24 +5055,56 @@ function MatchPage({
               <div className="panel-heading">
                 <div>
                   <h2>AI 识别的匹配条件</h2>
-                  <p>启用岗位后，这些条件将作为 AI 匹配的依据。</p>
+                  <p>可以直接修订条件与优先级，发布后会固化为该 JD 版本的匹配依据。</p>
                 </div>
               </div>
               <div className="requirements-list">
                 {(generatedRequirements?.must_have ?? []).map((requirement, index) => (
                   <div className="requirement-row" key={`must-${index}-${requirement}`}>
                     <span className="priority-must">必须</span>
-                    <p>{requirement}</p>
-                    <span className="candidate-meta">AI 提取</span>
+                    <input
+                      aria-label={`第 ${index + 1} 条必须条件`}
+                      className="field requirement-input"
+                      onChange={(event) => updateGeneratedRequirement("must_have", index, event.target.value)}
+                      value={requirement}
+                    />
+                    <button
+                      aria-label={`删除第 ${index + 1} 条必须条件`}
+                      className="icon-button requirement-remove"
+                      onClick={() => removeGeneratedRequirement("must_have", index)}
+                      type="button"
+                    >
+                      <Icon name="close" size={15} />
+                    </button>
                   </div>
                 ))}
                 {(generatedRequirements?.preferred ?? []).map((requirement, index) => (
                   <div className="requirement-row" key={`preferred-${index}-${requirement}`}>
                     <span className="priority-preferred">优先</span>
-                    <p>{requirement}</p>
-                    <span className="candidate-meta">AI 提取</span>
+                    <input
+                      aria-label={`第 ${index + 1} 条优先条件`}
+                      className="field requirement-input"
+                      onChange={(event) => updateGeneratedRequirement("preferred", index, event.target.value)}
+                      value={requirement}
+                    />
+                    <button
+                      aria-label={`删除第 ${index + 1} 条优先条件`}
+                      className="icon-button requirement-remove"
+                      onClick={() => removeGeneratedRequirement("preferred", index)}
+                      type="button"
+                    >
+                      <Icon name="close" size={15} />
+                    </button>
                   </div>
                 ))}
+              </div>
+              <div className="requirement-actions">
+                <button className="button button-ghost" onClick={() => addGeneratedRequirement("must_have")} type="button">
+                  <Icon name="plus" size={15} /> 添加必须条件
+                </button>
+                <button className="button button-ghost" onClick={() => addGeneratedRequirement("preferred")} type="button">
+                  <Icon name="plus" size={15} /> 添加优先条件
+                </button>
               </div>
             </section>
           )}
@@ -4293,6 +5146,9 @@ function MatchPage({
             </section>
           )}
           {match && <MatchResult match={match} />}
+          {matchBatch && (
+            <MatchBatchDetails batch={matchBatch} items={batchItems} />
+          )}
           {jobCanMatch && (
             <MatchLeaderboard
               loading={matchesLoading}
@@ -4415,6 +5271,11 @@ function MatchResult({ match }: { match: JobMatch }) {
                 {item.missing_or_uncertain
                   ? ` · ${item.missing_or_uncertain}`
                   : ""}
+                <small className="match-fact-reference">
+                  {item.fact_ids.length
+                    ? `事实依据：${item.fact_ids.join("、")}`
+                    : "未发现可验证的简历事实"}
+                </small>
               </p>
               <span
                 className={
@@ -4429,6 +5290,67 @@ function MatchResult({ match }: { match: JobMatch }) {
           ))}
         </div>
       </div>
+    </section>
+  );
+}
+
+function MatchBatchDetails({
+  batch,
+  items,
+}: {
+  batch: JobMatchBatch;
+  items: JobMatchBatchItem[];
+}) {
+  const failed = items.filter((item) => item.status === "failed");
+  const inProgress = items.filter(
+    (item) => item.status === "queued" || item.status === "running",
+  );
+  return (
+    <section className="panel match-batch-details">
+      <div className="panel-heading">
+        <div>
+          <h2>批量匹配任务</h2>
+          <p>
+            {batch.completed_count + batch.failed_count} / {batch.total_count} 已结束
+            {inProgress.length ? `，仍有 ${inProgress.length} 份在队列中` : ""}。
+          </p>
+        </div>
+        <span className={`status-pill${batch.failed_count ? " is-warning" : ""}`}>
+          {batch.status === "partial" ? "部分完成" : batch.status === "completed" ? "已完成" : "运行中"}
+        </span>
+      </div>
+      {failed.length ? (
+        <div className="table-scroll">
+          <table className="candidate-table batch-failure-table">
+            <thead>
+              <tr>
+                <th scope="col">候选人</th>
+                <th scope="col">事实版本</th>
+                <th scope="col">尝试次数</th>
+                <th scope="col">失败原因</th>
+              </tr>
+            </thead>
+            <tbody>
+              {failed.map((item) => (
+                <tr key={item.item_id}>
+                  <td>{item.candidate_display_name?.trim() || "未命名候选人"}</td>
+                  <td>v{item.facts_version}</td>
+                  <td>{item.attempt_count}</td>
+                  <td>{item.last_error || "未知错误"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : batch.failed_count ? (
+        <p className="library-error">任务报告了失败项，正在读取具体原因。</p>
+      ) : (
+        <p className="candidate-meta">
+          {batch.status === "completed"
+            ? "本批简历均已完成匹配。"
+            : "失败项会在任务结束后显示具体原因。"}
+        </p>
+      )}
     </section>
   );
 }

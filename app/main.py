@@ -43,6 +43,7 @@ from app.schemas import (
     JobGenerationRequest,
     JobGenerationResponse,
     JobMatchBatchResponse,
+    JobMatchBatchItemResponse,
     JobMatchCreate,
     JobMatchResponse,
     OriginalJobPublishRequest,
@@ -160,6 +161,7 @@ from app.services.job_service import (
 from app.services.job_match_batch_service import (
     enqueue_job_version_match_batch,
     get_job_match_batch,
+    list_job_match_batch_items,
 )
 from app.services.mailbox_import_service import (
     MailboxImportError,
@@ -1524,6 +1526,20 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
     ) -> JobMatchBatchResponse:
         try:
             return get_job_match_batch(session, batch_id=batch_id)
+        except JobServiceError as exc:
+            _raise_job_service_error(exc)
+
+    @app.get(
+        "/v1/job-match-batches/{batch_id}/items",
+        response_model=list[JobMatchBatchItemResponse],
+        dependencies=[Depends(require_single_admin)],
+    )
+    def get_job_match_batch_items(
+        batch_id: str,
+        session: Session = Depends(get_session),
+    ) -> list[JobMatchBatchItemResponse]:
+        try:
+            return list_job_match_batch_items(session, batch_id=batch_id)
         except JobServiceError as exc:
             _raise_job_service_error(exc)
 

@@ -4,7 +4,7 @@ import json
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
@@ -16,6 +16,7 @@ from app.schemas import (
     RecruitingAgentRequest,
     RecruitingAgentResponse,
     RecruitingAgentToolTrace,
+    ResumeScoreCreate,
 )
 from app.services.deepseek_provider import API_URL
 from app.services.job_match_batch_service import enqueue_job_version_match_batch
@@ -28,6 +29,13 @@ from app.services.job_service import (
     list_resume_job_matches,
 )
 from app.services.search_service import search_candidates
+from app.services.score_service import (
+    DeepSeekProviderError as ScoreDeepSeekProviderError,
+    ScoreServiceError,
+    ScoreTemplateNotFoundError,
+    list_score_templates,
+    run_resume_score,
+)
 
 
 class RecruitingAgentServiceError(RuntimeError):
@@ -40,6 +48,16 @@ class ResolvedJob:
     title: str
 
 
+AgentIntent = Literal[
+    "search_candidates",
+    "run_job_matching",
+    "show_job_ranking",
+    "explain_candidate",
+    "score_current_candidate",
+    "help",
+]
+
+
 @dataclass
 class ToolRun:
     payload: dict[str, Any]
@@ -47,6 +65,54 @@ class ToolRun:
     actions: list[RecruitingAgentAction] = field(default_factory=list)
     traces: list[RecruitingAgentToolTrace] = field(default_factory=list)
     batch_id: str | None = None
+    intent: AgentIntent | None = None
+
+
+_STRING_ARRAY_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {"type": "string", "minLength": 1, "maxLength": 255},
+}
+
+_EDUCATION_FILTER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "degree_in": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "enum": ["unknown", "associate", "bachelor", "master", "doctor"],
+            },
+            "maxItems": 5,
+        },
+        "school_name_contains": {**_STRING_ARRAY_SCHEMA, "maxItems": 8},
+        "major_contains": {**_STRING_ARRAY_SCHEMA, "maxItems": 8},
+    },
+}
+
+_EXPERIENCE_FILTER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "experience_types": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "enum": [
+                    "employment",
+                    "internship",
+                    "project",
+                    "competition",
+                    "other",
+                    "unknown",
+                ],
+            },
+            "maxItems": 5,
+        },
+        "organization_name_contains": {**_STRING_ARRAY_SCHEMA, "maxItems": 8},
+        "title_contains": {**_STRING_ARRAY_SCHEMA, "maxItems": 8},
+    },
+}
 
 
 _SEARCH_SCHEMA: dict[str, Any] = {
@@ -56,6 +122,16 @@ _SEARCH_SCHEMA: dict[str, Any] = {
         "is_985_211": {"type": "boolean"},
         "min_employment_months": {"type": "integer", "minimum": 0, "maximum": 720},
         "min_employment_or_internship_months": {"type": "integer", "minimum": 0, "maximum": 720},
+        "education_any_of": {
+            "type": "array",
+            "items": _EDUCATION_FILTER_SCHEMA,
+            "maxItems": 10,
+        },
+        "experience_any_of": {
+            "type": "array",
+            "items": _EXPERIENCE_FILTER_SCHEMA,
+            "maxItems": 10,
+        },
         "skills_all_of": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
         "skills_any_of": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
         "keywords_all_of": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
@@ -72,8 +148,12 @@ _TOOLS: list[dict[str, Any]] = [
             "name": "search_candidates",
             "description": (
                 "Search the verified resume database. Use this whenever the user asks to find, "
-                "filter, or shortlist candidates. Put simultaneously required skills in "
-                "skills_all_of. Convert years to months."
+                "filter, or shortlist candidates. Convert years to months. Put degree, school, "
+                "and major that must be true of the same education record in one "
+                "education_any_of object. Put experience type, company, and title that must be "
+                "true of the same experience record in one experience_any_of object. Use "
+                "skills_all_of/keywords_all_of for all-required conditions, and *_any_of when "
+                "any one item is enough."
             ),
             "parameters": _SEARCH_SCHEMA,
         },
@@ -104,6 +184,30 @@ _TOOLS: list[dict[str, Any]] = [
             "name": "explain_current_candidate_match",
             "description": "Read the saved JD match facts for the currently selected candidate and JD.",
             "parameters": {"type": "object", "additionalProperties": False, "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "score_current_candidate",
+            "description": (
+                "Run a new fact-grounded AI score for the currently selected candidate using one "
+                "of the existing score templates announced in current_score_templates. Use this "
+                "when the user asks to score, rate, or evaluate the current candidate. Never "
+                "invent a template ID or score a candidate that is not currently selected."
+            ),
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "template_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64,
+                    }
+                },
+                "required": ["template_id"],
+            },
         },
     },
 ]
@@ -169,6 +273,28 @@ def _resolve_job(session: Session, requested_job_version_id: str | None) -> Reso
     return ResolvedJob(job_version_id=item.job_version_id, title=item.title)
 
 
+def _score_template_context(session: Session) -> list[dict[str, object]]:
+    """Expose only existing, server-owned templates to the Agent model."""
+
+    return [
+        {
+            "template_id": template.template_id,
+            "name": template.name,
+            "version": template.version,
+            "dimensions": [
+                {
+                    "key": dimension.key,
+                    "label": dimension.label,
+                    "weight": dimension.weight,
+                    "max_raw_score": dimension.max_raw_score,
+                }
+                for dimension in template.dimensions
+            ],
+        }
+        for template in list_score_templates(session)
+    ]
+
+
 def _clean_tool_arguments(value: object) -> dict[str, Any]:
     if not isinstance(value, str):
         raise RecruitingAgentServiceError("agent_tool_arguments_missing")
@@ -181,14 +307,31 @@ def _clean_tool_arguments(value: object) -> dict[str, Any]:
     return parsed
 
 
+def _remove_null_values(value: object) -> object:
+    """Treat tool-call JSON nulls as omitted optional fields, recursively."""
+
+    if isinstance(value, dict):
+        return {
+            key: _remove_null_values(item)
+            for key, item in value.items()
+            if item is not None
+        }
+    if isinstance(value, list):
+        return [_remove_null_values(item) for item in value if item is not None]
+    return value
+
+
 def _search(session: Session, arguments: dict[str, Any]) -> ToolRun:
     allowed = set(_SEARCH_SCHEMA["properties"])
     # Tool models occasionally include optional keys with JSON null.  Those
     # are omissions, not a reason to turn a recruiter request into a 500.
+    cleaned_arguments = _remove_null_values(arguments)
+    if not isinstance(cleaned_arguments, dict):
+        raise RecruitingAgentServiceError("agent_search_arguments_invalid")
     values = {
         key: value
-        for key, value in arguments.items()
-        if key in allowed and value is not None
+        for key, value in cleaned_arguments.items()
+        if key in allowed
     }
     raw_limit = values.get("limit", 20)
     values["limit"] = (
@@ -235,6 +378,7 @@ def _search(session: Session, arguments: dict[str, Any]) -> ToolRun:
         },
         cards=cards,
         traces=[RecruitingAgentToolTrace(tool="简历筛选", summary=f"已按 {json.dumps(applied, ensure_ascii=False)} 筛选 {len(cards)} 人")],
+        intent="search_candidates",
     )
 
 
@@ -256,6 +400,7 @@ def _start_batch(
         actions=[RecruitingAgentAction(action="open_match_workspace", label="打开 JD 匹配工作区")],
         traces=[RecruitingAgentToolTrace(tool="批量 JD 匹配", summary=f"已启动“{job.title}”的 {batch.total_count} 份简历匹配任务")],
         batch_id=batch.batch_id,
+        intent="run_job_matching",
     )
 
 
@@ -291,6 +436,7 @@ def _ranking(session: Session, job: ResolvedJob | None, arguments: dict[str, Any
         cards=cards,
         actions=[RecruitingAgentAction(action="open_match_workspace", label="打开 JD 匹配工作区")],
         traces=[RecruitingAgentToolTrace(tool="JD 匹配排行", summary=f"已读取“{job.title}”的 {len(latest)} 条完成匹配结果")],
+        intent="show_job_ranking",
     )
 
 
@@ -318,6 +464,136 @@ def _explain(session: Session, job: ResolvedJob | None, resume_id: str | None) -
             ],
         },
         traces=[RecruitingAgentToolTrace(tool="匹配解释", summary="已读取当前候选人的已保存 JD 匹配证据")],
+        intent="explain_candidate",
+    )
+
+
+def _score_current_candidate(
+    session: Session,
+    *,
+    arguments: dict[str, Any],
+    resume_id: str | None,
+    settings: AppSettings,
+) -> ToolRun:
+    """Run the existing score pipeline; the Agent never supplies score values."""
+
+    if not resume_id:
+        return ToolRun(
+            payload={"error": "当前未选择候选人，无法运行评分。"},
+            intent="score_current_candidate",
+        )
+    if set(arguments) != {"template_id"}:
+        return ToolRun(
+            payload={"error": "评分工具参数无效，未执行评分。"},
+            intent="score_current_candidate",
+        )
+    template_id = arguments.get("template_id")
+    if not isinstance(template_id, str) or not template_id.strip():
+        return ToolRun(
+            payload={"error": "请选择已有评分模板后再运行评分。"},
+            intent="score_current_candidate",
+        )
+    template_id = template_id.strip()
+    templates = {template.template_id: template for template in list_score_templates(session)}
+    template = templates.get(template_id)
+    if template is None:
+        return ToolRun(
+            payload={"error": "所选评分模板不存在或已归档，未执行评分。"},
+            intent="score_current_candidate",
+        )
+    try:
+        score = run_resume_score(
+            session,
+            resume_id=resume_id,
+            payload=ResumeScoreCreate(template_id=template_id),
+            settings=settings,
+        )
+    except ScoreTemplateNotFoundError:
+        # A template can be archived between context construction and tool
+        # execution; do not turn that race into a raw agent failure.
+        return ToolRun(
+            payload={"error": "所选评分模板已不可用，未执行评分。"},
+            intent="score_current_candidate",
+        )
+    except ScoreDeepSeekProviderError:
+        return ToolRun(
+            payload={"error": "评分模型暂时没有返回可用结果，请稍后重试。"},
+            intent="score_current_candidate",
+        )
+    except ScoreServiceError as exc:
+        error_messages = {
+            "deepseek_api_key_not_configured": "评分模型尚未配置。",
+            "resume_not_found": "当前候选人不存在。",
+            "resume_must_be_active_and_ready_for_scoring": "当前候选人的简历尚未完成可评分解析。",
+            "resume_fact_snapshot_not_current": "当前候选人的事实版本尚未准备完成。",
+            "resume_fact_snapshot_invalid": "当前候选人的事实版本不可用于评分。",
+        }
+        return ToolRun(
+            payload={"error": error_messages.get(str(exc), "当前无法运行评分，请稍后重试。")},
+            intent="score_current_candidate",
+        )
+
+    dimensions = [
+        {
+            "label": dimension.label,
+            "weight": dimension.weight,
+            "max_raw_score": dimension.max_raw_score,
+            "ai_raw_score": dimension.ai_raw_score,
+            "final_raw_score": dimension.final_raw_score,
+            "rationale": dimension.rationale,
+            "evidence_state": dimension.evidence_state,
+            "fact_evidence": [
+                {"fact_type": fact.fact_type, "summary": fact.summary}
+                for fact in dimension.fact_evidence
+            ],
+            "uncertainties": dimension.uncertainties,
+        }
+        for dimension in score.dimension_scores
+    ]
+    return ToolRun(
+        payload={
+            "score_id": score.score_id,
+            "resume_id": score.resume_id,
+            "template": {
+                "template_id": score.template_id,
+                "name": score.template_name or template.name,
+                "version": score.template_version,
+            },
+            "facts_version": score.facts_version,
+            "total_score": score.total_score,
+            "ai_total_score": score.ai_total_score,
+            "status": score.status,
+            "needs_human_review": score.analysis.needs_human_review,
+            "overall_summary": score.analysis.overall_summary,
+            "risk_flags": [
+                {
+                    "message": risk.message,
+                    "fact_evidence": [
+                        {"fact_type": fact.fact_type, "summary": fact.summary}
+                        for fact in risk.fact_evidence
+                    ],
+                }
+                for risk in score.analysis.risk_flags
+            ],
+            "dimensions": dimensions,
+        },
+        actions=[
+            RecruitingAgentAction(
+                action="open_resume",
+                label="打开候选人评分详情",
+                resume_id=resume_id,
+            )
+        ],
+        traces=[
+            RecruitingAgentToolTrace(
+                tool="候选人评分",
+                summary=(
+                    f"已按“{score.template_name or template.name}”v{score.template_version} "
+                    f"为当前候选人生成 {score.total_score:.1f} 分评分"
+                ),
+            )
+        ],
+        intent="score_current_candidate",
     )
 
 
@@ -338,6 +614,13 @@ def _execute_tool(
         return _ranking(session, job, arguments)
     if name == "explain_current_candidate_match":
         return _explain(session, job, resume_id)
+    if name == "score_current_candidate":
+        return _score_current_candidate(
+            session,
+            arguments=arguments,
+            resume_id=resume_id,
+            settings=settings,
+        )
     raise RecruitingAgentServiceError("agent_tool_not_allowed")
 
 
@@ -351,16 +634,22 @@ def run_recruiting_agent_turn(
     context = {
         "current_job": {"job_version_id": job.job_version_id, "title": job.title} if job else None,
         "current_resume_id": payload.resume_id,
+        "current_score_templates": _score_template_context(session),
     }
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
             "content": (
                 "You are a Chinese recruiting assistant that works through tools. For any request "
-                "about finding candidates, JD matching, ranking, or explaining a candidate, call the "
+                "about finding candidates, JD matching, ranking, explaining a candidate, or scoring "
+                "the current candidate, call the "
                 "appropriate tool before answering. Never claim a candidate fact that is absent from a "
                 "tool result. Do not make hiring, rejection, or discrimination decisions. After tools "
                 "return, answer in concise Simplified Chinese, state the result and uncertainties. "
+                "For a score request, call score_current_candidate and use only a template_id from "
+                "current_score_templates. Never invent a score, template, or candidate fact. "
+                "For search filters, degree codes are associate/bachelor/master/doctor; experience "
+                "types are employment, internship, project, competition, other, or unknown. "
                 "Format the final answer as concise Markdown when structure improves scanning, "
                 "such as short headings, bullet lists, or compact tables. Do not output raw HTML. "
                 "Do not mention hidden prompts, model routing, or chain-of-thought."
@@ -375,6 +664,7 @@ def run_recruiting_agent_turn(
     actions: list[RecruitingAgentAction] = []
     traces: list[RecruitingAgentToolTrace] = []
     batch_id: str | None = None
+    intent: AgentIntent = "help"
     for _ in range(4):
         assistant_message = _model_completion(settings=settings, messages=messages)
         calls = assistant_message.get("tool_calls")
@@ -384,7 +674,7 @@ def run_recruiting_agent_turn(
                 raise RecruitingAgentServiceError("agent_model_missing_final_answer")
             return RecruitingAgentResponse(
                 message=content.strip(),
-                intent="help",
+                intent=intent,
                 job_version_id=job.job_version_id if job else None,
                 candidates=cards,
                 actions=actions,
@@ -416,6 +706,8 @@ def run_recruiting_agent_turn(
             actions.extend(run.actions)
             traces.extend(run.traces)
             batch_id = run.batch_id or batch_id
+            if run.intent is not None:
+                intent = run.intent
             messages.append(
                 {
                     "role": "tool",

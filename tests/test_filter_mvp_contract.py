@@ -151,9 +151,14 @@ def test_ready_new_resume_replaces_prior_active_version_in_search(client) -> Non
             "candidate_id": candidate_id,
             "display_name": "测试候选人",
             "resume_id": second_resume_id,
+            "original_filename": "resume.pdf",
             "is_985_211": True,
             "highest_degree": "master",
             "employment_months": 0,
+            "employment_or_internship_months": 0,
+            "summary_preview": None,
+            "score_total": None,
+            "score_template_name": None,
             "matched_filters": ["skills_all_of"],
             "matched_evidence": [
                 {

@@ -7,6 +7,7 @@ import type {
   JobDescriptionGenerateInput,
   JobDescriptionGeneration,
   JobMatchBatch,
+  JobMatchBatchItem,
   JobMatch,
   JobMatchCreate,
   JobVersion,
@@ -436,6 +437,12 @@ export function createApiClient(options: ApiClientOptions = {}) {
 
     getJobMatchBatch(batchId: string): Promise<JobMatchBatch> {
       return request<JobMatchBatch>(`/job-match-batches/${resourcePath(batchId)}`);
+    },
+
+    listJobMatchBatchItems(batchId: string): Promise<JobMatchBatchItem[]> {
+      return request<JobMatchBatchItem[]>(
+        `/job-match-batches/${resourcePath(batchId)}/items`,
+      );
     },
 
     runJobMatch(resumeId: string, input: JobMatchCreate): Promise<JobMatch> {

@@ -9,7 +9,7 @@ from datetime import datetime
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models import Candidate, Resume
+from app.models import Candidate, Resume, ResumeScore, ResumeSummary
 from app.schemas import (
     CandidateSearchItem,
     CandidateSearchMatch,
@@ -19,6 +19,56 @@ from app.schemas import (
     ExperienceFilter,
 )
 from app.services.normalization import normalized_contains, normalized_key
+
+
+_CURRENT_SCORE_STATUSES = {"succeeded", "overridden"}
+_SUMMARY_PREVIEW_MAX_CHARS = 180
+
+
+def _summary_preview(summary: ResumeSummary | None) -> str | None:
+    """Return one compact, recruiter-safe line from the current summary."""
+
+    if summary is None or not isinstance(summary.content, dict):
+        return None
+    sections = summary.content.get("sections")
+    if not isinstance(sections, dict):
+        return None
+    for key in (
+        "candidate_positioning",
+        "work_and_internship",
+        "core_skills",
+        "strengths",
+    ):
+        value = sections.get(key)
+        rendered = value.get("content") if isinstance(value, dict) else value
+        if not isinstance(rendered, str) or not rendered.strip():
+            continue
+        normalized = " ".join(rendered.split())
+        if len(normalized) <= _SUMMARY_PREVIEW_MAX_CHARS:
+            return normalized
+        return f"{normalized[: _SUMMARY_PREVIEW_MAX_CHARS - 1].rstrip()}…"
+    return None
+
+
+def _current_summary(resume: Resume) -> ResumeSummary | None:
+    candidates = [
+        summary
+        for summary in resume.summaries
+        if summary.is_current
+        and summary.status == "succeeded"
+        and summary.facts_version == resume.facts_version
+    ]
+    return max(candidates, key=lambda item: (item.created_at, item.id), default=None)
+
+
+def _latest_score(resume: Resume) -> ResumeScore | None:
+    candidates = [
+        score
+        for score in resume.scores
+        if score.facts_version == resume.facts_version
+        and score.status in _CURRENT_SCORE_STATUSES
+    ]
+    return max(candidates, key=lambda item: (item.created_at, item.id), default=None)
 
 
 def _matches_any_text(value: str | None, expected_values: list[str]) -> bool:
@@ -114,6 +164,8 @@ def search_candidates(
             selectinload(Resume.skills),
             selectinload(Resume.source_blocks),
             selectinload(Resume.candidate),
+            selectinload(Resume.summaries),
+            selectinload(Resume.scores).selectinload(ResumeScore.template),
         )
         .where(Resume.is_active.is_(True), Resume.extraction_status == "ready")
         .order_by(Resume.updated_at.desc(), Resume.id.desc())
@@ -307,15 +359,22 @@ def search_candidates(
             )
 
         candidate: Candidate = resume.candidate
+        summary = _current_summary(resume)
+        score = _latest_score(resume)
         results.append(
             _SearchResult(
                 item=CandidateSearchItem(
                 candidate_id=candidate.id,
                 display_name=candidate.display_name,
                 resume_id=resume.id,
+                original_filename=resume.original_filename,
                 is_985_211=bool(resume.is_985_211),
                 highest_degree=resume.highest_degree,
                 employment_months=resume.employment_months,
+                employment_or_internship_months=resume.employment_or_internship_months,
+                summary_preview=_summary_preview(summary),
+                score_total=score.total_score if score else None,
+                score_template_name=score.template.name if score and score.template else None,
                 matched_filters=matched_filters,
                 matched_evidence=matched_evidence,
                 ),

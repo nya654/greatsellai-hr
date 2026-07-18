@@ -5,7 +5,9 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from app.services.recruiting_agent_service import ResolvedJob, _resolve_job
+from app.services.recruiting_agent_service import ResolvedJob, _TOOLS, _resolve_job
+from test_filter_mvp_contract import _save_ready_resume
+from test_score_service import _fake_score_provider, _template_payload
 
 
 def test_agent_fails_visibly_when_model_is_not_configured(client: TestClient) -> None:
@@ -185,3 +187,224 @@ def test_agent_starts_current_job_batch_with_runtime_settings(
         "job_version_id": "job-version-001",
         "settings": ai_client.app.state.settings,
     }
+
+
+def test_agent_search_supports_full_recruiter_filter_contract(
+    ai_client: TestClient,
+    monkeypatch,
+) -> None:
+    calls = 0
+    captured: dict[str, object] = {}
+
+    def fake_completion(*, settings, messages):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call-complete-search",
+                        "type": "function",
+                        "function": {
+                            "name": "search_candidates",
+                            "arguments": json.dumps(
+                                {
+                                    "is_985_211": True,
+                                    "min_employment_months": 36,
+                                    "min_employment_or_internship_months": 42,
+                                    "education_any_of": [
+                                        {
+                                            "degree_in": ["master"],
+                                            "school_name_contains": ["清华大学"],
+                                            "major_contains": ["计算机"],
+                                        }
+                                    ],
+                                    "experience_any_of": [
+                                        {
+                                            "experience_types": [
+                                                "employment",
+                                                "internship",
+                                            ],
+                                            "organization_name_contains": ["Acme"],
+                                            "title_contains": ["Engineer"],
+                                        }
+                                    ],
+                                    "skills_all_of": ["Python", "SQL"],
+                                    "skills_any_of": ["Kubernetes", "Ray"],
+                                    "keywords_all_of": ["FastAPI"],
+                                    "keywords_any_of": ["LLM", "Agent"],
+                                }
+                            ),
+                        },
+                    }
+                ],
+            }
+        return {"content": "已按完整条件完成筛选。"}
+
+    def fake_search(session, request):
+        captured["request"] = request
+        return SimpleNamespace(items=[], needs_review_count=0)
+
+    monkeypatch.setattr(
+        "app.services.recruiting_agent_service._model_completion",
+        fake_completion,
+    )
+    monkeypatch.setattr(
+        "app.services.recruiting_agent_service.search_candidates",
+        fake_search,
+    )
+
+    response = ai_client.post(
+        "/v1/recruiting-agent/turns",
+        json={"message": "筛 985/211、清华计算机硕士、3 年工作且工作加实习 42 个月的 Python 人才"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["intent"] == "search_candidates"
+    request = captured["request"]
+    assert request.is_985_211 is True
+    assert request.min_employment_months == 36
+    assert request.min_employment_or_internship_months == 42
+    assert request.education_any_of[0].degree_in == ["master"]
+    assert request.education_any_of[0].school_name_contains == ["清华大学"]
+    assert request.education_any_of[0].major_contains == ["计算机"]
+    assert request.experience_any_of[0].experience_types == ["employment", "internship"]
+    assert request.experience_any_of[0].organization_name_contains == ["Acme"]
+    assert request.experience_any_of[0].title_contains == ["Engineer"]
+    assert request.skills_all_of == ["Python", "SQL"]
+    assert request.skills_any_of == ["Kubernetes", "Ray"]
+    assert request.keywords_all_of == ["FastAPI"]
+    assert request.keywords_any_of == ["LLM", "Agent"]
+
+    search_tool = next(
+        item["function"] for item in _TOOLS if item["function"]["name"] == "search_candidates"
+    )
+    properties = search_tool["parameters"]["properties"]
+    assert {"education_any_of", "experience_any_of", "skills_all_of", "skills_any_of", "keywords_all_of", "keywords_any_of"}.issubset(properties)
+
+
+def test_agent_runs_current_candidate_score_with_existing_template(
+    ai_client: TestClient,
+    monkeypatch,
+) -> None:
+    _, resume_id = _save_ready_resume(
+        ai_client,
+        source_text=(
+            "Education 清华大学 计算机 工作经历 "
+            "Acme Python Engineer Skills Python SQL"
+        ),
+    )
+    template = ai_client.post("/v1/score-templates", json=_template_payload())
+    assert template.status_code == 200, template.text
+    template_id = template.json()["template_id"]
+    calls = 0
+
+    def fake_completion(*, settings, messages):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            # The model receives only server-owned template IDs, not an
+            # unbounded template-creation surface.
+            assert template_id in messages[-1]["content"]
+            return {
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call-score-current",
+                        "type": "function",
+                        "function": {
+                            "name": "score_current_candidate",
+                            "arguments": json.dumps({"template_id": template_id}),
+                        },
+                    }
+                ],
+            }
+        return {"content": "## 评分结果\n\n已生成评分，请结合证据与不确定项判断。"}
+
+    monkeypatch.setattr(
+        "app.services.recruiting_agent_service._model_completion",
+        fake_completion,
+    )
+    monkeypatch.setattr(
+        "app.services.score_service.score_resume_fact_snapshot",
+        _fake_score_provider,
+    )
+
+    response = ai_client.post(
+        "/v1/recruiting-agent/turns",
+        json={"message": "用现有模板给当前候选人评分", "resume_id": resume_id},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["intent"] == "score_current_candidate"
+    assert payload["message"].startswith("## 评分结果")
+    assert payload["tool_trace"] == [
+        {
+            "tool": "候选人评分",
+            "summary": "已按“Backend Engineer”v1 为当前候选人生成 50.0 分评分",
+        }
+    ]
+    assert payload["actions"] == [
+        {
+            "action": "open_resume",
+            "label": "打开候选人评分详情",
+            "resume_id": resume_id,
+        }
+    ]
+    saved_scores = ai_client.get(f"/v1/resumes/{resume_id}/scores")
+    assert saved_scores.status_code == 200, saved_scores.text
+    assert len(saved_scores.json()) == 1
+    assert saved_scores.json()[0]["template_id"] == template_id
+
+
+def test_agent_never_runs_score_with_an_unlisted_template(
+    ai_client: TestClient,
+    monkeypatch,
+) -> None:
+    calls = 0
+    score_called = False
+
+    def fake_completion(*, settings, messages):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call-invalid-score-template",
+                        "type": "function",
+                        "function": {
+                            "name": "score_current_candidate",
+                            "arguments": json.dumps({"template_id": "invented-template"}),
+                        },
+                    }
+                ],
+            }
+        assert "不存在或已归档" in messages[-1]["content"]
+        return {"content": "当前模板不可用，未执行评分。"}
+
+    def unexpected_score(*args, **kwargs):
+        nonlocal score_called
+        score_called = True
+        raise AssertionError("unlisted template must not reach the scoring service")
+
+    monkeypatch.setattr(
+        "app.services.recruiting_agent_service._model_completion",
+        fake_completion,
+    )
+    monkeypatch.setattr(
+        "app.services.recruiting_agent_service.run_resume_score",
+        unexpected_score,
+    )
+
+    response = ai_client.post(
+        "/v1/recruiting-agent/turns",
+        json={"message": "给当前候选人评分", "resume_id": "resume-not-real"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["intent"] == "score_current_candidate"
+    assert score_called is False

@@ -4,12 +4,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.config import AppSettings
 from app.database import Database
 from app.models import JobMatch, JobMatchBatch, JobMatchBatchItem, JobVersion, Resume, ResumeFactSnapshot
-from app.schemas import JobMatchBatchResponse, JobMatchCreate
+from app.schemas import JobMatchBatchItemResponse, JobMatchBatchResponse, JobMatchCreate
 from app.services.deepseek_provider import DeepSeekProviderError
 from app.services.job_service import (
     JobServiceError,
@@ -155,6 +155,39 @@ def get_job_match_batch(session: Session, *, batch_id: str) -> JobMatchBatchResp
     if batch is None:
         raise JobServiceError("job_match_batch_not_found")
     return _batch_response(batch)
+
+
+def list_job_match_batch_items(
+    session: Session,
+    *,
+    batch_id: str,
+) -> list[JobMatchBatchItemResponse]:
+    """Expose durable per-resume progress so a recruiter can inspect failures."""
+
+    if session.get(JobMatchBatch, batch_id) is None:
+        raise JobServiceError("job_match_batch_not_found")
+    items = session.scalars(
+        select(JobMatchBatchItem)
+        .where(JobMatchBatchItem.batch_id == batch_id)
+        .options(selectinload(JobMatchBatchItem.resume).selectinload(Resume.candidate))
+        .order_by(JobMatchBatchItem.updated_at.desc(), JobMatchBatchItem.id.desc())
+    ).all()
+    return [
+        JobMatchBatchItemResponse(
+            item_id=item.id,
+            resume_id=item.resume_id,
+            candidate_id=item.resume.candidate_id,
+            candidate_display_name=item.resume.candidate.display_name,
+            facts_version=item.facts_version,
+            status=item.status,
+            attempt_count=item.attempt_count,
+            last_error=item.last_error,
+            job_match_id=item.job_match_id,
+            completed_at=item.completed_at.isoformat() if item.completed_at else None,
+            updated_at=item.updated_at.isoformat(),
+        )
+        for item in items
+    ]
 
 
 def run_job_match_batch_worker_once(

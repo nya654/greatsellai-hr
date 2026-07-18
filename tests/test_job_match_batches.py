@@ -85,6 +85,12 @@ def test_confirmed_jd_can_queue_and_cache_all_ready_resume_matches(
     assert completed.json()["completed_count"] == 2
     assert completed.json()["failed_count"] == 0
 
+    batch_items = ai_client.get(f"/v1/job-match-batches/{batch_id}/items")
+    assert batch_items.status_code == 200, batch_items.text
+    assert len(batch_items.json()) == 2
+    assert {item["status"] for item in batch_items.json()} == {"completed"}
+    assert {item["candidate_display_name"] for item in batch_items.json()} == {"测试候选人"}
+
     matches = ai_client.get(f"/v1/job-versions/{job_version_id}/matches")
     assert matches.status_code == 200, matches.text
     assert len(matches.json()) == 2

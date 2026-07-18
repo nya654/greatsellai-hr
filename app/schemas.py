@@ -139,6 +139,7 @@ class RecruitingAgentResponse(ApiModel):
         "run_job_matching",
         "show_job_ranking",
         "explain_candidate",
+        "score_current_candidate",
         "help",
     ]
     job_version_id: str | None = None
@@ -480,9 +481,14 @@ class CandidateSearchItem(ApiModel):
     candidate_id: str
     display_name: str | None
     resume_id: str
+    original_filename: str
     is_985_211: bool
     highest_degree: DegreeLevel | None
     employment_months: int
+    employment_or_internship_months: int
+    summary_preview: str | None = None
+    score_total: float | None = None
+    score_template_name: str | None = None
     matched_filters: list[str]
     matched_evidence: list["CandidateSearchMatch"] = Field(default_factory=list)
 
@@ -577,17 +583,96 @@ class ScoreTemplateResponse(ApiModel):
     dimensions: list[ScoreDimensionInput]
 
 
+class ResumeScoreFactEvidence(ApiModel):
+    """A score citation resolved against the immutable fact snapshot.
+
+    The provider only returns opaque fact IDs.  Returning the small, factual
+    projection here lets the client explain a score without sending it back to
+    the model or trying to reconstruct a historical snapshot in the browser.
+    """
+
+    fact_id: str
+    fact_type: Literal["education", "experience", "skill", "unknown"]
+    summary: str
+    evidence_block_ids: list[str]
+
+
+class ResumeScoreManualAdjustment(ApiModel):
+    """The current manual value for one dimension, if it differs from AI."""
+
+    raw_score: float
+    reason: str
+    actor: str
+    adjusted_at: str
+
+
+class ResumeScoreDimensionResponse(ApiModel):
+    key: str
+    label: str
+    weight: int
+    max_raw_score: int
+    ai_raw_score: float
+    final_raw_score: float
+    # ``weighted_score`` remains for clients of the original API.  It is the
+    # final contribution, while the two explicit fields make an override
+    # unambiguous in new clients.
+    weighted_score: float
+    ai_weighted_score: float
+    final_weighted_score: float
+    rationale: str
+    fact_ids: list[str]
+    fact_evidence: list[ResumeScoreFactEvidence] = Field(default_factory=list)
+    evidence_state: Literal["grounded", "insufficient_information"]
+    uncertainties: list[str]
+    manual_reason: str | None
+    adjusted_at: str | None
+    manual_adjustment: ResumeScoreManualAdjustment | None = None
+
+
+class ResumeScoreRiskFlag(ApiModel):
+    message: str
+    fact_ids: list[str]
+    fact_evidence: list[ResumeScoreFactEvidence] = Field(default_factory=list)
+
+
+class ResumeScoreAnalysisResponse(ApiModel):
+    schema_version: str | None = None
+    overall_summary: str = ""
+    risk_flags: list[ResumeScoreRiskFlag] = Field(default_factory=list)
+    needs_human_review: bool = False
+
+
+class ResumeScoreAuditEntry(ApiModel):
+    audit_id: str
+    action: str
+    actor: str
+    reason: str | None
+    dimension_key: str | None
+    ai_raw_score: float | None
+    previous_final_raw_score: float | None
+    final_raw_score: float | None
+    facts_version: int | None
+    template_version: int | None
+    created_at: str
+
+
 class ResumeScoreResponse(ApiModel):
     score_id: str
     resume_id: str
     fact_snapshot_id: str | None
     template_id: str
+    template_name: str | None
+    template_description: str | None
     facts_version: int
     template_version: int
+    fact_snapshot_created_at: str | None
+    is_current_facts_version: bool
+    is_current_template_version: bool
     total_score: float
     ai_total_score: float | None
-    dimension_scores: list[dict[str, object]]
-    analysis: dict[str, object]
+    dimension_scores: list[ResumeScoreDimensionResponse]
+    analysis: ResumeScoreAnalysisResponse
+    audit_trail: list[ResumeScoreAuditEntry] = Field(default_factory=list)
     status: str
     model_name: str | None
     created_at: str
@@ -821,6 +906,20 @@ class JobMatchBatchResponse(ApiModel):
     started_at: str | None
     completed_at: str | None
     last_error: str | None
+
+
+class JobMatchBatchItemResponse(ApiModel):
+    item_id: str
+    resume_id: str
+    candidate_id: str
+    candidate_display_name: str | None
+    facts_version: int
+    status: str
+    attempt_count: int
+    last_error: str | None
+    job_match_id: str | None
+    completed_at: str | None
+    updated_at: str
 
 
 class JobMatchRequirementResponse(ApiModel):

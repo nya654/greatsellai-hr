@@ -102,6 +102,7 @@ export type RecruitingAgentIntent =
   | "run_job_matching"
   | "show_job_ranking"
   | "explain_candidate"
+  | "score_current_candidate"
   | "help";
 
 export interface RecruitingAgentTurnInput {
@@ -329,9 +330,14 @@ export interface CandidateSearchItem {
   candidate_id: string;
   display_name: string | null;
   resume_id: string;
+  original_filename: string;
   is_985_211: boolean;
   highest_degree: DegreeLevel | null;
   employment_months: number;
+  employment_or_internship_months: number;
+  summary_preview: string | null;
+  score_total: number | null;
+  score_template_name: string | null;
   matched_filters: string[];
   matched_evidence: CandidateSearchMatch[];
 }
@@ -409,19 +415,59 @@ export interface ResumeScoreDimension {
   max_raw_score: number;
   ai_raw_score: number;
   final_raw_score: number;
+  /** Final weighted contribution; kept for compatibility with earlier API responses. */
   weighted_score: number;
+  ai_weighted_score: number;
+  final_weighted_score: number;
   rationale: string;
   fact_ids: string[];
+  fact_evidence: ResumeScoreFactEvidence[];
+  evidence_state: "grounded" | "insufficient_information";
   uncertainties: string[];
   manual_reason: string | null;
   adjusted_at: string | null;
+  manual_adjustment: ResumeScoreManualAdjustment | null;
 }
 
-export interface ResumeScoreAnalysis extends JsonObject {
-  schema_version?: string;
-  overall_summary?: string;
-  risk_flags?: string[];
-  needs_human_review?: boolean;
+export interface ResumeScoreFactEvidence {
+  fact_id: string;
+  fact_type: "education" | "experience" | "skill" | "unknown";
+  summary: string;
+  evidence_block_ids: string[];
+}
+
+export interface ResumeScoreManualAdjustment {
+  raw_score: number;
+  reason: string;
+  actor: string;
+  adjusted_at: string;
+}
+
+export interface ResumeScoreRiskFlag {
+  message: string;
+  fact_ids: string[];
+  fact_evidence: ResumeScoreFactEvidence[];
+}
+
+export interface ResumeScoreAnalysis {
+  schema_version: string | null;
+  overall_summary: string;
+  risk_flags: ResumeScoreRiskFlag[];
+  needs_human_review: boolean;
+}
+
+export interface ResumeScoreAuditEntry {
+  audit_id: string;
+  action: string;
+  actor: string;
+  reason: string | null;
+  dimension_key: string | null;
+  ai_raw_score: number | null;
+  previous_final_raw_score: number | null;
+  final_raw_score: number | null;
+  facts_version: number | null;
+  template_version: number | null;
+  created_at: string;
 }
 
 export interface ResumeScore {
@@ -429,12 +475,18 @@ export interface ResumeScore {
   resume_id: string;
   fact_snapshot_id: string | null;
   template_id: string;
+  template_name: string | null;
+  template_description: string | null;
   facts_version: number;
   template_version: number;
+  fact_snapshot_created_at: string | null;
+  is_current_facts_version: boolean;
+  is_current_template_version: boolean;
   total_score: number;
   ai_total_score: number | null;
   dimension_scores: ResumeScoreDimension[];
   analysis: ResumeScoreAnalysis;
+  audit_trail: ResumeScoreAuditEntry[];
   status: string;
   model_name: string | null;
   created_at: string;
@@ -562,6 +614,20 @@ export interface JobMatchBatch {
   started_at: string | null;
   completed_at: string | null;
   last_error: string | null;
+}
+
+export interface JobMatchBatchItem {
+  item_id: string;
+  resume_id: string;
+  candidate_id: string;
+  candidate_display_name: string | null;
+  facts_version: number;
+  status: string;
+  attempt_count: number;
+  last_error: string | null;
+  job_match_id: string | null;
+  completed_at: string | null;
+  updated_at: string;
 }
 
 export interface JobMatchRequirementResult {

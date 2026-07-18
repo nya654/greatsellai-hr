@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -162,6 +163,9 @@ from app.services.mailbox_import_service import (
     save_mailbox_config,
     sync_mailbox,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def _resume_detail(resume: object) -> ResumeDetail:
@@ -532,14 +536,25 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                 payload=payload,
                 settings=settings,
             )
+            _commit_or_raise(session)
         except RecruitingAgentServiceError as exc:
+            session.rollback()
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=str(exc),
             ) from exc
         except JobServiceError as exc:
+            session.rollback()
             _raise_job_service_error(exc)
-        _commit_or_raise(session)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            session.rollback()
+            logger.exception("Recruiting-agent request failed")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="agent_service_unavailable",
+            ) from exc
         return response
 
     @app.post(

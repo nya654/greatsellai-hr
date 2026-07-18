@@ -1243,9 +1243,128 @@ button {
   border-radius: 0.625rem;
 }
 
-.agent-message p {
+.agent-message > p {
   margin: 0;
   white-space: pre-wrap;
+}
+
+.agent-markdown {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-markdown > :first-child {
+  margin-top: 0;
+}
+
+.agent-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.agent-markdown p {
+  margin: 0.5rem 0;
+}
+
+.agent-markdown h1,
+.agent-markdown h2,
+.agent-markdown h3,
+.agent-markdown h4 {
+  margin: 0.875rem 0 0.375rem;
+  color: var(--ink);
+  font-size: 0.9375rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.agent-markdown h1 {
+  font-size: 1.0625rem;
+}
+
+.agent-markdown h2 {
+  font-size: 1rem;
+}
+
+.agent-markdown ul,
+.agent-markdown ol {
+  padding-left: 1.25rem;
+  margin: 0.5rem 0;
+}
+
+.agent-markdown li + li {
+  margin-top: 0.25rem;
+}
+
+.agent-markdown blockquote {
+  padding: 0.5rem 0.625rem;
+  margin: 0.625rem 0;
+  color: var(--ink-soft);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+}
+
+.agent-markdown pre {
+  max-width: 100%;
+  padding: 0.75rem;
+  margin: 0.625rem 0;
+  overflow-x: auto;
+  color: var(--ink);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.75rem;
+  line-height: 1.55;
+  background: #f0efed;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+}
+
+.agent-markdown :not(pre) > code {
+  padding: 0.1rem 0.25rem;
+  color: var(--ink);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.82em;
+  background: #f0efed;
+  border: 1px solid var(--line);
+  border-radius: 0.2rem;
+}
+
+.agent-markdown pre code {
+  font: inherit;
+  background: transparent;
+}
+
+.agent-markdown table {
+  display: block;
+  max-width: 100%;
+  margin: 0.625rem 0;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+}
+
+.agent-markdown th,
+.agent-markdown td {
+  min-width: 5rem;
+  padding: 0.375rem 0.5rem;
+  vertical-align: top;
+  text-align: left;
+  border: 1px solid var(--line);
+}
+
+.agent-markdown th {
+  color: var(--ink);
+  font-weight: 700;
+  background: var(--surface);
+}
+
+.agent-markdown a {
+  color: var(--blue);
+  text-decoration: underline;
+  text-underline-offset: 0.125rem;
+}
+
+.agent-markdown input[type="checkbox"] {
+  margin-right: 0.375rem;
+  accent-color: var(--red);
 }
 
 .agent-tool-trace {
@@ -1268,6 +1387,30 @@ button {
 
 .agent-message.is-assistant {
   border-bottom-left-radius: 0.1875rem;
+}
+
+.agent-message.is-error {
+  color: #8f1719;
+  background: #fff7f7;
+  border-color: #f0c7c7;
+}
+
+.agent-retry-row {
+  display: flex;
+  margin-top: 0.625rem;
+}
+
+.agent-retry-button {
+  min-height: 2rem;
+  padding: 0.3125rem 0.5rem;
+  color: #8f1719;
+  font-size: 0.75rem;
+}
+
+.agent-retry-button:hover:not(:disabled) {
+  color: #741113;
+  background: #fff;
+  border-color: #f0c7c7;
 }
 
 .agent-candidate-list {

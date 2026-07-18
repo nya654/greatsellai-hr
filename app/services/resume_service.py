@@ -88,6 +88,12 @@ class FactValidationError(ResumeServiceError):
     pass
 
 
+def _database_safe_text(value: str) -> str:
+    """Remove characters PostgreSQL cannot store in text columns."""
+
+    return value.replace("\x00", "")
+
+
 _MAX_IDEMPOTENCY_KEY_LENGTH = 255
 
 
@@ -273,6 +279,7 @@ def save_pdf_resume(
             session.flush()
             return resume
 
+        raw_text = _database_safe_text(extracted.raw_text)
         resume = Resume(
             candidate_id=candidate_id,
             original_filename=submitted_name[:255],
@@ -283,13 +290,14 @@ def save_pdf_resume(
             extraction_status=extracted.status,
             quality_flags=extracted.quality_flags,
             parser_version=extracted.parser_version,
-            raw_text=extracted.raw_text or None,
+            raw_text=raw_text or None,
             is_985_211=None,
         )
         session.add(resume)
         session.flush()
         for page in extracted.pages:
-            if not page.text:
+            page_text = _database_safe_text(page.text)
+            if not page_text:
                 continue
             session.add(
                 ResumeSourceBlock(
@@ -297,7 +305,7 @@ def save_pdf_resume(
                     block_id=f"page-{page.page_no:03d}",
                     page_no=page.page_no,
                     block_type="page_text",
-                    text=page.text,
+                    text=page_text,
                 )
             )
         session.flush()
@@ -366,10 +374,11 @@ def reparse_inactive_resume_source_text(
     resume.extraction_status = extracted.status
     resume.quality_flags = extracted.quality_flags
     resume.parser_version = extracted.parser_version
-    resume.raw_text = extracted.raw_text or None
+    resume.raw_text = _database_safe_text(extracted.raw_text) or None
     resume.facts_version += 1
     for page in extracted.pages:
-        if not page.text:
+        page_text = _database_safe_text(page.text)
+        if not page_text:
             continue
         session.add(
             ResumeSourceBlock(
@@ -377,7 +386,7 @@ def reparse_inactive_resume_source_text(
                 block_id=f"page-{page.page_no:03d}",
                 page_no=page.page_no,
                 block_type="page_text",
-                text=page.text,
+                text=page_text,
             )
         )
     session.flush()

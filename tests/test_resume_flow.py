@@ -6,8 +6,9 @@ from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 from sqlalchemy import select
 
-from app.models import ResumeSourceBlock
+from app.models import Resume, ResumeSourceBlock
 from app.services.institution_service import load_registry
+from app.services.text_extraction import ExtractedPage, PdfExtractionResult
 
 
 def make_pdf_with_text(text: str) -> bytes:
@@ -60,6 +61,56 @@ def upload_text_resume(client, candidate_id: str) -> str:
     assert payload["source_page_count"] == 1
     assert payload["parsed_page_count"] == 1
     return payload["resume_id"]
+
+
+def test_upload_strips_database_unsafe_nulls_from_extracted_text(
+    client,
+    monkeypatch,
+) -> None:
+    extracted = PdfExtractionResult(
+        source_page_count=1,
+        parsed_page_count=1,
+        pages=[
+            ExtractedPage(
+                page_no=1,
+                text="Python\x00 FastAPI engineer",
+                non_whitespace_chars=23,
+            )
+        ],
+        raw_text="--- PAGE 1 ---\nPython\x00 FastAPI engineer",
+        quality_flags=[],
+        parser_version="test-parser",
+    )
+    monkeypatch.setattr(
+        "app.services.resume_service.extract_document_text",
+        lambda *args, **kwargs: extracted,
+    )
+
+    response = client.post(
+        "/v1/resumes/upload",
+        files={
+            "file": (
+                "resume.pdf",
+                make_pdf_with_text("Python FastAPI engineer"),
+                "application/pdf",
+            )
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    resume_id = response.json()["resume_id"]
+    with client.app.state.database.session_factory() as session:
+        resume = session.get(Resume, resume_id)
+        source_block = session.scalar(
+            select(ResumeSourceBlock).where(
+                ResumeSourceBlock.resume_id == resume_id,
+                ResumeSourceBlock.block_id == "page-001",
+            )
+        )
+        assert resume is not None
+        assert source_block is not None
+        assert "\x00" not in (resume.raw_text or "")
+        assert "\x00" not in source_block.text
 
 
 def replace_page_evidence(client, resume_id: str, text: str) -> None:

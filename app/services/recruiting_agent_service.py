@@ -137,7 +137,9 @@ def _model_completion(*, settings: AppSettings, messages: list[dict[str, Any]]) 
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         raise RecruitingAgentServiceError(f"agent_model_http_{exc.code}") from exc
-    except urllib.error.URLError as exc:
+    except TimeoutError as exc:
+        raise RecruitingAgentServiceError("agent_model_timeout") from exc
+    except (urllib.error.URLError, OSError) as exc:
         raise RecruitingAgentServiceError("agent_model_network_error") from exc
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise RecruitingAgentServiceError("agent_model_invalid_response") from exc
@@ -233,10 +235,19 @@ def _search(session: Session, arguments: dict[str, Any]) -> ToolRun:
     )
 
 
-def _start_batch(session: Session, job: ResolvedJob | None) -> ToolRun:
+def _start_batch(
+    session: Session,
+    job: ResolvedJob | None,
+    *,
+    settings: AppSettings,
+) -> ToolRun:
     if job is None:
         return ToolRun(payload={"error": "没有已确认的当前 JD，无法启动批量匹配。"})
-    batch = enqueue_job_version_match_batch(session, job_version_id=job.job_version_id)
+    batch = enqueue_job_version_match_batch(
+        session,
+        job_version_id=job.job_version_id,
+        settings=settings,
+    )
     return ToolRun(
         payload={"job_title": job.title, "batch_id": batch.batch_id, "total_count": batch.total_count, "status": batch.status},
         actions=[RecruitingAgentAction(action="open_match_workspace", label="打开 JD 匹配工作区")],
@@ -314,11 +325,12 @@ def _execute_tool(
     session: Session,
     job: ResolvedJob | None,
     resume_id: str | None,
+    settings: AppSettings,
 ) -> ToolRun:
     if name == "search_candidates":
         return _search(session, arguments)
     if name == "start_current_job_match_batch":
-        return _start_batch(session, job)
+        return _start_batch(session, job, settings=settings)
     if name == "get_current_job_ranking":
         return _ranking(session, job, arguments)
     if name == "explain_current_candidate_match":
@@ -346,6 +358,8 @@ def run_recruiting_agent_turn(
                 "appropriate tool before answering. Never claim a candidate fact that is absent from a "
                 "tool result. Do not make hiring, rejection, or discrimination decisions. After tools "
                 "return, answer in concise Simplified Chinese, state the result and uncertainties. "
+                "Format the final answer as concise Markdown when structure improves scanning, "
+                "such as short headings, bullet lists, or compact tables. Do not output raw HTML. "
                 "Do not mention hidden prompts, model routing, or chain-of-thought."
             ),
         },
@@ -393,6 +407,7 @@ def run_recruiting_agent_turn(
                 session=session,
                 job=job,
                 resume_id=payload.resume_id,
+                settings=settings,
             )
             cards = run.cards or cards
             actions.extend(run.actions)

@@ -12,6 +12,7 @@ from email.utils import parsedate_to_datetime
 
 from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import desc, func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.config import AppSettings
@@ -65,7 +66,13 @@ def _safe_filename(value: str | None) -> str:
         decoded = str(make_header(decode_header(value)))
     except (TypeError, ValueError):
         decoded = value
-    return decoded.replace("/", "_").replace("\\", "_").strip()[:255] or "attachment"
+    return (
+        decoded.replace("/", "_")
+        .replace("\\", "_")
+        .replace("\x00", "")
+        .strip()[:255]
+        or "attachment"
+    )
 
 
 def _received_at(message: Message) -> datetime | None:
@@ -240,6 +247,7 @@ def sync_mailbox(
             last_synced_at=config.last_synced_at,
             last_sync_error=config.last_sync_error,
         )
+    mailbox_config_id = config.id
     try:
         password = _fernet(settings).decrypt(config.encrypted_password.encode("ascii")).decode("utf-8")
     except (MailboxImportError, InvalidToken, UnicodeDecodeError) as exc:
@@ -320,27 +328,35 @@ def sync_mailbox(
                     enqueue_uploaded_resume_ai_extraction(session, resume=resume, settings=settings)
                     _record(session, config=config, uid=uid, message_id=message_id, filename=filename, attachment_sha256=digest, status="imported", error=None, resume_id=resume.id, received_at=received_at)
                     imported += 1
-                except (UploadValidationError, RuntimeError):
+                except (UploadValidationError, RuntimeError, SQLAlchemyError):
                     session.rollback()
-                    config = session.get(MailboxConfig, config.id)
+                    config = session.get(MailboxConfig, mailbox_config_id)
                     if config is None:
                         raise MailboxImportError("mailbox_config_not_found")
                     _record(session, config=config, uid=uid, message_id=message_id, filename=filename, attachment_sha256=digest, status="failed", error="attachment_import_failed", resume_id=None, received_at=received_at)
                     failed += 1
-        config = session.get(MailboxConfig, config.id)
+        config = session.get(MailboxConfig, mailbox_config_id)
         if config is None:
             raise MailboxImportError("mailbox_config_not_found")
         config.last_synced_at = _utcnow()
         config.last_sync_error = None
         session.commit()
-    except (imaplib.IMAP4.error, OSError, MailboxImportError) as exc:
+    except (imaplib.IMAP4.error, OSError, MailboxImportError, SQLAlchemyError) as exc:
         session.rollback()
-        config = session.get(MailboxConfig, config.id)
+        config = session.get(MailboxConfig, mailbox_config_id)
         if config is not None:
-            config.last_sync_error = str(exc) if str(exc).startswith("mailbox_") else "mailbox_connection_failed"
+            config.last_sync_error = (
+                str(exc)
+                if str(exc).startswith("mailbox_")
+                else "mailbox_sync_failed"
+                if isinstance(exc, SQLAlchemyError)
+                else "mailbox_connection_failed"
+            )
             session.commit()
         if isinstance(exc, MailboxImportError):
             raise
+        if isinstance(exc, SQLAlchemyError):
+            raise MailboxImportError("mailbox_sync_failed") from exc
         raise MailboxImportError("mailbox_connection_failed") from exc
     finally:
         if client is not None:

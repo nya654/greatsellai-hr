@@ -8,6 +8,8 @@ import {
   type DragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   api,
   isApiError,
@@ -255,12 +257,44 @@ function humanizeError(error: unknown): string {
       mailbox_connection_failed: "无法连接邮箱，请检查 IMAP 地址、端口和授权码。",
       mailbox_select_failed: "无法打开指定的邮箱文件夹。",
       mailbox_search_failed: "无法检索邮箱中的附件。",
+      mailbox_sync_failed: "邮箱入库暂时异常，请稍后重试。",
       score_template_not_found: "评分规则不存在，请重新选择。",
       job_version_not_found: "岗位版本不存在，请重新创建。",
     };
-    return messages[error.message] ?? `操作没有完成：${error.message}`;
+    const message = messages[error.message];
+    if (message) return message;
+    if (error.status >= 500) return "服务暂时不可用，请稍后重试。";
+    return `操作没有完成：${error.message}`;
   }
   return "操作没有完成。请检查网络后重试。";
+}
+
+function humanizeAgentError(error: unknown): string {
+  if (isApiError(error)) {
+    const messages: Record<string, string> = {
+      agent_model_not_configured: "招聘助手尚未配置 AI 服务。",
+      agent_model_timeout: "招聘助手响应超时，请稍后重试。",
+      agent_model_network_error: "招聘助手暂时无法连接 AI 服务，请稍后重试。",
+      agent_service_unavailable: "招聘助手暂时不可用，请稍后重试。",
+      agent_model_invalid_response: "招聘助手暂时没有返回有效结果，请重新发送。",
+      agent_model_empty_response: "招聘助手暂时没有返回有效结果，请重新发送。",
+      agent_model_missing_final_answer: "招聘助手暂时没有完成回答，请重新发送。",
+      agent_model_invalid_tool_calls: "招聘助手的工具调用异常，请重新发送。",
+      agent_model_tool_loop_limit: "招聘助手本次处理步骤过多，请换一种说法后重试。",
+    };
+    if (messages[error.message]) return messages[error.message];
+    if (error.message.startsWith("agent_model_http_")) {
+      return error.message === "agent_model_http_429"
+        ? "招聘助手请求过于频繁，请稍后重试。"
+        : "招聘助手暂时不可用，请稍后重试。";
+    }
+  }
+  return humanizeError(error);
+}
+
+function isRetryableAgentError(error: unknown): boolean {
+  if (!isApiError(error)) return true;
+  return error.status === 408 || error.status === 429 || error.status >= 500;
 }
 
 const SUPPORTED_RESUME_EXTENSIONS = new Set([
@@ -1082,6 +1116,43 @@ interface AgentChatMessage {
   candidates?: RecruitingAgentCandidate[];
   actions?: RecruitingAgentAction[];
   toolTrace?: RecruitingAgentToolTrace[];
+  failure?: boolean;
+  retryMessage?: string;
+}
+
+function agentMarkdownUrlTransform(url: string): string {
+  const normalized = defaultUrlTransform(url);
+  return /^(?:https?:|mailto:)/i.test(normalized) ? normalized : "";
+}
+
+function AgentMarkdown({ content }: { content: string }) {
+  return (
+    <div className="agent-markdown">
+      <ReactMarkdown
+        components={{
+          a({ children, href, node: _node, ...props }) {
+            if (!href) return <>{children}</>;
+            return (
+              <a
+                {...props}
+                href={href}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                {children}
+              </a>
+            );
+          },
+        }}
+        disallowedElements={["img"]}
+        remarkPlugins={[remarkGfm]}
+        skipHtml
+        urlTransform={agentMarkdownUrlTransform}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 function RecruitingAgentDrawer({
@@ -1157,12 +1228,15 @@ function RecruitingAgentDrawer({
       });
       addAssistantReply(turn);
     } catch (error) {
+      const failureMessage = humanizeAgentError(error);
       setMessages((current) => [
         ...current,
         {
           id: Date.now() + 1,
           role: "assistant",
-          content: `暂时无法完成这项操作：${humanizeError(error)}`,
+          content: failureMessage,
+          failure: true,
+          retryMessage: isRetryableAgentError(error) ? message : undefined,
         },
       ]);
     } finally {
@@ -1213,8 +1287,28 @@ function RecruitingAgentDrawer({
       </div>
       <div className="agent-conversation" aria-live="polite">
         {messages.map((item) => (
-          <article className={`agent-message is-${item.role}`} key={item.id}>
-            <p>{item.content}</p>
+          <article
+            className={`agent-message is-${item.role}${item.failure ? " is-error" : ""}`}
+            key={item.id}
+          >
+            {item.role === "assistant" ? (
+              <AgentMarkdown content={item.content} />
+            ) : (
+              <p>{item.content}</p>
+            )}
+            {item.retryMessage && (
+              <div className="agent-retry-row">
+                <button
+                  className="button button-ghost agent-retry-button"
+                  disabled={loading}
+                  onClick={() => void send(item.retryMessage!)}
+                  type="button"
+                >
+                  <Icon name="refresh" size={15} />
+                  重新发送
+                </button>
+              </div>
+            )}
             {!!item.toolTrace?.length && (
               <div className="agent-tool-trace">
                 {item.toolTrace.map((trace, index) => (

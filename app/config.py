@@ -39,7 +39,10 @@ class AppSettings:
     ai_extraction_job_lease_seconds: int = 180
     ai_extraction_worker_poll_seconds: float = 2.0
     mailbox_sync_interval_seconds: float = 600.0
-    mailbox_sync_attachment_limit: int = 100
+    # This is a per-run message batch, not an unbounded mailbox scan. Each
+    # following run resumes older unseen message UIDs after newer ones are
+    # recorded, so the worker remains responsive on large mailboxes.
+    mailbox_sync_attachment_limit: int = 20
     email_credentials_key: str | None = None
     max_upload_bytes: int = 15 * 1024 * 1024
     min_text_chars_per_page: int = 80
@@ -102,7 +105,7 @@ class AppSettings:
                 os.getenv("RESUME_V3_MAILBOX_SYNC_INTERVAL_SECONDS", "600")
             ),
             mailbox_sync_attachment_limit=int(
-                os.getenv("RESUME_V3_MAILBOX_SYNC_ATTACHMENT_LIMIT", "100")
+                os.getenv("RESUME_V3_MAILBOX_SYNC_ATTACHMENT_LIMIT", "20")
             ),
             email_credentials_key=os.getenv("RESUME_V3_EMAIL_CREDENTIALS_KEY") or None,
             tencent_secret_id=os.getenv("TENCENT_SECRET_ID") or None,

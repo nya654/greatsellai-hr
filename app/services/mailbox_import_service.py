@@ -197,6 +197,18 @@ def _already_imported(session: Session, *, config_id: str, uid: str, digest: str
     )
 
 
+def _known_message_uids(session: Session, *, config_id: str) -> set[str]:
+    """Return message UIDs already handled by an earlier incremental run."""
+
+    return set(
+        session.scalars(
+            select(EmailAttachmentImport.message_uid).where(
+                EmailAttachmentImport.mailbox_config_id == config_id
+            )
+        ).all()
+    )
+
+
 def _attachments(message: Message) -> list[tuple[str, bytes]]:
     found: list[tuple[str, bytes]] = []
     for part in message.walk():
@@ -246,7 +258,20 @@ def sync_mailbox(
         status, data = client.uid("search", None, "ALL")
         if status != "OK":
             raise MailboxImportError("mailbox_search_failed")
-        uids = (data[0] or b"").split()[-settings.mailbox_sync_attachment_limit :]
+        known_uids = _known_message_uids(session, config_id=config.id)
+        selected_uids: list[bytes] = []
+        # Work newest-first so freshly received resumes arrive immediately.
+        # Already-recorded UIDs are skipped before a full RFC822 fetch. Once a
+        # batch is done, the next run naturally continues farther back through
+        # historical mail rather than repeatedly fetching the same messages.
+        for raw_uid in reversed((data[0] or b"").split()):
+            uid = raw_uid.decode("ascii", errors="ignore")
+            if not uid or uid in known_uids:
+                continue
+            selected_uids.append(raw_uid)
+            if len(selected_uids) >= settings.mailbox_sync_attachment_limit:
+                break
+        uids = list(reversed(selected_uids))
         for raw_uid in uids:
             uid = raw_uid.decode("ascii", errors="ignore")
             status, fetched = client.uid("fetch", raw_uid, "(RFC822)")
@@ -256,7 +281,25 @@ def sync_mailbox(
             message = BytesParser(policy=policy.default).parsebytes(fetched[0][1])
             message_id = str(message.get("Message-ID") or "").strip() or None
             received_at = _received_at(message)
-            for filename, content in _attachments(message):
+            attachments = _attachments(message)
+            if not attachments:
+                digest = hashlib.sha256(b"").hexdigest()
+                _record(
+                    session,
+                    config=config,
+                    uid=uid,
+                    message_id=message_id,
+                    filename="[no supported attachment]",
+                    attachment_sha256=digest,
+                    status="skipped",
+                    error="no_supported_attachment",
+                    resume_id=None,
+                    received_at=received_at,
+                )
+                skipped += 1
+                known_uids.add(uid)
+                continue
+            for filename, content in attachments:
                 digest = hashlib.sha256(content).hexdigest()
                 if _already_imported(session, config_id=config.id, uid=uid, digest=digest):
                     duplicates += 1

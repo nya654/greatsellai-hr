@@ -3799,6 +3799,7 @@ function ScorePage({
   const [templates, setTemplates] = useState<ScoreTemplate[]>([]);
   const [templateId, setTemplateId] = useState("");
   const [templateName, setTemplateName] = useState("通用候选人评分");
+  const [templateDescription, setTemplateDescription] = useState("");
   const [dimensions, setDimensions] = useState<TemplateDraftDimension[]>(() =>
     defaultTemplateDimensions.map((item) => ({ ...item })),
   );
@@ -3875,16 +3876,21 @@ function ScorePage({
     if (
       dimensions.some(
         (item) =>
-          !/^[a-z][a-z0-9_]{1,63}$/.test(item.key) || !item.label.trim(),
+          !/^[a-z][a-z0-9_]{1,63}$/.test(item.key) ||
+          !item.label.trim() ||
+          !Number.isFinite(Number(item.max_raw_score)) ||
+          Number(item.max_raw_score) < 1 ||
+          Number(item.max_raw_score) > 100,
       )
     ) {
-      notify("error", "每个维度都需要合法英文 key 和显示名称。");
+      notify("error", "每个维度都需要合法英文 key、显示名称和 1 至 100 的满分。");
       return;
     }
     setSavingTemplate(true);
     try {
       const created = await api.createScoreTemplate({
         name: templateName.trim(),
+        description: templateDescription.trim() || undefined,
         dimensions: dimensions.map(({ id: _id, ...item }) => item),
       });
       setTemplates((current) => [created, ...current]);
@@ -3993,11 +3999,23 @@ function ScorePage({
                   value={templateName}
                 />
               </div>
+              <div className="field-stack span-full">
+                <label className="field-label" htmlFor="template-description">
+                  评分说明（可选）
+                </label>
+                <textarea
+                  className="textarea-field template-description-field"
+                  id="template-description"
+                  onChange={(event) => setTemplateDescription(event.target.value)}
+                  placeholder="说明此规则适用的岗位、评价重点或使用边界。"
+                  value={templateDescription}
+                />
+              </div>
             </div>
             <div className="model-list">
               {dimensions.map((dimension) => (
                 <div className="model-row" key={dimension.id}>
-                  <div>
+                  <div className="dimension-main-fields">
                     <label
                       className="sr-only"
                       htmlFor={`dimension-label-${dimension.id}`}
@@ -4033,8 +4051,25 @@ function ScorePage({
                       placeholder="english_key"
                       value={dimension.key}
                     />
+                    <label
+                      className="sr-only"
+                      htmlFor={`dimension-guidance-${dimension.id}`}
+                    >
+                      评分指引
+                    </label>
+                    <textarea
+                      className="textarea-field dimension-guidance-field"
+                      id={`dimension-guidance-${dimension.id}`}
+                      onChange={(event) =>
+                        updateDimension(dimension.id, {
+                          guidance: event.target.value,
+                        })
+                      }
+                      placeholder="评分指引，例如重点核验可验证的技术深度与实际职责。"
+                      value={dimension.guidance ?? ""}
+                    />
                   </div>
-                  <div>
+                  <div className="dimension-numeric-fields">
                     <label
                       className="sr-only"
                       htmlFor={`dimension-weight-${dimension.id}`}
@@ -4054,6 +4089,26 @@ function ScorePage({
                       type="number"
                       value={dimension.weight}
                     />
+                    <label
+                      className="sr-only"
+                      htmlFor={`dimension-max-score-${dimension.id}`}
+                    >
+                      满分
+                    </label>
+                    <input
+                      className="field"
+                      id={`dimension-max-score-${dimension.id}`}
+                      max="100"
+                      min="1"
+                      onChange={(event) =>
+                        updateDimension(dimension.id, {
+                          max_raw_score: Number(event.target.value),
+                        })
+                      }
+                      type="number"
+                      value={dimension.max_raw_score ?? 100}
+                    />
+                    <span className="dimension-numeric-hint">上：权重 % · 下：满分</span>
                   </div>
                   <button
                     aria-label={`删除 ${dimension.label}`}
@@ -4198,6 +4253,7 @@ function ScorePage({
                     {template.dimensions
                       .map((item) => `${item.label} ${item.weight}%`)
                       .join(" · ")}
+                    {template.description ? ` · ${template.description}` : ""}
                   </span>
                 </button>
               ))

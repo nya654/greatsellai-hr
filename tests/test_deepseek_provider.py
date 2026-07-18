@@ -5,6 +5,7 @@ import json
 from app.services.deepseek_provider import (
     _downgrade_incomplete_work_experiences,
     _flatten_evidence_block_ids,
+    call_strict_function,
     DeepSeekProviderError,
     EvidenceBlock,
     extract_resume_core_facts,
@@ -318,6 +319,49 @@ def test_extraction_prompt_contains_the_versioned_ai_rulebook(monkeypatch) -> No
     assert "detail_items must contain every separately written task" in prompt
     assert "Test Candidate" in prompt
     assert "13800138000" not in prompt
+
+
+def test_strict_function_reports_output_truncation_before_json_parsing(monkeypatch) -> None:
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "finish_reason": "length",
+                            "message": {"tool_calls": []},
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, *, timeout: int):
+        assert timeout == 5
+        return FakeResponse()
+
+    monkeypatch.setattr("app.services.deepseek_provider.urllib.request.urlopen", fake_urlopen)
+    try:
+        call_strict_function(
+            api_key="test-key",
+            model="test-model",
+            timeout_seconds=5,
+            function_name="submit_test",
+            function_description="Submit a test payload.",
+            parameters_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            system_prompt="Test.",
+            user_prompt="Test.",
+            max_tokens=100,
+        )
+    except DeepSeekProviderError as exc:
+        assert str(exc) == "deepseek_response_truncated"
+    else:  # pragma: no cover - the assertion above is the expected path
+        raise AssertionError("truncated structured output must be distinguishable")
 
 
 def test_empty_resume_fact_arrays_have_a_stable_retry_code(monkeypatch) -> None:

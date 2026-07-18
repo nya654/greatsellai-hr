@@ -40,6 +40,8 @@ from app.schemas import (
     CandidateSearchRequest,
     CandidateSearchResponse,
     JobCreate,
+    JobGenerationRequest,
+    JobGenerationResponse,
     JobMatchBatchResponse,
     JobMatchCreate,
     JobMatchResponse,
@@ -142,6 +144,7 @@ from app.services.job_service import (
     create_job,
     create_job_version,
     extract_job_version_requirements,
+    generate_job_description,
     get_job_match,
     get_latest_confirmed_job_version,
     get_job_version,
@@ -1247,6 +1250,38 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         return response
 
     @app.post(
+        "/v1/jobs/generate-jd",
+        response_model=JobGenerationResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def post_generate_job_description(
+        payload: JobGenerationRequest,
+    ) -> JobGenerationResponse:
+        """Generate an editable JD before the client persists one confirmed version."""
+
+        try:
+            return generate_job_description(payload=payload, settings=settings)
+        except JobServiceError as exc:
+            _raise_job_service_error(exc)
+        except JobDeepSeekProviderError as exc:
+            logger.warning("JD generation provider failed: %s", exc)
+            detail = (
+                "jd_generation_response_truncated"
+                if str(exc) == "deepseek_response_truncated"
+                else "jd_generation_provider_failed"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=detail,
+            ) from exc
+        except Exception as exc:  # pragma: no cover - final availability guard
+            logger.exception("JD generation service failed")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="jd_generation_service_unavailable",
+            ) from exc
+
+    @app.post(
         "/v1/jobs",
         response_model=JobVersionResponse,
         dependencies=[Depends(require_single_admin)],
@@ -1376,9 +1411,14 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
             _raise_job_service_error(exc)
         except JobDeepSeekProviderError as exc:
             session.rollback()
+            detail = (
+                "jd_requirements_response_truncated"
+                if str(exc) == "deepseek_response_truncated"
+                else "jd_requirements_provider_failed"
+            )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="jd_requirements_provider_failed",
+                detail=detail,
             ) from exc
         _commit_or_raise(session)
         return response

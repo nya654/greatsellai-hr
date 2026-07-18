@@ -4,6 +4,8 @@ import type {
   CandidateSearchRequest,
   CandidateSearchResponse,
   JobCreate,
+  JobDescriptionGenerateInput,
+  JobDescriptionGeneration,
   JobMatchBatch,
   JobMatch,
   JobMatchCreate,
@@ -382,6 +384,15 @@ export function createApiClient(options: ApiClientOptions = {}) {
 
     createJob(input: JobCreate): Promise<JobVersion> {
       return request<JobVersion>("/jobs", { method: "POST", body: input });
+    },
+
+    generateJobDescription(
+      input: JobDescriptionGenerateInput,
+    ): Promise<JobDescriptionGeneration> {
+      return request<JobDescriptionGeneration>("/jobs/generate-jd", {
+        method: "POST",
+        body: input,
+      });
     },
 
     createJobVersion(jobId: string, input: JobCreate): Promise<JobVersion> {

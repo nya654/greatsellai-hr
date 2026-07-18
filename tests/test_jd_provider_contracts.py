@@ -54,6 +54,24 @@ def _extracted_requirements() -> dict[str, object]:
     }
 
 
+def _generated_jd() -> dict[str, object]:
+    return {
+        "schema_version": provider.JD_GENERATION_SCHEMA_VERSION,
+        "title": "Backend Engineer",
+        "jd_text": (
+            "Job Responsibilities\n"
+            "Build and maintain backend services.\n\n"
+            "Requirements\n"
+            "Must have Python experience.\n"
+            "Kubernetes experience is preferred."
+        ),
+        "requirements": {
+            "must_have": ["Must have Python experience."],
+            "preferred": ["Kubernetes experience is preferred."],
+        },
+    }
+
+
 def _fact_snapshot() -> dict[str, object]:
     return {
         "schema_version": "resume_fact_snapshot.v2",
@@ -175,6 +193,9 @@ def test_jd_extraction_helper_accepts_only_structured_clauses_without_network(
     )
     assert result["requirements"] == _requirements()
     assert calls[0]["function_name"] == "submit_jd_requirements"
+    assert calls[0]["max_tokens"] == provider._jd_requirements_max_tokens(
+        clauses=_clauses()
+    )
 
     with pytest.raises(provider.DeepSeekProviderError, match="raw_pdf_not_allowed"):
         provider.extract_jd_requirements_from_clauses(
@@ -184,6 +205,55 @@ def test_jd_extraction_helper_accepts_only_structured_clauses_without_network(
             clauses=[{"clause_id": "clause-001", "text": "%PDF-1.7 binary"}],
         )
     assert len(calls) == 1
+
+
+def test_generated_jd_contract_returns_requirements_grounded_verbatim_in_jd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_call(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return _generated_jd()
+
+    monkeypatch.setattr(provider, "call_strict_function", fake_call)
+    result = provider.generate_jd_from_brief(
+        api_key="not-used",
+        model="not-used",
+        timeout_seconds=1,
+        title="Backend Engineer",
+        brief="Build reliable services for a recruiting platform.",
+    )
+
+    assert result["title"] == "Backend Engineer"
+    assert result["requirements"]["must_have"] == ["Must have Python experience."]
+    assert captured["function_name"] == "submit_generated_jd"
+    schema = captured["parameters_schema"]
+    assert isinstance(schema, dict)
+    assert schema["properties"]["requirements"]["required"] == [
+        "must_have",
+        "preferred",
+    ]
+
+    invalid = _generated_jd()
+    invalid["requirements"]["must_have"] = ["Rust experience"]  # type: ignore[index]
+    with pytest.raises(provider.DeepSeekProviderError, match="jd_generation_requirement_not_grounded"):
+        provider.validate_generated_jd_output(invalid)
+
+    normalized = _generated_jd()
+    normalized["requirements"]["must_have"] = ["must have python experience"]  # type: ignore[index]
+    assert provider.validate_generated_jd_output(normalized)["requirements"]["must_have"] == [
+        "must have python experience"
+    ]
+
+
+def test_long_jd_requirement_extraction_receives_a_bounded_larger_token_budget() -> None:
+    clauses = [
+        {"clause_id": f"clause-{index:03d}", "text": "x" * 300}
+        for index in range(1, 38)
+    ]
+
+    assert provider._jd_requirements_max_tokens(clauses=clauses) == 8000
 
 
 def test_jd_match_contract_has_no_total_and_requires_exact_source_cited_statuses() -> None:

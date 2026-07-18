@@ -21,6 +21,8 @@ from app.models import (
 from app.schemas import (
     JobClauseResponse,
     JobCreate,
+    JobGenerationRequest,
+    JobGenerationResponse,
     JobMatchCreate,
     JobMatchRequirementResponse,
     JobMatchResponse,
@@ -32,6 +34,7 @@ from app.schemas import (
 from app.services.deepseek_provider import (
     DeepSeekProviderError,
     extract_jd_requirements_from_clauses,
+    generate_jd_from_brief,
     match_resume_fact_snapshot_against_requirements,
 )
 from app.services.normalization import normalized_contains
@@ -351,6 +354,25 @@ def create_job(session: Session, *, payload: JobCreate) -> JobVersionResponse:
         version_number=1,
     )
     return _version_response(job_version)
+
+
+def generate_job_description(
+    *,
+    payload: JobGenerationRequest,
+    settings: AppSettings,
+) -> JobGenerationResponse:
+    """Generate a JD that can be persisted as a confirmed job in one follow-up call."""
+
+    if not settings.deepseek_api_key:
+        raise JobServiceError("deepseek_api_key_not_configured")
+    generated = generate_jd_from_brief(
+        api_key=settings.deepseek_api_key,
+        model=settings.deepseek_model,
+        timeout_seconds=settings.deepseek_timeout_seconds,
+        title=payload.title,
+        brief=payload.brief,
+    )
+    return JobGenerationResponse.model_validate(generated)
 
 
 def create_job_version(
@@ -734,6 +756,7 @@ __all__ = [
     "create_job",
     "create_job_version",
     "extract_job_version_requirements",
+    "generate_job_description",
     "get_job_match",
     "get_latest_confirmed_job_version",
     "get_job_version",

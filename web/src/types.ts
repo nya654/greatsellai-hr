@@ -471,6 +471,22 @@ export interface JobRequirements {
   preferred?: string[];
 }
 
+/**
+ * AI-generated role description used by the authoring flow before a role is
+ * enabled for matching. Requirements are kept alongside the generated JD so
+ * the final save can create a match-ready job in one request.
+ */
+export interface JobDescriptionGeneration {
+  title: string;
+  jd_text: string;
+  requirements?: JobRequirements;
+}
+
+export interface JobDescriptionGenerateInput {
+  title: string;
+  brief: string;
+}
+
 export interface JobCreate {
   title: string;
   jd_text: string;

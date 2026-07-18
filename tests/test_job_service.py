@@ -131,6 +131,91 @@ def _fake_requirement_extraction(**kwargs: object) -> dict[str, object]:
     }
 
 
+def _fake_generated_jd(**kwargs: object) -> dict[str, object]:
+    assert kwargs["title"] == "Backend Engineer"
+    assert kwargs["brief"] == "Build reliable recruiting platform services."
+    return {
+        "title": "Backend Engineer",
+        "jd_text": (
+            "Responsibilities\n"
+            "Build reliable recruiting platform services.\n\n"
+            "Requirements\n"
+            "Must have Python experience.\n"
+            "Kubernetes experience is preferred."
+        ),
+        "requirements": {
+            "must_have": ["Must have Python experience."],
+            "preferred": ["Kubernetes experience is preferred."],
+        },
+    }
+
+
+def test_generated_jd_can_be_saved_as_a_confirmed_job_in_one_persistence_call(
+    ai_client,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(job_service, "generate_jd_from_brief", _fake_generated_jd)
+
+    generated = ai_client.post(
+        "/v1/jobs/generate-jd",
+        json={
+            "title": "Backend Engineer",
+            "brief": "Build reliable recruiting platform services.",
+        },
+    )
+
+    assert generated.status_code == 200, generated.text
+    generated_payload = generated.json()
+    assert generated_payload["requirements"]["must_have"] == [
+        "Must have Python experience."
+    ]
+    persisted = ai_client.post("/v1/jobs", json=generated_payload)
+    assert persisted.status_code == 200, persisted.text
+    assert persisted.json()["status"] == "confirmed"
+
+
+def test_generate_jd_api_returns_503_without_server_side_key(client) -> None:
+    response = client.post(
+        "/v1/jobs/generate-jd",
+        json={"title": "Backend Engineer", "brief": "Build reliable services."},
+    )
+
+    assert response.status_code == 503, response.text
+    assert response.json()["detail"] == "deepseek_api_key_not_configured"
+
+
+def test_generate_jd_api_returns_stable_provider_error(ai_client, monkeypatch) -> None:
+    def provider_failure(**kwargs: object) -> dict[str, object]:
+        raise job_service.DeepSeekProviderError("deepseek_response_truncated")
+
+    monkeypatch.setattr(job_service, "generate_jd_from_brief", provider_failure)
+    response = ai_client.post(
+        "/v1/jobs/generate-jd",
+        json={"title": "Backend Engineer", "brief": "Build reliable services."},
+    )
+
+    assert response.status_code == 502, response.text
+    assert response.json()["detail"] == "jd_generation_response_truncated"
+
+
+def test_existing_jd_extraction_reports_truncated_provider_output(ai_client, monkeypatch) -> None:
+    created = ai_client.post("/v1/jobs", json=_job_payload().model_dump())
+    assert created.status_code == 200, created.text
+
+    def provider_failure(**kwargs: object) -> dict[str, object]:
+        raise job_service.DeepSeekProviderError("deepseek_response_truncated")
+
+    monkeypatch.setattr(
+        job_service,
+        "extract_jd_requirements_from_clauses",
+        provider_failure,
+    )
+    response = ai_client.post(f"/v1/job-versions/{created.json()['job_version_id']}/extract")
+
+    assert response.status_code == 502, response.text
+    assert response.json()["detail"] == "jd_requirements_response_truncated"
+
+
 def test_draft_ai_extraction_can_be_reviewed_then_confirmed(ai_client, monkeypatch) -> None:
     draft = _create_job(ai_client)
     assert draft["status"] == "draft"

@@ -45,6 +45,7 @@ _RETRYABLE_STRUCTURED_RESPONSE_ERRORS = frozenset(
         "deepseek_invalid_structured_response",
         "deepseek_tool_call_missing",
         "deepseek_arguments_missing",
+        "deepseek_response_truncated",
     }
 )
 

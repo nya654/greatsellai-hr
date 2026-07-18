@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.services.normalization import normalized_key
+from app.services.normalization import normalized_contains, normalized_key
 
 
 Month = str
@@ -640,6 +640,49 @@ class JobCreate(ApiModel):
     title: str = Field(min_length=1, max_length=200)
     jd_text: str = Field(min_length=1, max_length=20000)
     requirements: JobRequirements = Field(default_factory=JobRequirements)
+
+
+class JobGenerationRequest(ApiModel):
+    """Business context used to create an editable, recruiter-ready JD."""
+
+    title: str = Field(min_length=1, max_length=200)
+    brief: str = Field(min_length=1, max_length=12000)
+
+    @field_validator("title", "brief")
+    @classmethod
+    def non_blank_generation_input(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("job_generation_input_must_not_be_blank")
+        if "\x00" in normalized:
+            raise ValueError("job_generation_input_must_not_contain_nul")
+        return normalized
+
+
+class JobGenerationResponse(ApiModel):
+    """A generated JD ready to be persisted through the normal jobs endpoint."""
+
+    title: str = Field(min_length=1, max_length=200)
+    jd_text: str = Field(min_length=1, max_length=20000)
+    requirements: JobRequirements
+
+    @model_validator(mode="after")
+    def requirements_are_verbatim_in_jd(self) -> "JobGenerationResponse":
+        if not self.requirements.must_have:
+            raise ValueError("generated_job_requires_must_have_requirement")
+        requirement_values = [
+            *self.requirements.must_have,
+            *self.requirements.preferred,
+        ]
+        normalized_values = [" ".join(value.casefold().split()) for value in requirement_values]
+        if len(normalized_values) != len(set(normalized_values)):
+            raise ValueError("generated_job_requirements_must_be_unique")
+        if any(
+            not normalized_contains(self.jd_text, value)
+            for value in requirement_values
+        ):
+            raise ValueError("generated_job_requirement_not_grounded_in_jd")
+        return self
 
 
 class JobResponse(ApiModel):

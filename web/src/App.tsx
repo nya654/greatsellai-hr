@@ -22,7 +22,7 @@ import type {
   DegreeLevel,
   JobMatchBatch,
   JobMatch,
-  JobRequirement,
+  JobRequirements,
   JobVersion,
   MailboxConfig,
   MailboxImportHistory,
@@ -47,6 +47,7 @@ type View = "library" | "filter" | "upload" | "inbox" | "score" | "match";
 type DrawerTab = "original" | "summary";
 type SchoolFilter = "any" | "yes" | "no";
 type ToastKind = "success" | "error";
+type JobWorkspaceMode = "create" | "view";
 
 interface FilterDraft {
   school: SchoolFilter;
@@ -260,6 +261,16 @@ function humanizeError(error: unknown): string {
       mailbox_sync_failed: "邮箱入库暂时异常，请稍后重试。",
       score_template_not_found: "评分规则不存在，请重新选择。",
       job_version_not_found: "岗位版本不存在，请重新创建。",
+      jd_generation_response_truncated:
+        "岗位需求较长，AI 未能完整生成 JD。请精简后重试。",
+      jd_generation_provider_failed:
+        "AI 生成 JD 暂时不可用，请稍后重试。",
+      jd_generation_service_unavailable:
+        "AI 生成 JD 服务暂时不可用，请稍后重试。",
+      jd_requirements_response_truncated:
+        "JD 较长，AI 未能完整整理匹配条件。请稍后重试。",
+      jd_requirements_provider_failed:
+        "AI 整理 JD 条件暂时不可用，请稍后重试。",
     };
     const message = messages[error.message];
     if (message) return message;
@@ -3717,106 +3728,130 @@ function MatchPage({
   notify: (kind: ToastKind, message: string) => void;
   onOpenMatchedResume: (match: JobMatch) => void;
 }) {
-  const [title, setTitle] = useState("高级后端开发工程师");
+  const [title, setTitle] = useState("");
+  const [jobBrief, setJobBrief] = useState("");
   const [jdText, setJdText] = useState("");
+  const [editedGeneratedJd, setEditedGeneratedJd] = useState(false);
+  const [generatedRequirements, setGeneratedRequirements] =
+    useState<JobRequirements | null>(null);
+  const [generationError, setGenerationError] = useState<string | null>(null);
+  const [jobWorkspaceMode, setJobWorkspaceMode] =
+    useState<JobWorkspaceMode>("create");
   const [jobVersion, setJobVersion] = useState<JobVersion | null>(null);
   const [confirmedJobVersions, setConfirmedJobVersions] = useState<JobVersion[]>([]);
-  const [requirements, setRequirements] = useState<JobRequirement[]>([]);
   const [loading, setLoading] = useState(false);
   const [match, setMatch] = useState<JobMatch | null>(null);
   const [matchBatch, setMatchBatch] = useState<JobMatchBatch | null>(null);
   const [jobMatches, setJobMatches] = useState<JobMatch[]>([]);
   const [matchesLoading, setMatchesLoading] = useState(false);
+  const resetJobAuthoring = () => {
+    setTitle("");
+    setJobBrief("");
+    setJdText("");
+    setEditedGeneratedJd(false);
+    setGeneratedRequirements(null);
+    setGenerationError(null);
+  };
   const selectJobVersion = (next: JobVersion) => {
+    resetJobAuthoring();
+    setJobWorkspaceMode("view");
     setJobVersion(next);
-    setRequirements(next.requirements);
-    setTitle(next.title);
-    setJdText(next.raw_text);
     setMatch(null);
     setMatchBatch(null);
   };
-  const createJob = async () => {
-    if (!title.trim() || !jdText.trim()) {
-      notify("error", "请填写岗位名称和完整 JD 后再创建岗位。");
+  const beginNewJob = () => {
+    resetJobAuthoring();
+    setJobWorkspaceMode("create");
+    setJobVersion(null);
+    setMatch(null);
+    setMatchBatch(null);
+    setJobMatches([]);
+  };
+  const requirementsAreReady = (requirements: JobRequirements | null) =>
+    Boolean(
+      requirements &&
+        ((requirements.must_have?.length ?? 0) > 0 ||
+          (requirements.preferred?.length ?? 0) > 0),
+    );
+  const invalidateGeneratedRequirements = () => {
+    if (!generatedRequirements) return;
+    setGeneratedRequirements(null);
+    setGenerationError("JD 已修改，请重新运行 AI 生成后再启用岗位。");
+  };
+  const generateJobDescription = async () => {
+    const sourceText =
+      (editedGeneratedJd && jdText.trim()) || jobBrief.trim();
+    if (!title.trim() || !sourceText) {
+      notify("error", "请填写岗位名称和岗位需求后再生成 JD。");
       return;
     }
+    setGenerationError(null);
+    setLoading(true);
+    try {
+      const generated = await api.generateJobDescription({
+        title: title.trim(),
+        brief: sourceText,
+      });
+      const generatedJd = generated.jd_text?.trim();
+      if (!generatedJd) {
+        throw new Error("AI 未返回可编辑的 JD");
+      }
+      setTitle(generated.title?.trim() || title.trim());
+      setJdText(generatedJd);
+      setEditedGeneratedJd(false);
+      setGeneratedRequirements(generated.requirements ?? null);
+      if (!requirementsAreReady(generated.requirements ?? null)) {
+        setGenerationError(
+          "AI 已生成 JD，但没有返回可用于匹配的条件。请补充岗位需求后重新生成。",
+        );
+        notify("error", "AI 未生成可用的匹配条件，请补充需求后重试。");
+        return;
+      }
+      notify("success", "AI 已生成 JD 和匹配条件。确认内容后即可启用岗位。");
+    } catch (error) {
+      const message = humanizeError(error);
+      setGenerationError(message);
+      notify("error", message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  const enableJob = async () => {
+    if (!title.trim() || !jdText.trim()) {
+      notify("error", "请先生成或粘贴完整 JD。");
+      return;
+    }
+    if (!requirementsAreReady(generatedRequirements)) {
+      const message = "JD 已修改或匹配条件不完整，请先重新运行 AI 生成。";
+      setGenerationError(message);
+      notify("error", message);
+      return;
+    }
+    setGenerationError(null);
     setLoading(true);
     try {
       const created = await api.createJob({
         title: title.trim(),
         jd_text: jdText.trim(),
+        requirements: generatedRequirements ?? undefined,
       });
-      const extracted = await api.extractJobRequirements(created.job_version_id);
-      const confirmed = await api.confirmJobVersion(extracted.job_version_id);
-      selectJobVersion(confirmed);
+      if (created.status !== "confirmed") {
+        const message =
+          "岗位已保存，但服务尚未返回可启用版本。请重新生成 JD 后再试。";
+        setGenerationError(message);
+        notify("error", message);
+        return;
+      }
       setConfirmedJobVersions((current) => [
-        confirmed,
-        ...current.filter((item) => item.job_version_id !== confirmed.job_version_id),
+        created,
+        ...current.filter((item) => item.job_version_id !== created.job_version_id),
       ]);
-      notify(
-        "success",
-        "岗位草稿已创建。下一步可让 AI 提取要求，随后人工确认。",
-      );
+      selectJobVersion(created);
+      notify("success", "岗位已启用，现在可以开始匹配简历。");
     } catch (error) {
-      notify("error", humanizeError(error));
-    } finally {
-      setLoading(false);
-    }
-  };
-  const extractRequirements = async () => {
-    if (!jobVersion) return;
-    setLoading(true);
-    try {
-      const response = await api.extractJobRequirements(
-        jobVersion.job_version_id,
-      );
-      setJobVersion(response);
-      setRequirements(response.requirements);
-      notify("success", "AI 已从 JD 中提取要求。请检查后保存或确认。");
-    } catch (error) {
-      notify("error", humanizeError(error));
-    } finally {
-      setLoading(false);
-    }
-  };
-  const saveRequirements = async () => {
-    if (!jobVersion) return;
-    setLoading(true);
-    try {
-      const response = await api.updateJobRequirements(
-        jobVersion.job_version_id,
-        {
-          title: title.trim(),
-          requirements: requirements.map((item) => ({
-            requirement_key: item.requirement_key,
-            priority: item.priority,
-            category: item.category,
-            raw_requirement: item.raw_requirement,
-            terms: item.terms,
-            minimum_months: item.minimum_months,
-            clause_ids: item.clause_ids,
-          })),
-        },
-      );
-      setJobVersion(response);
-      setRequirements(response.requirements);
-      notify("success", "岗位要求已保存为可确认草稿。");
-    } catch (error) {
-      notify("error", humanizeError(error));
-    } finally {
-      setLoading(false);
-    }
-  };
-  const confirmJob = async () => {
-    if (!jobVersion) return;
-    setLoading(true);
-    try {
-      const response = await api.confirmJobVersion(jobVersion.job_version_id);
-      setJobVersion(response);
-      setRequirements(response.requirements);
-      notify("success", "岗位要求已确认，可以开始匹配。");
-    } catch (error) {
-      notify("error", humanizeError(error));
+      const message = humanizeError(error);
+      setGenerationError(message);
+      notify("error", message);
     } finally {
       setLoading(false);
     }
@@ -3827,7 +3862,7 @@ function MatchPage({
       return;
     }
     if (!jobVersion || jobVersion.status !== "confirmed") {
-      notify("error", "请先确认岗位要求，再运行匹配。");
+      notify("error", "请先启用岗位，再运行匹配。");
       return;
     }
     setLoading(true);
@@ -3849,7 +3884,7 @@ function MatchPage({
   };
   const runAllMatches = async () => {
     if (!jobVersion || jobVersion.status !== "confirmed") {
-      notify("error", "请先确认岗位要求，再批量匹配简历。");
+      notify("error", "请先启用岗位，再批量匹配简历。");
       return;
     }
     setLoading(true);
@@ -3925,21 +3960,16 @@ function MatchPage({
       cancelled = true;
     };
   }, [jobVersion?.job_version_id, jobVersion?.status, matchBatch?.completed_count, notify]);
-  const updateRequirement = (index: number, patch: Partial<JobRequirement>) =>
-    setRequirements((current) =>
-      current.map((item, itemIndex) =>
-        itemIndex === index ? { ...item, ...patch } : item,
-      ),
-    );
-  const firstClauseId = jobVersion?.clauses[0]?.clause_id ?? "";
+  const jobIsEnabled =
+    jobWorkspaceMode === "view" && jobVersion?.status === "confirmed";
+  const generatedJobIsReady = requirementsAreReady(generatedRequirements);
   return (
     <div className="page-frame">
       <header className="page-heading">
         <div>
           <h1>岗位 JD 匹配</h1>
           <p>
-            把 JD 转成可确认要求后，再让 AI
-            对已核验的简历事实逐项比对。不会用未验证原文直接下结论。
+            描述岗位需求，由 AI 生成可编辑 JD 和匹配条件；启用后即可对已核验的简历事实逐项比对。
           </p>
         </div>
         {selected ? (
@@ -3962,13 +3992,22 @@ function MatchPage({
                     aria-label="切换已保存的岗位 JD"
                     className="select-field"
                     onChange={(event) => {
+                      if (!event.target.value) {
+                        beginNewJob();
+                        return;
+                      }
                       const next = confirmedJobVersions.find(
                         (item) => item.job_version_id === event.target.value,
                       );
                       if (next) selectJobVersion(next);
                     }}
-                    value={jobVersion?.job_version_id ?? ""}
+                    value={
+                      jobWorkspaceMode === "view"
+                        ? (jobVersion?.job_version_id ?? "")
+                        : ""
+                    }
                   >
+                    <option value="">新建岗位 JD</option>
                     {confirmedJobVersions.map((item) => (
                       <option key={item.job_version_id} value={item.job_version_id}>
                         {item.title} · v{item.version}
@@ -3979,161 +4018,192 @@ function MatchPage({
                 </div>
               </div>
             )}
-            <div className="jd-steps">
-              <span
-                className={`jd-step${!jobVersion ? " is-current" : " is-done"}`}
-              >
-                1 创建 JD
-              </span>
-              <span
-                className={`jd-step${jobVersion && jobVersion.status === "draft" ? " is-current" : jobVersion?.status === "confirmed" ? " is-done" : ""}`}
-              >
-                2 核验要求
-              </span>
-              <span
-                className={`jd-step${jobVersion?.status === "confirmed" ? " is-current" : ""}`}
-              >
-                3 匹配候选人
-              </span>
-            </div>
-            <div className="form-grid">
-              <div className="field-stack span-full">
-                <label className="field-label" htmlFor="job-title">
-                  岗位名称
-                </label>
-                <input
-                  className="field"
-                  id="job-title"
-                  onChange={(event) => setTitle(event.target.value)}
-                  value={title}
-                />
-              </div>
-              <div className="field-stack span-full">
-                <label className="field-label" htmlFor="job-text">
-                  岗位 JD
+            {jobWorkspaceMode === "view" && jobVersion ? (
+              <div className="field-stack">
+                <div className="panel-heading">
+                  <div>
+                    <h2>{jobVersion.title}</h2>
+                    <p>已启用，当前匹配结果仅基于这份岗位 JD。</p>
+                  </div>
+                  <span className="status-pill">已启用</span>
+                </div>
+                <label className="field-label" htmlFor="active-job-text">
+                  岗位 JD 原文
                 </label>
                 <textarea
+                  aria-label="当前已启用岗位的 JD 原文"
                   className="textarea-field"
-                  id="job-text"
-                  onChange={(event) => setJdText(event.target.value)}
-                  placeholder="粘贴完整岗位描述、职责与任职要求"
-                  value={jdText}
+                  id="active-job-text"
+                  readOnly
+                  value={jobVersion.raw_text}
                 />
               </div>
-            </div>
-            <div className="review-actions">
-              <button
-                className="button button-primary"
-                disabled={loading}
-                onClick={() => void createJob()}
-                type="button"
-              >
-                {loading && !jobVersion ? (
-                  <>
-                    <i className="spinner" />
-                    正在创建…
-                  </>
-                ) : (
-                  <>
-                    <Icon name="briefcase" size={16} />
-                    创建岗位草稿
-                  </>
+            ) : (
+              <>
+                <div className="jd-steps">
+                  <span className={`jd-step${jdText ? " is-done" : " is-current"}`}>
+                    1 描述需求
+                  </span>
+                  <span
+                    className={`jd-step${generatedJobIsReady ? " is-done" : jdText ? " is-current" : ""}`}
+                  >
+                    2 编辑 JD
+                  </span>
+                  <span className={`jd-step${generatedJobIsReady ? " is-current" : ""}`}>
+                    3 启用匹配
+                  </span>
+                </div>
+                <div className="form-grid">
+                  <div className="field-stack span-full">
+                    <label className="field-label" htmlFor="job-title">
+                      岗位名称
+                    </label>
+                    <input
+                      className="field"
+                      id="job-title"
+                      onChange={(event) => {
+                        invalidateGeneratedRequirements();
+                        setTitle(event.target.value);
+                      }}
+                      placeholder="例如：大模型应用架构师"
+                      value={title}
+                    />
+                  </div>
+                  <div className="field-stack span-full">
+                    <label className="field-label" htmlFor="job-brief">
+                      岗位需求
+                    </label>
+                    <textarea
+                      className="textarea-field"
+                      id="job-brief"
+                      onChange={(event) => {
+                        setJobBrief(event.target.value);
+                        setGenerationError(null);
+                        if (jdText) {
+                          setJdText("");
+                          setEditedGeneratedJd(false);
+                          setGeneratedRequirements(null);
+                        }
+                      }}
+                      placeholder="描述业务场景、职责、候选人画像和硬性要求。也可以直接粘贴一份已有 JD。"
+                      value={jobBrief}
+                    />
+                  </div>
+                  {jdText && (
+                    <div className="field-stack span-full">
+                      <label className="field-label" htmlFor="job-text">
+                        AI 生成的 JD
+                      </label>
+                      <textarea
+                        className="textarea-field"
+                        id="job-text"
+                        onChange={(event) => {
+                          invalidateGeneratedRequirements();
+                          setEditedGeneratedJd(true);
+                          setJdText(event.target.value);
+                        }}
+                        value={jdText}
+                      />
+                      <p className="candidate-meta">
+                        可以直接编辑。编辑后请重新生成，以同步用于匹配的 AI 条件。
+                      </p>
+                    </div>
+                  )}
+                </div>
+                {generationError && (
+                  <p className="library-error" role="alert">
+                    {generationError}
+                  </p>
                 )}
-              </button>
-            </div>
+                <div className="review-actions">
+                  <button
+                    className={`button${generatedJobIsReady ? " button-ghost" : " button-primary"}`}
+                    disabled={loading}
+                    onClick={() => void generateJobDescription()}
+                    type="button"
+                  >
+                    {loading ? (
+                      <>
+                        <i className="spinner" />
+                        正在生成…
+                      </>
+                    ) : (
+                      <>
+                        <Icon name="spark" size={16} />
+                        {jdText ? "重新生成 JD" : "AI 生成 JD"}
+                      </>
+                    )}
+                  </button>
+                  {jdText && (
+                    <button
+                      className="button button-primary"
+                      disabled={loading || !generatedJobIsReady}
+                      onClick={() => void enableJob()}
+                      type="button"
+                    >
+                      <Icon name="check" size={16} />
+                      启用岗位
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
           </section>
-          {jobVersion && (
+          {jobWorkspaceMode === "create" && generatedJobIsReady && (
             <section className="panel">
               <div className="panel-heading">
                 <div>
-                  <h2>可核验的岗位要求</h2>
-                  <p>
-                    {jobVersion.status === "confirmed"
-                      ? "已确认，可运行匹配。"
-                      : "草稿状态：允许修改；确认后会冻结此版本。"}
-                  </p>
+                  <h2>AI 识别的匹配条件</h2>
+                  <p>启用岗位后，这些条件将作为 AI 匹配的依据。</p>
                 </div>
-                {jobVersion.status === "draft" && (
-                  <button
-                    className="button"
-                    disabled={loading}
-                    onClick={() => void extractRequirements()}
-                    type="button"
-                  >
-                    <Icon name="spark" size={16} />
-                    AI 提取要求
-                  </button>
-                )}
               </div>
               <div className="requirements-list">
-                {requirements.map((item, index) => (
-                  <RequirementEditor
-                    item={item}
-                    key={item.requirement_key}
-                    onDelete={() =>
-                      setRequirements((current) =>
-                        current.filter((_, itemIndex) => itemIndex !== index),
-                      )
-                    }
-                    onUpdate={(patch) => updateRequirement(index, patch)}
-                    readOnly={jobVersion.status !== "draft"}
-                  />
+                {(generatedRequirements?.must_have ?? []).map((requirement, index) => (
+                  <div className="requirement-row" key={`must-${index}-${requirement}`}>
+                    <span className="priority-must">必须</span>
+                    <p>{requirement}</p>
+                    <span className="candidate-meta">AI 提取</span>
+                  </div>
                 ))}
-                {!requirements.length && (
-                  <p className="candidate-meta">
-                    尚未提取要求。可以先使用 AI 提取，再逐条人工检查。
-                  </p>
-                )}
+                {(generatedRequirements?.preferred ?? []).map((requirement, index) => (
+                  <div className="requirement-row" key={`preferred-${index}-${requirement}`}>
+                    <span className="priority-preferred">优先</span>
+                    <p>{requirement}</p>
+                    <span className="candidate-meta">AI 提取</span>
+                  </div>
+                ))}
               </div>
-              {jobVersion.status === "draft" && (
-                <div className="review-actions">
-                  <button
-                    className="button button-ghost"
-                    onClick={() =>
-                      setRequirements((current) => [
-                        ...current,
-                        {
-                          requirement_id: `local-${Date.now()}`,
-                          requirement_key: `requirement_${current.length + 1}`,
-                          priority: "must_have",
-                          category: "other",
-                          raw_requirement: "",
-                          terms: [],
-                          minimum_months: null,
-                          weight: 0,
-                          clause_ids: firstClauseId ? [firstClauseId] : [],
-                          sort_order: current.length,
-                        },
-                      ])
-                    }
-                    type="button"
-                  >
-                    <Icon name="plus" size={15} />
-                    添加要求
-                  </button>
-                  <button
-                    className="button"
-                    disabled={loading}
-                    onClick={() => void saveRequirements()}
-                    type="button"
-                  >
-                    保存要求草稿
-                  </button>
-                  <button
-                    className="button button-primary"
-                    disabled={loading || !requirements.length}
-                    onClick={() => void confirmJob()}
-                    type="button"
-                  >
-                    <Icon name="check" size={16} />
-                    确认岗位要求
-                  </button>
+            </section>
+          )}
+          {jobIsEnabled && jobVersion.requirements.length > 0 && (
+            <section className="panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>当前岗位的匹配条件</h2>
+                  <p>这些条件已随岗位启用，并用于当前的简历匹配。</p>
                 </div>
-              )}
+              </div>
+              <div className="requirements-list">
+                {jobVersion.requirements.map((requirement) => (
+                  <div className="requirement-row" key={requirement.requirement_id}>
+                    <span
+                      className={
+                        requirement.priority === "must_have"
+                          ? "priority-must"
+                          : "priority-preferred"
+                      }
+                    >
+                      {requirement.priority === "must_have" ? "必须" : "优先"}
+                    </span>
+                    <p>{requirement.raw_requirement}</p>
+                    <span className="candidate-meta">{requirement.category}</span>
+                  </div>
+                ))}
+              </div>
             </section>
           )}
           {match && <MatchResult match={match} />}
-          {jobVersion?.status === "confirmed" && (
+          {jobIsEnabled && (
             <MatchLeaderboard
               loading={matchesLoading}
               matches={jobMatches}
@@ -4145,16 +4215,16 @@ function MatchPage({
           <div className="panel-heading">
             <div>
               <h2>匹配操作</h2>
-              <p>仅可对确认后的岗位版本运行。</p>
+              <p>启用岗位后，可对当前候选人或全部简历运行 AI 匹配。</p>
             </div>
           </div>
           <div className="fact-list">
             <div className="fact-row">
-              <strong>岗位版本</strong>
+              <strong>当前岗位</strong>
               <span>
-                {jobVersion
-                  ? `v${jobVersion.version} · ${jobVersion.status}`
-                  : "尚未创建"}
+                {jobIsEnabled && jobVersion
+                  ? `${jobVersion.title} · v${jobVersion.version} · 已启用`
+                  : "尚未启用"}
               </span>
             </div>
             <div className="fact-row">
@@ -4174,7 +4244,7 @@ function MatchPage({
           <div className="review-actions">
             <button
               className="button"
-              disabled={jobVersion?.status !== "confirmed" || loading}
+              disabled={!jobIsEnabled || loading}
               onClick={() => void runAllMatches()}
               type="button"
             >
@@ -4184,12 +4254,12 @@ function MatchPage({
             <button
               className="button button-primary"
               disabled={
-                !selected || jobVersion?.status !== "confirmed" || loading
+                !selected || !jobIsEnabled || loading
               }
               onClick={() => void runMatch()}
               type="button"
             >
-              {loading && jobVersion?.status === "confirmed" ? (
+              {loading && jobIsEnabled ? (
                 <>
                   <i className="spinner" />
                   正在匹配…
@@ -4204,67 +4274,6 @@ function MatchPage({
           </div>
         </aside>
       </div>
-    </div>
-  );
-}
-
-function RequirementEditor({
-  item,
-  onUpdate,
-  onDelete,
-  readOnly,
-}: {
-  item: JobRequirement;
-  onUpdate: (patch: Partial<JobRequirement>) => void;
-  onDelete: () => void;
-  readOnly: boolean;
-}) {
-  return (
-    <div className="requirement-row">
-      <div className="select-wrap">
-        <select
-          className="select-field"
-          disabled={readOnly}
-          onChange={(event) =>
-            onUpdate({
-              priority: event.target.value as JobRequirement["priority"],
-            })
-          }
-          value={item.priority}
-        >
-          <option value="must_have">必须满足</option>
-          <option value="preferred">优先满足</option>
-        </select>
-        <Icon name="chevron-down" size={15} />
-      </div>
-      <input
-        aria-label="岗位要求内容"
-        className="field"
-        disabled={readOnly}
-        onChange={(event) => onUpdate({ raw_requirement: event.target.value })}
-        placeholder="填写岗位要求"
-        value={item.raw_requirement}
-      />
-      {readOnly ? (
-        <span
-          className={
-            item.priority === "must_have"
-              ? "priority-must"
-              : "priority-preferred"
-          }
-        >
-          {item.priority === "must_have" ? "必须" : "优先"}
-        </span>
-      ) : (
-        <button
-          aria-label="删除岗位要求"
-          className="icon-button"
-          onClick={onDelete}
-          type="button"
-        >
-          <Icon name="close" size={15} />
-        </button>
-      )}
     </div>
   );
 }

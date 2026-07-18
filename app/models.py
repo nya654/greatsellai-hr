@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
@@ -161,6 +162,12 @@ class MailboxConfig(Base):
     mailbox: Mapped[str] = mapped_column(String(255), default="INBOX")
     encrypted_password: Mapped[str] = mapped_column(Text)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    # A binding starts at the mailbox's current UIDNEXT.  This makes the
+    # inbox an append-only source from the moment the user connects it: mail
+    # that was already present is never retrospectively scanned.
+    import_start_uid: Mapped[int | None] = mapped_column(BigInteger)
+    imap_uidvalidity: Mapped[int | None] = mapped_column(BigInteger)
+    import_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_sync_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

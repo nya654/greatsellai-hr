@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import imaplib
+import re
 from datetime import datetime, timedelta, timezone
 from email import policy
 from email.header import decode_header, make_header
@@ -85,6 +86,107 @@ def _received_at(message: Message) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+_MAILBOX_STATUS_VALUE_PATTERN = re.compile(
+    r"\b(UIDVALIDITY|UIDNEXT)\s+(\d+)\b",
+    re.IGNORECASE,
+)
+
+
+def _parse_mailbox_status(data: list[bytes] | list[str] | None) -> tuple[int, int]:
+    """Return the UIDVALIDITY and UIDNEXT values from an IMAP STATUS reply.
+
+    IMAP servers format the surrounding STATUS text differently, so only the
+    two protocol fields are parsed.  Any malformed reply is intentionally
+    surfaced as a stable application error rather than returning raw server
+    text to the user.
+    """
+
+    values: dict[str, int] = {}
+    for item in data or []:
+        if isinstance(item, bytes):
+            text = item.decode("ascii", errors="ignore")
+        else:
+            text = str(item)
+        for name, value in _MAILBOX_STATUS_VALUE_PATTERN.findall(text):
+            try:
+                values[name.upper()] = int(value)
+            except ValueError:
+                continue
+    uidvalidity = values.get("UIDVALIDITY")
+    uidnext = values.get("UIDNEXT")
+    if uidvalidity is None or uidnext is None or uidvalidity <= 0 or uidnext <= 0:
+        raise MailboxImportError("mailbox_status_failed")
+    return uidvalidity, uidnext
+
+
+def _read_mailbox_status(
+    client: imaplib.IMAP4_SSL,
+    *,
+    mailbox: str,
+) -> tuple[int, int]:
+    """Read the mailbox watermark without selecting or scanning messages."""
+
+    try:
+        status, data = client.status(mailbox, "(UIDVALIDITY UIDNEXT)")
+    except (imaplib.IMAP4.error, OSError) as exc:
+        raise MailboxImportError("mailbox_status_failed") from exc
+    if status != "OK":
+        raise MailboxImportError("mailbox_status_failed")
+    return _parse_mailbox_status(data)
+
+
+def _read_initial_mailbox_watermark(
+    *,
+    imap_host: str,
+    imap_port: int,
+    email_address: str,
+    mailbox: str,
+    password: str,
+) -> tuple[int, int]:
+    """Authenticate once while binding and capture the starting UIDNEXT.
+
+    This happens before changing the stored configuration.  A mistyped target
+    therefore cannot accidentally replace a working mailbox or advance its
+    import watermark.
+    """
+
+    client: imaplib.IMAP4_SSL | None = None
+    try:
+        client = imaplib.IMAP4_SSL(imap_host, imap_port, timeout=30)
+        login_status, _ = client.login(email_address, password)
+        if login_status != "OK":
+            raise MailboxImportError("mailbox_connection_failed")
+        return _read_mailbox_status(client, mailbox=mailbox)
+    except MailboxImportError:
+        raise
+    except (imaplib.IMAP4.error, OSError) as exc:
+        raise MailboxImportError("mailbox_connection_failed") from exc
+    finally:
+        if client is not None:
+            try:
+                client.logout()
+            except (imaplib.IMAP4.error, OSError):
+                pass
+
+
+def _same_mailbox_source(
+    config: MailboxConfig,
+    *,
+    imap_host: str,
+    imap_port: int,
+    email_address: str,
+    mailbox: str,
+) -> bool:
+    """Compare connection coordinates while ignoring harmless host/email case."""
+
+    return (
+        config.imap_host.strip().casefold() == imap_host.casefold()
+        and config.imap_port == imap_port
+        and config.email_address.strip().casefold() == email_address.casefold()
+        and config.mailbox.strip() == mailbox
+    )
+
+
 def _config_response(config: MailboxConfig | None) -> MailboxConfigResponse:
     if config is None:
         return MailboxConfigResponse(configured=False)
@@ -96,6 +198,7 @@ def _config_response(config: MailboxConfig | None) -> MailboxConfigResponse:
         mailbox=config.mailbox,
         enabled=config.enabled,
         password_configured=bool(config.encrypted_password),
+        import_started_at=config.import_started_at,
         last_synced_at=config.last_synced_at,
         last_sync_error=config.last_sync_error,
     )
@@ -115,26 +218,65 @@ def save_mailbox_config(
     config = session.scalar(select(MailboxConfig).order_by(desc(MailboxConfig.created_at)))
     if config is None and not payload.password:
         raise MailboxImportError("mailbox_password_required")
+    imap_host = payload.imap_host.strip()
+    email_address = payload.email_address.strip()
+    mailbox = payload.mailbox.strip()
+    source_changed = config is None or not _same_mailbox_source(
+        config,
+        imap_host=imap_host,
+        imap_port=payload.imap_port,
+        email_address=email_address,
+        mailbox=mailbox,
+    )
+    needs_watermark = source_changed or (
+        config is not None
+        and (config.import_start_uid is None or config.imap_uidvalidity is None)
+    )
     encrypted_password = config.encrypted_password if config is not None else ""
+    password = payload.password
     if payload.password:
         encrypted_password = _fernet(settings).encrypt(payload.password.encode("utf-8")).decode("ascii")
+    if needs_watermark:
+        if password is None:
+            try:
+                password = _fernet(settings).decrypt(encrypted_password.encode("ascii")).decode("utf-8")
+            except (MailboxImportError, InvalidToken, UnicodeDecodeError) as exc:
+                raise MailboxImportError("mailbox_credentials_unavailable") from exc
+        imap_uidvalidity, import_start_uid = _read_initial_mailbox_watermark(
+            imap_host=imap_host,
+            imap_port=payload.imap_port,
+            email_address=email_address,
+            mailbox=mailbox,
+            password=password,
+        )
+        import_started_at = _utcnow()
     if config is None:
         config = MailboxConfig(
-            imap_host=payload.imap_host.strip(),
+            imap_host=imap_host,
             imap_port=payload.imap_port,
-            email_address=payload.email_address.strip(),
-            mailbox=payload.mailbox.strip(),
+            email_address=email_address,
+            mailbox=mailbox,
             encrypted_password=encrypted_password,
             enabled=payload.enabled,
+            import_start_uid=import_start_uid,
+            imap_uidvalidity=imap_uidvalidity,
+            import_started_at=import_started_at,
         )
         session.add(config)
     else:
-        config.imap_host = payload.imap_host.strip()
+        config.imap_host = imap_host
         config.imap_port = payload.imap_port
-        config.email_address = payload.email_address.strip()
-        config.mailbox = payload.mailbox.strip()
+        config.email_address = email_address
+        config.mailbox = mailbox
         config.encrypted_password = encrypted_password
         config.enabled = payload.enabled
+        if needs_watermark:
+            config.import_start_uid = import_start_uid
+            config.imap_uidvalidity = imap_uidvalidity
+            config.import_started_at = import_started_at
+            # The worker should check a newly bound mailbox immediately.  The
+            # stored UIDNEXT keeps that check from importing its history.
+            config.last_synced_at = None
         config.last_sync_error = None
     session.commit()
     return _config_response(config)
@@ -259,19 +401,55 @@ def sync_mailbox(
     client: imaplib.IMAP4_SSL | None = None
     try:
         client = imaplib.IMAP4_SSL(config.imap_host, config.imap_port, timeout=30)
-        client.login(config.email_address, password)
+        login_status, _ = client.login(config.email_address, password)
+        if login_status != "OK":
+            raise MailboxImportError("mailbox_connection_failed")
+        imap_uidvalidity, current_uidnext = _read_mailbox_status(
+            client,
+            mailbox=config.mailbox,
+        )
+        # Older installations have no watermark until their first sync after
+        # this feature ships.  Establish it and deliberately leave all
+        # existing messages untouched.
+        if config.import_start_uid is None or config.imap_uidvalidity is None:
+            config.import_start_uid = current_uidnext
+            config.imap_uidvalidity = imap_uidvalidity
+            config.import_started_at = _utcnow()
+            config.last_synced_at = _utcnow()
+            config.last_sync_error = None
+            session.commit()
+            return MailboxSyncResponse(
+                configured=True,
+                last_synced_at=config.last_synced_at,
+                last_sync_error=config.last_sync_error,
+            )
+        # A UID has meaning only inside one UIDVALIDITY epoch.  If the server
+        # reports a new epoch, take a fresh UIDNEXT watermark and skip this
+        # run rather than risking old mail or UID reuse being imported.
+        if config.imap_uidvalidity != imap_uidvalidity:
+            config.import_start_uid = current_uidnext
+            config.imap_uidvalidity = imap_uidvalidity
+            config.import_started_at = _utcnow()
+            config.last_synced_at = _utcnow()
+            config.last_sync_error = None
+            session.commit()
+            return MailboxSyncResponse(
+                configured=True,
+                last_synced_at=config.last_synced_at,
+                last_sync_error=config.last_sync_error,
+            )
         status, _ = client.select(config.mailbox, readonly=True)
         if status != "OK":
             raise MailboxImportError("mailbox_select_failed")
-        status, data = client.uid("search", None, "ALL")
+        status, data = client.uid("search", None, f"UID {config.import_start_uid}:*")
         if status != "OK":
             raise MailboxImportError("mailbox_search_failed")
         known_uids = _known_message_uids(session, config_id=config.id)
         selected_uids: list[bytes] = []
         # Work newest-first so freshly received resumes arrive immediately.
-        # Already-recorded UIDs are skipped before a full RFC822 fetch. Once a
-        # batch is done, the next run naturally continues farther back through
-        # historical mail rather than repeatedly fetching the same messages.
+        # The server has already limited this search to UIDs at or after the
+        # binding watermark; known UIDs avoid re-fetching work from an earlier
+        # batch when a burst exceeds the per-run limit.
         for raw_uid in reversed((data[0] or b"").split()):
             uid = raw_uid.decode("ascii", errors="ignore")
             if not uid or uid in known_uids:
@@ -382,7 +560,9 @@ def sync_due_mailboxes(*, database, settings: AppSettings) -> bool:
             select(MailboxConfig)
             .where(MailboxConfig.enabled.is_(True))
             .where(
-                (MailboxConfig.last_synced_at.is_(None))
+                (MailboxConfig.import_start_uid.is_(None))
+                | (MailboxConfig.imap_uidvalidity.is_(None))
+                | (MailboxConfig.last_synced_at.is_(None))
                 | (MailboxConfig.last_synced_at <= cutoff)
             )
             .order_by(MailboxConfig.last_synced_at)

@@ -60,6 +60,7 @@ export interface MailboxConfig {
   mailbox: string | null;
   enabled: boolean;
   password_configured: boolean;
+  import_started_at: string | null;
   last_synced_at: string | null;
   last_sync_error: string | null;
 }

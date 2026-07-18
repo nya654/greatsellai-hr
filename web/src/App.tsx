@@ -257,6 +257,7 @@ function humanizeError(error: unknown): string {
       mailbox_credentials_unavailable: "邮箱授权码无法读取，请重新保存后再同步。",
       mailbox_connection_failed: "无法连接邮箱，请检查 IMAP 地址、端口和授权码。",
       mailbox_select_failed: "无法打开指定的邮箱文件夹。",
+      mailbox_status_failed: "无法读取邮箱当前位置，请检查文件夹设置后重试。",
       mailbox_search_failed: "无法检索邮箱中的附件。",
       mailbox_sync_failed: "邮箱入库暂时异常，请稍后重试。",
       score_template_not_found: "评分规则不存在，请重新选择。",
@@ -2673,7 +2674,7 @@ function MailboxPage({
       });
       setConfig(saved);
       setPassword("");
-      notify("success", "邮箱配置已保存。授权码不会在页面中回显。");
+      notify("success", "邮箱已绑定。只会入库从现在起收到的附件。");
     } catch (error) {
       notify("error", humanizeError(error));
     } finally {
@@ -2703,7 +2704,7 @@ function MailboxPage({
       <header className="page-heading">
         <div>
           <h1>邮箱附件入库</h1>
-          <p>从指定邮箱的附件中接收简历，沿用相同的文件保存、文字提取和 AI 入库流程。</p>
+          <p>从指定邮箱接收新到附件，历史邮件不会扫描，后续附件沿用相同的入库流程。</p>
         </div>
         <button className="button button-primary" disabled={!config?.configured || syncing} onClick={() => void sync()} type="button">
           {syncing ? <><i className="spinner" />正在同步</> : <><Icon name="refresh" size={16} />立即同步</>}
@@ -2714,7 +2715,7 @@ function MailboxPage({
           <div className="panel-heading">
             <div>
               <h2>收件邮箱</h2>
-              <p>保存后后台每 10 分钟同步一次，点击“立即同步”可手动拉取。</p>
+              <p>保存时记录邮箱当前位置，只有绑定后收到的附件会入库。</p>
             </div>
             {config?.configured && (
               <span className={`status-pill${enabled ? " is-success" : ""}`}>
@@ -2752,13 +2753,14 @@ function MailboxPage({
           )}
           <div className="review-actions">
             <button className="button button-primary" disabled={loading || saving} onClick={() => void save()} type="button">
-              {saving ? <><i className="spinner" />正在保存</> : <><Icon name="check" size={16} />保存邮箱配置</>}
+              {saving ? <><i className="spinner" />正在绑定</> : <><Icon name="check" size={16} />保存并开始接收</>}
             </button>
           </div>
         </section>
         <aside className="panel mailbox-status-panel">
           <div className="panel-heading"><div><h2>同步状态</h2><p>重复邮件和重复附件不会再次入库。</p></div></div>
           <div className="fact-list">
+            <div className="fact-row"><strong>开始接收</strong><span>{config?.import_started_at ? formatLibraryDate(config.import_started_at) : config?.configured ? "正在初始化" : "尚未绑定"}</span></div>
             <div className="fact-row"><strong>最近同步</strong><span>{config?.last_synced_at ? formatLibraryDate(config.last_synced_at) : "尚未同步"}</span></div>
             <div className="fact-row"><strong>累计记录</strong><span>{history?.total ?? 0} 条</span></div>
             <div className="fact-row"><strong>支持格式</strong><span>PDF、Word、图片、Excel、HTML</span></div>
@@ -2770,7 +2772,7 @@ function MailboxPage({
         <div className="panel-heading"><div><h2>最近入库记录</h2><p>只记录附件处理结果，不在这里展示邮件正文。</p></div></div>
         {loading ? <TableSkeleton /> : history?.items.length ? (
           <div className="table-scroll"><table className="candidate-table"><thead><tr><th scope="col">附件</th><th scope="col">结果</th><th scope="col">时间</th></tr></thead><tbody>{history.items.map((item, index) => <tr key={`${item.attachment_filename}-${item.created_at}-${index}`}><td><strong>{item.attachment_filename}</strong></td><td><span className="status-pill">{item.status === "imported" ? "已入库" : item.status === "skipped" ? "已跳过" : "处理失败"}</span>{item.error && <small>{item.error}</small>}</td><td>{formatLibraryDate(item.created_at)}</td></tr>)}</tbody></table></div>
-        ) : <div className="empty-state"><div className="empty-state-inner"><span className="empty-glyph"><Icon name="inbox" size={23} /></span><h2>还没有附件入库记录</h2><p>保存邮箱配置后，点击“立即同步”即可开始入库。</p></div></div>}
+        ) : <div className="empty-state"><div className="empty-state-inner"><span className="empty-glyph"><Icon name="inbox" size={23} /></span><h2>还没有附件入库记录</h2><p>绑定后收到的附件会在这里显示，历史邮件不会入库。</p></div></div>}
       </section>
     </div>
   );

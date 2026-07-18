@@ -72,6 +72,8 @@ class MailboxConfigResponse(ApiModel):
     mailbox: str | None = None
     enabled: bool = False
     password_configured: bool = False
+    # Deliberately expose the binding time, but not the IMAP UID internals.
+    import_started_at: datetime | None = None
     last_synced_at: datetime | None = None
     last_sync_error: str | None = None
 

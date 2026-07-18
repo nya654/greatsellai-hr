@@ -75,6 +75,11 @@ services:
     restart: unless-stopped
     environment: *app-environment
     command: ["python", "-m", "app.ai_extraction_worker"]
+    # Mailbox attachments are ingested by the worker, while original-file
+    # previews are served by the API. Both services therefore must see the
+    # same durable upload directory.
+    volumes:
+      - uploads_data:/var/lib/resume-v3/uploads
     depends_on:
       migrate:
         condition: service_completed_successfully

@@ -41,7 +41,7 @@ import type {
 } from "./types";
 import { Icon, type IconName } from "./icons";
 
-type View = "library" | "filter" | "upload" | "inbox" | "score" | "summary" | "match";
+type View = "library" | "filter" | "upload" | "inbox" | "score" | "match";
 type DrawerTab = "original" | "summary";
 type SchoolFilter = "any" | "yes" | "no";
 type ToastKind = "success" | "error";
@@ -211,7 +211,6 @@ const navigation: Array<{ view: View; label: string; icon: IconName }> = [
   { view: "upload", label: "上传简历", icon: "upload" },
   { view: "inbox", label: "邮箱入库", icon: "inbox" },
   { view: "score", label: "评分规则", icon: "layers" },
-  { view: "summary", label: "简历总结", icon: "spark" },
   { view: "match", label: "岗位匹配", icon: "match" },
 ];
 
@@ -868,18 +867,6 @@ function App() {
               onScoreCreated={() =>
                 setLibraryRefreshToken((current) => current + 1)
               }
-            />
-          )}
-          {view === "summary" && (
-            <SummaryPage
-              selected={selectedResume}
-              summaries={summaries}
-              loading={summaryLoading}
-              onGenerate={generateSummary}
-              onRefresh={() =>
-                selectedResumeId && void loadSummaries(selectedResumeId)
-              }
-              onChooseCandidate={() => setView("library")}
             />
           )}
           {view === "match" && (
@@ -3624,125 +3611,6 @@ function ScoreResult({ score }: { score: ResumeScore }) {
         </div>
       </div>
     </section>
-  );
-}
-
-function SummaryPage({
-  selected,
-  summaries,
-  loading,
-  onGenerate,
-  onRefresh,
-  onChooseCandidate,
-}: {
-  selected: SelectedResume | null;
-  summaries: ResumeSummary[];
-  loading: boolean;
-  onGenerate: () => void;
-  onRefresh: () => void;
-  onChooseCandidate: () => void;
-}) {
-  const currentSummary =
-    summaries.find((item) => item.is_current) ?? summaries[0] ?? null;
-  if (!selected)
-    return (
-      <CandidateRequired
-        title="简历总结"
-        description="先在简历库打开一份简历，再生成它的 AI 总结。"
-        actionLabel="前往简历库"
-        onAction={onChooseCandidate}
-      />
-    );
-  return (
-    <div className="page-frame">
-      <header className="page-heading">
-        <div>
-          <h1>
-            简历总结{" "}
-            <span className="candidate-meta">/ {selected.candidateName}</span>
-          </h1>
-          <p>用于快速了解候选人的背景、能力和亮点。</p>
-        </div>
-        <button
-          className="button"
-          disabled={loading}
-          onClick={onRefresh}
-          type="button"
-        >
-          <Icon name="refresh" size={16} />
-          刷新记录
-        </button>
-      </header>
-      <div className="page-layout">
-        <section className="panel">
-          {loading ? (
-            <TableSkeleton />
-          ) : currentSummary ? (
-            <>
-              <div className="panel-heading">
-                <div>
-                  <h2>当前 AI 总结</h2>
-                  <p>
-                    生成于 {formatLibraryDate(currentSummary.created_at)} ·{" "}
-                    {currentSummary.source === "manual"
-                      ? "人工版本"
-                      : "AI 版本"}
-                  </p>
-                </div>
-                <button className="button" onClick={onGenerate} type="button">
-                  <Icon name="spark" size={16} />
-                  重新生成
-                </button>
-              </div>
-              <SummaryContent content={currentSummary.content} />
-            </>
-          ) : (
-            <div className="empty-state">
-              <div className="empty-state-inner">
-                <span className="empty-glyph">
-                  <Icon name="spark" size={23} />
-                </span>
-                <h2>尚未生成总结</h2>
-                <p>AI 会归纳候选人的教育、经历和技能信息。</p>
-                <button
-                  className="button button-primary"
-                  onClick={onGenerate}
-                  type="button"
-                >
-                  <Icon name="spark" size={16} />
-                  生成 AI 总结
-                </button>
-              </div>
-            </div>
-          )}
-        </section>
-        <aside className="panel">
-          <div className="panel-heading">
-            <div>
-              <h2>版本记录</h2>
-              <p>每次重新生成都会保留历史记录。</p>
-            </div>
-          </div>
-          <div className="fact-list">
-            {summaries.length ? (
-              summaries.map((summary) => (
-                <div className="fact-row" key={summary.summary_id}>
-                  <strong>
-                    {summary.is_current ? "当前版本" : "历史版本"}
-                  </strong>
-                  <span>
-                    {summary.source === "manual" ? "人工" : "AI"} ·{" "}
-                    {formatLibraryDate(summary.created_at)}
-                  </span>
-                </div>
-              ))
-            ) : (
-              <p className="candidate-meta">暂无总结版本。</p>
-            )}
-          </div>
-        </aside>
-      </div>
-    </div>
   );
 }
 

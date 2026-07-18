@@ -14,10 +14,13 @@
     }
 
     # All remaining requests are frontend routes. try_files preserves direct
-    # navigation and refreshes for the client-side router.
+    # navigation and refreshes for the client-side router. Revalidate the
+    # shell on every visit so an already-open browser cannot stay on an older
+    # JavaScript bundle after a deployment.
     handle {
         root * /srv
         try_files {path} /index.html
+        header Cache-Control "no-cache"
         file_server
     }
 }

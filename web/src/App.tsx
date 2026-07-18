@@ -48,7 +48,6 @@ type DrawerTab = "original" | "summary";
 type SchoolFilter = "any" | "yes" | "no";
 type ToastKind = "success" | "error";
 type JobWorkspaceMode = "create" | "view";
-type JobAuthoringMode = "ai" | "original";
 
 interface FilterDraft {
   school: SchoolFilter;
@@ -3739,13 +3738,10 @@ function MatchPage({
   const [title, setTitle] = useState("");
   const [jobBrief, setJobBrief] = useState("");
   const [jdText, setJdText] = useState("");
-  const [originalJdText, setOriginalJdText] = useState("");
   const [editedGeneratedJd, setEditedGeneratedJd] = useState(false);
   const [generatedRequirements, setGeneratedRequirements] =
     useState<JobRequirements | null>(null);
   const [generationError, setGenerationError] = useState<string | null>(null);
-  const [jobAuthoringMode, setJobAuthoringMode] =
-    useState<JobAuthoringMode>("ai");
   const [jobWorkspaceMode, setJobWorkspaceMode] =
     useState<JobWorkspaceMode>("create");
   const [jobVersion, setJobVersion] = useState<JobVersion | null>(null);
@@ -3759,11 +3755,9 @@ function MatchPage({
     setTitle("");
     setJobBrief("");
     setJdText("");
-    setOriginalJdText("");
     setEditedGeneratedJd(false);
     setGeneratedRequirements(null);
     setGenerationError(null);
-    setJobAuthoringMode("ai");
   };
   const selectJobVersion = (next: JobVersion) => {
     resetJobAuthoring();
@@ -3779,10 +3773,6 @@ function MatchPage({
     setMatch(null);
     setMatchBatch(null);
     setJobMatches([]);
-  };
-  const chooseJobAuthoringMode = (next: JobAuthoringMode) => {
-    setJobAuthoringMode(next);
-    setGenerationError(null);
   };
   const requirementsAreReady = (requirements: JobRequirements | null) =>
     Boolean(
@@ -3874,7 +3864,9 @@ function MatchPage({
     }
   };
   const publishOriginalJob = async () => {
-    if (!title.trim() || !originalJdText.trim()) {
+    const originalSourceText =
+      editedGeneratedJd && jdText.trim() ? jdText : jobBrief;
+    if (!title.trim() || !originalSourceText.trim()) {
       notify("error", "请填写岗位名称和完整原版 JD 后再发布。");
       return;
     }
@@ -3885,7 +3877,7 @@ function MatchPage({
         title: title.trim(),
         // This deliberately retains every valid character entered in the JD.
         // The endpoint performs validation without normalizing the source text.
-        jd_text: originalJdText,
+        jd_text: originalSourceText,
       });
       setConfirmedJobVersions((current) => [
         published,
@@ -4112,37 +4104,7 @@ function MatchPage({
               </div>
             ) : (
               <>
-                <div className="job-authoring-toolbar">
-                  <span className="job-authoring-label">创建方式</span>
-                  <div
-                    aria-label="选择 JD 创建方式"
-                    className="job-authoring-modes"
-                    role="group"
-                  >
-                    <button
-                      aria-pressed={jobAuthoringMode === "ai"}
-                      className={`job-authoring-mode${jobAuthoringMode === "ai" ? " is-active" : ""}`}
-                      disabled={loading}
-                      onClick={() => chooseJobAuthoringMode("ai")}
-                      type="button"
-                    >
-                      <Icon name="spark" size={15} />
-                      AI 生成
-                    </button>
-                    <button
-                      aria-pressed={jobAuthoringMode === "original"}
-                      className={`job-authoring-mode${jobAuthoringMode === "original" ? " is-active" : ""}`}
-                      disabled={loading}
-                      onClick={() => chooseJobAuthoringMode("original")}
-                      type="button"
-                    >
-                      <Icon name="briefcase" size={15} />
-                      原文发布
-                    </button>
-                  </div>
-                </div>
-                {jobAuthoringMode === "ai" && (
-                  <div className="jd-steps">
+                <div className="jd-steps">
                   <span className={`jd-step${jdText ? " is-done" : " is-current"}`}>
                     1 描述需求
                   </span>
@@ -4154,10 +4116,8 @@ function MatchPage({
                   <span className={`jd-step${generatedJobIsReady ? " is-current" : ""}`}>
                     3 启用匹配
                   </span>
-                  </div>
-                )}
-                {jobAuthoringMode === "ai" ? (
-                  <div className="form-grid">
+                </div>
+                <div className="form-grid">
                   <div className="field-stack span-full">
                     <label className="field-label" htmlFor="job-title">
                       岗位名称
@@ -4175,7 +4135,7 @@ function MatchPage({
                   </div>
                   <div className="field-stack span-full">
                     <label className="field-label" htmlFor="job-brief">
-                      岗位需求
+                      岗位需求或完整 JD
                     </label>
                     <textarea
                       className="textarea-field"
@@ -4189,9 +4149,12 @@ function MatchPage({
                           setGeneratedRequirements(null);
                         }
                       }}
-                      placeholder="描述业务场景、职责、候选人画像和硬性要求。也可以直接粘贴一份已有 JD。"
+                      placeholder="填写岗位需求后点击「AI 生成 JD」；已有完整 JD 可直接粘贴后点击「原版发布」。"
                       value={jobBrief}
                     />
+                    <p className="candidate-meta">
+                      AI 生成 JD 会提取匹配条件，原版发布会按当前内容原样保存。
+                    </p>
                   </div>
                   {jdText && (
                     <div className="field-stack span-full">
@@ -4213,53 +4176,14 @@ function MatchPage({
                       </p>
                     </div>
                   )}
-                  </div>
-                ) : (
-                  <div className="form-grid">
-                    <div className="field-stack span-full">
-                      <label className="field-label" htmlFor="original-job-title">
-                        岗位名称
-                      </label>
-                      <input
-                        className="field"
-                        id="original-job-title"
-                        onChange={(event) => {
-                          setGenerationError(null);
-                          setTitle(event.target.value);
-                        }}
-                        placeholder="例如：大模型应用架构师"
-                        value={title}
-                      />
-                    </div>
-                    <div className="field-stack span-full">
-                      <label className="field-label" htmlFor="original-job-text">
-                        原版 JD
-                      </label>
-                      <textarea
-                        className="textarea-field"
-                        id="original-job-text"
-                        onChange={(event) => {
-                          setGenerationError(null);
-                          setOriginalJdText(event.target.value);
-                        }}
-                        placeholder="粘贴需要原样发布的岗位 JD。系统不会调用 AI，也不会修改任何内容。"
-                        value={originalJdText}
-                      />
-                      <p className="candidate-meta">
-                        发布后按原文保存。这个版本不生成 AI 匹配条件。
-                      </p>
-                    </div>
-                  </div>
-                )}
+                </div>
                 {generationError && (
                   <p className="library-error" role="alert">
                     {generationError}
                   </p>
                 )}
                 <div className="review-actions">
-                  {jobAuthoringMode === "ai" ? (
-                    <>
-                      <button
+                  <button
                     className={`button${generatedJobIsReady ? " button-ghost" : " button-primary"}`}
                     disabled={loading}
                     onClick={() => void generateJobDescription()}
@@ -4277,8 +4201,19 @@ function MatchPage({
                       </>
                     )}
                   </button>
-                      {jdText && (
-                        <button
+                  {!generatedJobIsReady && (
+                    <button
+                      className="button"
+                      disabled={loading}
+                      onClick={() => void publishOriginalJob()}
+                      type="button"
+                    >
+                      <Icon name="briefcase" size={16} />
+                      原版发布
+                    </button>
+                  )}
+                  {jdText && (
+                    <button
                       className="button button-primary"
                       disabled={loading || !generatedJobIsReady}
                       onClick={() => void enableJob()}
@@ -4286,34 +4221,13 @@ function MatchPage({
                     >
                       <Icon name="check" size={16} />
                       启用岗位
-                        </button>
-                      )}
-                    </>
-                  ) : (
-                    <button
-                      className="button button-primary"
-                      disabled={loading}
-                      onClick={() => void publishOriginalJob()}
-                      type="button"
-                    >
-                      {loading ? (
-                        <>
-                          <i className="spinner" />
-                          正在发布…
-                        </>
-                      ) : (
-                        <>
-                          <Icon name="check" size={16} />
-                          发布原版 JD
-                        </>
-                      )}
                     </button>
                   )}
                 </div>
               </>
             )}
           </section>
-          {jobWorkspaceMode === "create" && jobAuthoringMode === "ai" && generatedJobIsReady && (
+          {jobWorkspaceMode === "create" && generatedJobIsReady && (
             <section className="panel">
               <div className="panel-heading">
                 <div>

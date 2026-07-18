@@ -3739,6 +3739,7 @@ function MatchPage({
   const [title, setTitle] = useState("");
   const [jobBrief, setJobBrief] = useState("");
   const [jdText, setJdText] = useState("");
+  const [originalJdText, setOriginalJdText] = useState("");
   const [editedGeneratedJd, setEditedGeneratedJd] = useState(false);
   const [generatedRequirements, setGeneratedRequirements] =
     useState<JobRequirements | null>(null);
@@ -3758,6 +3759,7 @@ function MatchPage({
     setTitle("");
     setJobBrief("");
     setJdText("");
+    setOriginalJdText("");
     setEditedGeneratedJd(false);
     setGeneratedRequirements(null);
     setGenerationError(null);
@@ -3780,10 +3782,6 @@ function MatchPage({
   };
   const chooseJobAuthoringMode = (next: JobAuthoringMode) => {
     setJobAuthoringMode(next);
-    setJobBrief("");
-    setJdText("");
-    setEditedGeneratedJd(false);
-    setGeneratedRequirements(null);
     setGenerationError(null);
   };
   const requirementsAreReady = (requirements: JobRequirements | null) =>
@@ -3876,7 +3874,7 @@ function MatchPage({
     }
   };
   const publishOriginalJob = async () => {
-    if (!title.trim() || !jdText.trim()) {
+    if (!title.trim() || !originalJdText.trim()) {
       notify("error", "请填写岗位名称和完整原版 JD 后再发布。");
       return;
     }
@@ -3887,7 +3885,7 @@ function MatchPage({
         title: title.trim(),
         // This deliberately retains every valid character entered in the JD.
         // The endpoint performs validation without normalizing the source text.
-        jd_text: jdText,
+        jd_text: originalJdText,
       });
       setConfirmedJobVersions((current) => [
         published,
@@ -4114,31 +4112,34 @@ function MatchPage({
               </div>
             ) : (
               <>
-                <div
-                  aria-label="选择 JD 创建方式"
-                  className="review-actions"
-                  role="group"
-                >
-                  <button
-                    aria-pressed={jobAuthoringMode === "ai"}
-                    className={`button${jobAuthoringMode === "ai" ? " button-primary" : ""}`}
-                    disabled={loading}
-                    onClick={() => chooseJobAuthoringMode("ai")}
-                    type="button"
+                <div className="job-authoring-toolbar">
+                  <span className="job-authoring-label">创建方式</span>
+                  <div
+                    aria-label="选择 JD 创建方式"
+                    className="job-authoring-modes"
+                    role="group"
                   >
-                    <Icon name="spark" size={16} />
-                    AI 生成 JD
-                  </button>
-                  <button
-                    aria-pressed={jobAuthoringMode === "original"}
-                    className={`button${jobAuthoringMode === "original" ? " button-primary" : ""}`}
-                    disabled={loading}
-                    onClick={() => chooseJobAuthoringMode("original")}
-                    type="button"
-                  >
-                    <Icon name="briefcase" size={16} />
-                    原版发布
-                  </button>
+                    <button
+                      aria-pressed={jobAuthoringMode === "ai"}
+                      className={`job-authoring-mode${jobAuthoringMode === "ai" ? " is-active" : ""}`}
+                      disabled={loading}
+                      onClick={() => chooseJobAuthoringMode("ai")}
+                      type="button"
+                    >
+                      <Icon name="spark" size={15} />
+                      AI 生成
+                    </button>
+                    <button
+                      aria-pressed={jobAuthoringMode === "original"}
+                      className={`job-authoring-mode${jobAuthoringMode === "original" ? " is-active" : ""}`}
+                      disabled={loading}
+                      onClick={() => chooseJobAuthoringMode("original")}
+                      type="button"
+                    >
+                      <Icon name="briefcase" size={15} />
+                      原文发布
+                    </button>
+                  </div>
                 </div>
                 {jobAuthoringMode === "ai" && (
                   <div className="jd-steps">
@@ -4239,10 +4240,10 @@ function MatchPage({
                         id="original-job-text"
                         onChange={(event) => {
                           setGenerationError(null);
-                          setJdText(event.target.value);
+                          setOriginalJdText(event.target.value);
                         }}
                         placeholder="粘贴需要原样发布的岗位 JD。系统不会调用 AI，也不会修改任何内容。"
-                        value={jdText}
+                        value={originalJdText}
                       />
                       <p className="candidate-meta">
                         发布后按原文保存。这个版本不生成 AI 匹配条件。
@@ -4272,7 +4273,7 @@ function MatchPage({
                     ) : (
                       <>
                         <Icon name="spark" size={16} />
-                        {jdText ? "重新生成 JD" : "AI 生成 JD"}
+                        {jdText ? "重新生成 JD" : "生成 JD"}
                       </>
                     )}
                   </button>

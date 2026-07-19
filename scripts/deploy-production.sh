@@ -161,7 +161,7 @@ if [ "$backup_required" = "1" ]; then
   umask 077
   sudo -n docker compose --project-directory "$project_dir" -f "$project_dir/compose.yml" \
     --env-file "$project_dir/.env.production" exec -T db \
-    pg_dump -U resume_v3 -d resume_v3 | gzip > "$backup_path"
+    pg_dump -U resume_v3 -d resume_v3 </dev/null | gzip > "$backup_path"
   test -s "$backup_path" || { echo "Database backup is empty." >&2; exit 1; }
 fi
 
@@ -205,12 +205,12 @@ skip_migrate="$8"
 compose=(sudo -n docker compose --project-directory "$project_dir" -f "$project_dir/compose.yml" --env-file "$project_dir/.env.production")
 
 if [ "$skip_migrate" = "1" ]; then
-  "${compose[@]}" up --build -d --no-deps api worker caddy
+  "${compose[@]}" up --build -d --no-deps api worker caddy </dev/null
 else
-  "${compose[@]}" up --build -d api worker caddy
+  "${compose[@]}" up --build -d api worker caddy </dev/null
 fi
 
-"${compose[@]}" exec -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
+"${compose[@]}" exec -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile </dev/null >/dev/null
 
 domain="$(sed -n 's/^RESUME_V3_DOMAIN=//p' "$project_dir/.env.production" | tail -n 1 | tr -d '\r' | sed -e 's/^"//' -e 's/"$//')"
 [ -n "$domain" ] || { echo "RESUME_V3_DOMAIN is not set." >&2; exit 1; }

@@ -261,6 +261,14 @@ class ResumeEducationResponse(ApiModel):
     major_raw: str | None
     start_month: Month | None
     end_month: Month | None
+    institution_tiers: list[InstitutionTier]
+    average_score: float | None
+    gpa_value: float | None
+    gpa_scale: float | None
+    gpa_percent: float | None
+    rank_position: int | None
+    rank_total: int | None
+    rank_percent: float | None
     evidence_block_ids: list[str]
 
 
@@ -280,10 +288,29 @@ class ResumeExperienceResponse(ApiModel):
     evidence_block_ids: list[str]
     classification_evidence_block_ids: list[str]
     detail_items: list[ResumeExperienceDetailResponse]
+    leadership_context: str | None
+    leadership_role: str | None
+    award_level: str | None
+    award_result_raw: str | None
 
 
 class ResumeSkillResponse(ApiModel):
     skill_display: str
+    skill_category: SkillCategory | None
+    evidence_block_ids: list[str]
+
+
+class ResumeLanguageCredentialResponse(ApiModel):
+    credential_code: LanguageCredentialCode
+    credential_name_raw: str
+    score: float | None
+    passed: bool | None
+    evidence_block_ids: list[str]
+
+
+class ResumeScholarshipResponse(ApiModel):
+    scholarship_name_raw: str
+    scholarship_level: str | None
     evidence_block_ids: list[str]
 
 
@@ -301,6 +328,8 @@ class ResumeReviewDetail(ResumeDetail):
     education: list[ResumeEducationResponse]
     experiences: list[ResumeExperienceResponse]
     skills: list[ResumeSkillResponse]
+    language_credentials: list[ResumeLanguageCredentialResponse]
+    scholarships: list[ResumeScholarshipResponse]
     review_actions: list[ResumeReviewActionResponse]
 
 

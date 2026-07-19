@@ -62,6 +62,8 @@ from app.schemas import (
     ResumeReviewQueueItem,
     ResumeReviewQueueResponse,
     ResumeLibraryResponse,
+    ResumeLanguageCredentialResponse,
+    ResumeScholarshipResponse,
     ResumeSkillResponse,
     ResumeUploadResponse,
     RecruitingAgentRequest,
@@ -306,6 +308,14 @@ def _resume_review_detail(resume: object) -> ResumeReviewDetail:
                 major_raw=education.major_raw,
                 start_month=education.start_month,
                 end_month=education.end_month,
+                institution_tiers=education.institution_tiers or [],
+                average_score=education.average_score,
+                gpa_value=education.gpa_value,
+                gpa_scale=education.gpa_scale,
+                gpa_percent=education.gpa_percent,
+                rank_position=education.rank_position,
+                rank_total=education.rank_total,
+                rank_percent=education.rank_percent,
                 evidence_block_ids=education.evidence_block_ids or [],
             )
             for education in resume.educations
@@ -333,15 +343,38 @@ def _resume_review_detail(resume: object) -> ResumeReviewDetail:
                     and isinstance(item.get("detail_raw"), str)
                     and isinstance(item.get("evidence_block_ids"), list)
                 ],
+                leadership_context=experience.leadership_context,
+                leadership_role=experience.leadership_role,
+                award_level=experience.award_level,
+                award_result_raw=experience.award_result_raw,
             )
             for experience in resume.experiences
         ],
         skills=[
             ResumeSkillResponse(
                 skill_display=skill.skill_display,
+                skill_category=skill.skill_category,
                 evidence_block_ids=skill.evidence_block_ids or [],
             )
             for skill in resume.skills
+        ],
+        language_credentials=[
+            ResumeLanguageCredentialResponse(
+                credential_code=credential.credential_code,
+                credential_name_raw=credential.credential_name_raw,
+                score=credential.score,
+                passed=credential.passed,
+                evidence_block_ids=credential.evidence_block_ids or [],
+            )
+            for credential in resume.language_credentials
+        ],
+        scholarships=[
+            ResumeScholarshipResponse(
+                scholarship_name_raw=scholarship.scholarship_name_raw,
+                scholarship_level=scholarship.scholarship_level,
+                evidence_block_ids=scholarship.evidence_block_ids or [],
+            )
+            for scholarship in resume.scholarships
         ],
         review_actions=[
             ResumeReviewActionResponse(

@@ -317,6 +317,26 @@ def _matching_keyword_block_ids(resume: Resume, keywords: list[str]) -> list[str
     )
 
 
+def _matching_v2_keyword_block_ids(
+    resume: Resume,
+    *,
+    keywords: list[str],
+    mode: str,
+) -> list[str]:
+    if mode == "precise":
+        keyword_key_sets = [{normalized_key(keyword)} for keyword in keywords]
+    else:
+        keyword_key_sets = [_broad_keyword_keys(keyword) for keyword in keywords]
+    return sorted(
+        block.block_id
+        for block in resume.source_blocks
+        if any(
+            any(key in normalized_key(block.text) for key in key_set)
+            for key_set in keyword_key_sets
+        )
+    )
+
+
 def search_candidates(
     session: Session,
     request: CandidateSearchRequest,
@@ -722,9 +742,10 @@ def search_candidates(
                     filter_key="keywords",
                     label=", ".join(request.keywords),
                     fact_type="keyword",
-                    evidence_block_ids=_matching_keyword_block_ids(
+                    evidence_block_ids=_matching_v2_keyword_block_ids(
                         resume,
-                        request.keywords,
+                        keywords=request.keywords,
+                        mode=request.keyword_match_mode,
                     ),
                 )
             )

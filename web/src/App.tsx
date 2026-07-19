@@ -26,6 +26,10 @@ import type {
   CandidateSearchResponse,
   DegreeLevel,
   ExperienceType,
+  FilterOptions,
+  InstitutionTier,
+  LanguageCredentialCode,
+  PresenceStatus,
   JobMatchBatch,
   JobMatchBatchItem,
   JobMatch,
@@ -54,6 +58,7 @@ type View = "library" | "filter" | "upload" | "inbox" | "score" | "match";
 type DrawerTab = "original" | "summary" | "evidence";
 type SchoolFilter = "any" | "yes" | "no";
 type MatchMode = "all" | "any";
+type KeywordMode = "broad" | "precise";
 type ToastKind = "success" | "error";
 type JobWorkspaceMode = "create" | "view";
 type AppSurface =
@@ -66,15 +71,32 @@ interface FilterDraft {
   minEmploymentMonths: number;
   minEmploymentOrInternshipMonths: number;
   degrees: DegreeLevel[];
+  institutionTiers: InstitutionTier[];
+  graduationStatus: "any" | "fresh" | "previous";
+  freshGraduateStartMonth: string;
+  freshGraduateEndMonth: string;
   schoolName: string;
   major: string;
+  minGpaPercent: string;
+  maxRankPercent: string;
   experienceTypes: ExperienceType[];
+  experienceName: string;
   company: string;
   title: string;
   skills: string[];
+  skillCategories: string[];
   skillsMode: MatchMode;
+  languageCredentials: LanguageCredentialCode[];
+  languageScores: Partial<Record<LanguageCredentialCode, string>>;
+  customLanguageName: string;
+  scholarshipStatus: PresenceStatus;
+  scholarshipName: string;
+  competitionStatus: PresenceStatus;
+  competitionAwardStatus: PresenceStatus;
+  leadershipContexts: Array<"class" | "student_org" | "club" | "project_team" | "company">;
+  leadershipRoles: string[];
   keywords: string[];
-  keywordsMode: MatchMode;
+  keywordsMode: KeywordMode;
 }
 
 interface SelectedResume {
@@ -117,15 +139,32 @@ const defaultFilterDraft: FilterDraft = {
   minEmploymentMonths: 0,
   minEmploymentOrInternshipMonths: 0,
   degrees: [],
+  institutionTiers: [],
+  graduationStatus: "any",
+  freshGraduateStartMonth: `${new Date().getFullYear()}-01`,
+  freshGraduateEndMonth: `${new Date().getFullYear() + 1}-12`,
   schoolName: "",
   major: "",
+  minGpaPercent: "",
+  maxRankPercent: "",
   experienceTypes: [],
+  experienceName: "",
   company: "",
   title: "",
   skills: [],
+  skillCategories: [],
   skillsMode: "all",
+  languageCredentials: [],
+  languageScores: {},
+  customLanguageName: "",
+  scholarshipStatus: "any",
+  scholarshipName: "",
+  competitionStatus: "any",
+  competitionAwardStatus: "any",
+  leadershipContexts: [],
+  leadershipRoles: [],
   keywords: [],
-  keywordsMode: "all",
+  keywordsMode: "broad",
 };
 
 /**
@@ -219,10 +258,12 @@ function withLatestAiExtractionStatus(
 }
 
 const degreeOptions: Array<{ value: DegreeLevel; label: string }> = [
-  { value: "associate", label: "大专" },
-  { value: "bachelor", label: "本科" },
-  { value: "master", label: "硕士" },
   { value: "doctor", label: "博士" },
+  { value: "master", label: "硕士" },
+  { value: "bachelor", label: "本科" },
+  { value: "associate", label: "大专" },
+  { value: "high_school", label: "高中" },
+  { value: "vocational_or_below", label: "中专/职高及以下" },
 ];
 
 const experienceTypeOptions: Array<{
@@ -232,15 +273,78 @@ const experienceTypeOptions: Array<{
   { value: "employment", label: "正式工作" },
   { value: "internship", label: "实习" },
   { value: "project", label: "项目" },
-  { value: "competition", label: "竞赛" },
+  { value: "research", label: "科研" },
+  { value: "competition", label: "技能竞赛" },
+  { value: "campus", label: "校内/学生组织" },
+  { value: "club", label: "社团" },
+  { value: "volunteer", label: "志愿活动/社会实践" },
+  { value: "entrepreneurship", label: "创业" },
+  { value: "training", label: "培训" },
 ];
 
 const degreeLabels: Record<DegreeLevel, string> = {
   unknown: "未知",
+  vocational_or_below: "中专/职高及以下",
+  high_school: "高中",
   associate: "大专",
   bachelor: "本科",
   master: "硕士",
   doctor: "博士",
+};
+
+const fallbackFilterOptions: FilterOptions = {
+  schema_version: "filter-options.v2.fallback",
+  degrees: degreeOptions,
+  institution_tiers: [
+    { value: "211", label: "211" },
+    { value: "985", label: "985" },
+    { value: "double_first_class", label: "双一流" },
+    { value: "key_undergraduate", label: "重本" },
+    { value: "first_tier", label: "一本" },
+    { value: "second_tier", label: "二本" },
+    { value: "regular_undergraduate", label: "普通本科" },
+    { value: "private_undergraduate", label: "民办本科" },
+    { value: "higher_vocational", label: "高职/高专" },
+    { value: "overseas", label: "海外院校" },
+  ],
+  experience_types: experienceTypeOptions,
+  skill_categories: [
+    { value: "software", label: "编程与开发" },
+    { value: "data_ai", label: "数据与 AI" },
+    { value: "product_project", label: "产品与项目" },
+    { value: "design_content", label: "设计与内容" },
+    { value: "marketing_ecommerce_operations", label: "市场、电商与运营" },
+    { value: "sales_customer_service", label: "销售与客户服务" },
+    { value: "supply_chain_logistics", label: "供应链与物流" },
+    { value: "finance_legal_hr", label: "财务、法务与人力资源" },
+    { value: "office_collaboration", label: "办公与协作工具" },
+    { value: "industry_professional", label: "行业专业技能" },
+  ],
+  language_credentials: [
+    { value: "cet4", label: "大学英语四级（CET-4）" },
+    { value: "cet6", label: "大学英语六级（CET-6）" },
+    { value: "ielts", label: "雅思（IELTS）" },
+    { value: "toefl", label: "托福（TOEFL）" },
+    { value: "tem4", label: "英语专业四级（TEM-4）" },
+    { value: "tem8", label: "英语专业八级（TEM-8）" },
+    { value: "bec", label: "剑桥商务英语（BEC）" },
+    { value: "toeic", label: "托业（TOEIC）" },
+    { value: "custom", label: "其他英语证书（自定义填写）" },
+  ],
+  graduation_statuses: [
+    { value: "any", label: "不限" },
+    { value: "fresh", label: "应届" },
+    { value: "previous", label: "往届" },
+  ],
+  presence_statuses: [
+    { value: "any", label: "不限" },
+    { value: "present", label: "有明确记录" },
+    { value: "unknown", label: "未知" },
+  ],
+  keyword_modes: [
+    { value: "broad", label: "泛匹配" },
+    { value: "precise", label: "精准匹配" },
+  ],
 };
 
 const defaultTemplateDimensions: TemplateDraftDimension[] = [
@@ -283,7 +387,13 @@ function freshDefaultFilter(): FilterDraft {
   return {
     ...defaultFilterDraft,
     degrees: [],
+    institutionTiers: [],
     skills: [],
+    skillCategories: [],
+    languageCredentials: [],
+    languageScores: {},
+    leadershipContexts: [],
+    leadershipRoles: [],
     keywords: [],
   };
 }
@@ -470,6 +580,7 @@ function draftToSearchRequest(
   cursor: string | null = null,
 ): CandidateSearchRequest {
   const request: CandidateSearchRequest = {
+    schema_version: "candidate_filter.v2",
     limit: 50,
     cursor,
   };
@@ -483,19 +594,40 @@ function draftToSearchRequest(
     request.min_employment_or_internship_months =
       draft.minEmploymentOrInternshipMonths;
   }
-  if (draft.degrees.length || draft.schoolName.trim() || draft.major.trim()) {
+  if (draft.degrees.length) request.highest_degree_in = draft.degrees;
+  if (draft.graduationStatus !== "any") {
+    request.graduation_status = draft.graduationStatus;
+    request.fresh_graduate_start_month =
+      draft.freshGraduateStartMonth || defaultFilterDraft.freshGraduateStartMonth;
+    request.fresh_graduate_end_month =
+      draft.freshGraduateEndMonth || defaultFilterDraft.freshGraduateEndMonth;
+  }
+  if (
+    draft.institutionTiers.length ||
+    draft.schoolName.trim() ||
+    draft.major.trim() ||
+    draft.minGpaPercent ||
+    draft.maxRankPercent
+  ) {
     request.education_any_of = [
       {
-        degree_in: draft.degrees,
         school_name_contains: draft.schoolName.trim()
           ? [draft.schoolName.trim()]
           : [],
         major_contains: draft.major.trim() ? [draft.major.trim()] : [],
+        institution_tiers_any_of: draft.institutionTiers,
+        min_gpa_percent: draft.minGpaPercent
+          ? Number(draft.minGpaPercent)
+          : null,
+        max_rank_percent: draft.maxRankPercent
+          ? Number(draft.maxRankPercent)
+          : null,
       },
     ];
   }
   if (
     draft.experienceTypes.length ||
+    draft.experienceName.trim() ||
     draft.company.trim() ||
     draft.title.trim()
   ) {
@@ -504,6 +636,9 @@ function draftToSearchRequest(
         experience_types: draft.experienceTypes.length
           ? draft.experienceTypes
           : undefined,
+        experience_name_contains: draft.experienceName.trim()
+          ? [draft.experienceName.trim()]
+          : [],
         organization_name_contains: draft.company.trim()
           ? [draft.company.trim()]
           : [],
@@ -511,13 +646,54 @@ function draftToSearchRequest(
       },
     ];
   }
+  if (draft.skillCategories.length) {
+    request.skill_categories_any_of = draft.skillCategories;
+  }
   if (draft.skills.length) {
     if (draft.skillsMode === "all") request.skills_all_of = draft.skills;
     else request.skills_any_of = draft.skills;
   }
+  const validLanguageCredentials = draft.languageCredentials.filter(
+    (code) => code !== "custom" || Boolean(draft.customLanguageName.trim()),
+  );
+  if (validLanguageCredentials.length) {
+    request.language_credentials_any_of = validLanguageCredentials.map(
+      (credential_code) => ({
+        credential_code,
+        custom_name_contains:
+          credential_code === "custom"
+            ? draft.customLanguageName.trim()
+            : null,
+        min_score: draft.languageScores[credential_code]
+          ? Number(draft.languageScores[credential_code])
+          : null,
+      }),
+    );
+  }
+  if (draft.scholarshipStatus !== "any" || draft.scholarshipName.trim()) {
+    request.scholarship_status = draft.scholarshipStatus;
+    request.scholarship_name_contains =
+      draft.scholarshipStatus === "present" && draft.scholarshipName.trim()
+      ? [draft.scholarshipName.trim()]
+      : [];
+  }
+  if (draft.competitionStatus !== "any") {
+    request.competition_status = draft.competitionStatus;
+  }
+  if (draft.competitionAwardStatus !== "any") {
+    request.competition_award_status = draft.competitionAwardStatus;
+  }
+  if (draft.leadershipContexts.length || draft.leadershipRoles.length) {
+    request.leadership_any_of = [
+      {
+        contexts_any_of: draft.leadershipContexts,
+        roles_any_of: draft.leadershipRoles,
+      },
+    ];
+  }
   if (draft.keywords.length) {
-    if (draft.keywordsMode === "all") request.keywords_all_of = draft.keywords;
-    else request.keywords_any_of = draft.keywords;
+    request.keywords = draft.keywords;
+    request.keyword_match_mode = draft.keywordsMode;
   }
   return request;
 }
@@ -535,16 +711,45 @@ function searchRequestToDraft(request: CandidateSearchRequest): FilterDraft {
     minEmploymentMonths: request.min_employment_months ?? 0,
     minEmploymentOrInternshipMonths:
       request.min_employment_or_internship_months ?? 0,
-    degrees: education?.degree_in ?? [],
+    degrees: request.highest_degree_in ?? education?.degree_in ?? [],
+    institutionTiers: education?.institution_tiers_any_of ?? [],
+    graduationStatus: request.graduation_status ?? "any",
+    freshGraduateStartMonth:
+      request.fresh_graduate_start_month ?? defaultFilterDraft.freshGraduateStartMonth,
+    freshGraduateEndMonth:
+      request.fresh_graduate_end_month ?? defaultFilterDraft.freshGraduateEndMonth,
     schoolName: education?.school_name_contains?.[0] ?? "",
     major: education?.major_contains?.[0] ?? "",
+    minGpaPercent: education?.min_gpa_percent?.toString() ?? "",
+    maxRankPercent: education?.max_rank_percent?.toString() ?? "",
     experienceTypes: experience?.experience_types ?? [],
+    experienceName: experience?.experience_name_contains?.[0] ?? "",
     company: experience?.organization_name_contains?.[0] ?? "",
     title: experience?.title_contains?.[0] ?? "",
     skills: request.skills_all_of ?? request.skills_any_of ?? [],
+    skillCategories: request.skill_categories_any_of ?? [],
     skillsMode: request.skills_any_of?.length ? "any" : "all",
-    keywords: request.keywords_all_of ?? request.keywords_any_of ?? [],
-    keywordsMode: request.keywords_any_of?.length ? "any" : "all",
+    languageCredentials:
+      request.language_credentials_any_of?.map((item) => item.credential_code) ?? [],
+    languageScores: Object.fromEntries(
+      (request.language_credentials_any_of ?? [])
+        .filter((item) => item.min_score != null)
+        .map((item) => [item.credential_code, String(item.min_score)]),
+    ),
+    customLanguageName:
+      request.language_credentials_any_of?.find(
+        (item) => item.credential_code === "custom",
+      )?.custom_name_contains ?? "",
+    scholarshipStatus: request.scholarship_status ?? "any",
+    scholarshipName: request.scholarship_name_contains?.[0] ?? "",
+    competitionStatus: request.competition_status ?? "any",
+    competitionAwardStatus: request.competition_award_status ?? "any",
+    leadershipContexts: request.leadership_any_of?.[0]?.contexts_any_of ?? [],
+    leadershipRoles: request.leadership_any_of?.[0]?.roles_any_of ?? [],
+    keywords: request.keywords ?? request.keywords_all_of ?? request.keywords_any_of ?? [],
+    keywordsMode:
+      request.keyword_match_mode ??
+      (request.keywords_all_of?.length ? "precise" : "broad"),
   };
 }
 
@@ -614,6 +819,9 @@ function WorkspaceApp({ isLoginRoute }: { isLoginRoute: boolean }) {
   const [view, setView] = useState<View>("library");
   const [filterDraft, setFilterDraft] =
     useState<FilterDraft>(freshDefaultFilter);
+  const [filterOptions, setFilterOptions] = useState<FilterOptions>(
+    fallbackFilterOptions,
+  );
   const [search, setSearch] = useState<CandidateSearchResponse>(emptySearch);
   const [searching, setSearching] = useState(false);
   const [savedFilters, setSavedFilters] = useState<SavedFilter[]>([]);
@@ -631,6 +839,7 @@ function WorkspaceApp({ isLoginRoute }: { isLoginRoute: boolean }) {
   const [summaries, setSummaries] = useState<ResumeSummary[]>([]);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [reparsingSource, setReparsingSource] = useState(false);
+  const [enrichingFacts, setEnrichingFacts] = useState(false);
   const [libraryRefreshToken, setLibraryRefreshToken] = useState(0);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [globalQuery, setGlobalQuery] = useState("");
@@ -754,6 +963,9 @@ function WorkspaceApp({ isLoginRoute }: { isLoginRoute: boolean }) {
     if (authState !== "authenticated" || isLoginRoute) return;
     void runSearch(defaultFilterDraft);
     void refreshSavedFilters();
+    void api.getFilterOptions().then(setFilterOptions).catch(() => {
+      setFilterOptions(fallbackFilterOptions);
+    });
   }, [authState, isLoginRoute, refreshSavedFilters, runSearch]);
 
   useEffect(() => {
@@ -1043,6 +1255,20 @@ function WorkspaceApp({ isLoginRoute }: { isLoginRoute: boolean }) {
     }
   }, [notify, refreshReview, reparsingSource, selectedResumeId]);
 
+  const enrichSelectedFacts = useCallback(async () => {
+    if (!selectedResumeId || enrichingFacts) return;
+    setEnrichingFacts(true);
+    try {
+      await api.enrichFilterFacts(selectedResumeId);
+      await refreshReview(selectedResumeId);
+      notify("success", "已提交高级筛选事实补充任务，旧事实会保留。完成后可刷新查看。");
+    } catch (error) {
+      notify("error", humanizeError(error));
+    } finally {
+      setEnrichingFacts(false);
+    }
+  }, [enrichingFacts, notify, refreshReview, selectedResumeId]);
+
   const handleGlobalSearch = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.key !== "Enter") return;
     const terms = globalQuery
@@ -1129,6 +1355,7 @@ function WorkspaceApp({ isLoginRoute }: { isLoginRoute: boolean }) {
           {view === "filter" && (
             <FilterWorkspace
               draft={filterDraft}
+              filterOptions={filterOptions}
               onDraftChange={setFilterDraft}
               savedFilters={savedFilters}
               search={search}
@@ -1197,6 +1424,8 @@ function WorkspaceApp({ isLoginRoute }: { isLoginRoute: boolean }) {
         onCreateManualSummary={createManualSummary}
         onGenerateSummary={() => void generateSummary()}
         onReparseSource={() => void reparseSelectedSource()}
+        onEnrichFacts={() => void enrichSelectedFacts()}
+        enrichingFacts={enrichingFacts}
         onTabChange={setDrawerTab}
         reparsingSource={reparsingSource}
       />
@@ -1654,6 +1883,7 @@ function RecruitingAgentDrawer({
 
 function FilterWorkspace({
   draft,
+  filterOptions,
   onDraftChange,
   savedFilters,
   search,
@@ -1669,6 +1899,7 @@ function FilterWorkspace({
   onUpload,
 }: {
   draft: FilterDraft;
+  filterOptions: FilterOptions;
   onDraftChange: (draft: FilterDraft) => void;
   savedFilters: SavedFilter[];
   search: CandidateSearchResponse;
@@ -1687,6 +1918,7 @@ function FilterWorkspace({
     <div className="filter-workspace">
       <FilterPanel
         draft={draft}
+        filterOptions={filterOptions}
         onApply={onApply}
         onApplySaved={onApplySaved}
         onDeleteSaved={onDeleteSaved}
@@ -1709,6 +1941,7 @@ function FilterWorkspace({
 
 function FilterPanel({
   draft,
+  filterOptions,
   onDraftChange,
   savedFilters,
   onApply,
@@ -1718,6 +1951,7 @@ function FilterPanel({
   onDeleteSaved,
 }: {
   draft: FilterDraft;
+  filterOptions: FilterOptions;
   onDraftChange: (draft: FilterDraft) => void;
   savedFilters: SavedFilter[];
   onApply: () => void;
@@ -1834,34 +2068,9 @@ function FilterPanel({
             <h3>学历与院校</h3>
             <span>精确筛选</span>
           </div>
-          <div className="field-stack">
-            <label className="field-label">985 / 211</label>
-            <div
-              className="choice-grid"
-              role="radiogroup"
-              aria-label="985 / 211 条件"
-            >
-              {(
-                [
-                  ["any", "不限"],
-                  ["yes", "是"],
-                  ["no", "否"],
-                ] as Array<[SchoolFilter, string]>
-              ).map(([value, label]) => (
-                <label className="choice-row" key={value}>
-                  <input
-                    checked={draft.school === value}
-                    name="school-filter"
-                    onChange={() => update({ school: value })}
-                    type="radio"
-                  />
-                  {label}
-                </label>
-              ))}
-            </div>
-          </div>
+          <span className="field-label">最高学历</span>
           <div className="choice-grid" aria-label="学历条件">
-            {degreeOptions.map((option) => (
+            {filterOptions.degrees.map((option) => (
               <label className="choice-row" key={option.value}>
                 <input
                   checked={draft.degrees.includes(option.value)}
@@ -1880,6 +2089,63 @@ function FilterPanel({
               </label>
             ))}
           </div>
+          <span className="field-label">院校层级</span>
+          <div className="choice-grid" aria-label="院校层级条件">
+            {filterOptions.institution_tiers.map((option) => (
+              <label className="choice-row" key={option.value}>
+                <input
+                  checked={draft.institutionTiers.includes(option.value)}
+                  onChange={() =>
+                    update({
+                      institutionTiers: draft.institutionTiers.includes(option.value)
+                        ? draft.institutionTiers.filter((value) => value !== option.value)
+                        : [...draft.institutionTiers, option.value],
+                    })
+                  }
+                  type="checkbox"
+                />
+                {option.label}
+              </label>
+            ))}
+          </div>
+          <div className="field-stack">
+            <span className="field-label">应届状态</span>
+            <div className="choice-grid choice-grid-inline" role="radiogroup">
+              {filterOptions.graduation_statuses.map((option) => (
+                <label className="choice-row" key={option.value}>
+                  <input
+                    checked={draft.graduationStatus === option.value}
+                    name="graduation-status"
+                    onChange={() => update({ graduationStatus: option.value })}
+                    type="radio"
+                  />
+                  {option.label}
+                </label>
+              ))}
+            </div>
+          </div>
+          {draft.graduationStatus !== "any" && (
+            <div className="filter-inline-fields">
+              <label className="field-stack">
+                <span className="field-label">应届窗口开始</span>
+                <input
+                  className="field"
+                  onChange={(event) => update({ freshGraduateStartMonth: event.target.value })}
+                  type="month"
+                  value={draft.freshGraduateStartMonth}
+                />
+              </label>
+              <label className="field-stack">
+                <span className="field-label">应届窗口结束</span>
+                <input
+                  className="field"
+                  onChange={(event) => update({ freshGraduateEndMonth: event.target.value })}
+                  type="month"
+                  value={draft.freshGraduateEndMonth}
+                />
+              </label>
+            </div>
+          )}
           <div className="field-stack">
             <label className="field-label" htmlFor="school-name">
               院校名称
@@ -1888,10 +2154,39 @@ function FilterPanel({
               className="field"
               id="school-name"
               onChange={(event) => update({ schoolName: event.target.value })}
-              placeholder="例如：清华大学"
+              placeholder="可填全称或简称，例如：北大"
               value={draft.schoolName}
             />
           </div>
+          <details className="advanced-filter">
+            <summary>成绩、绩点与排名（非必选）</summary>
+            <div className="filter-inline-fields">
+              <label className="field-stack">
+                <span className="field-label">最低绩点百分比</span>
+                <input
+                  className="field"
+                  max="100"
+                  min="0"
+                  onChange={(event) => update({ minGpaPercent: event.target.value })}
+                  placeholder="例如：85"
+                  type="number"
+                  value={draft.minGpaPercent}
+                />
+              </label>
+              <label className="field-stack">
+                <span className="field-label">排名前百分比</span>
+                <input
+                  className="field"
+                  max="100"
+                  min="1"
+                  onChange={(event) => update({ maxRankPercent: event.target.value })}
+                  placeholder="例如：10"
+                  type="number"
+                  value={draft.maxRankPercent}
+                />
+              </label>
+            </div>
+          </details>
           <div className="field-stack">
             <label className="field-label" htmlFor="major-name">
               专业方向
@@ -1908,7 +2203,7 @@ function FilterPanel({
 
         <section className="filter-section">
           <div className="filter-section-heading">
-            <h3>工作经历</h3>
+            <h3>经历类别</h3>
             <span>按同一条经历匹配</span>
           </div>
           <div className="field-stack">
@@ -1962,7 +2257,7 @@ function FilterPanel({
           <div className="field-stack">
             <span className="field-label">经历类型</span>
             <div className="choice-grid" aria-label="经历类型条件">
-              {experienceTypeOptions.map((option) => (
+              {filterOptions.experience_types.map((option) => (
                 <label className="choice-row" key={option.value}>
                   <input
                     checked={draft.experienceTypes.includes(option.value)}
@@ -1984,6 +2279,18 @@ function FilterPanel({
               ))}
             </div>
             <span className="field-hint">不选则不限经历类型。</span>
+          </div>
+          <div className="field-stack">
+            <label className="field-label" htmlFor="experience-name">
+              项目 / 竞赛 / 经历名称
+            </label>
+            <input
+              className="field"
+              id="experience-name"
+              onChange={(event) => update({ experienceName: event.target.value })}
+              placeholder="例如：全国大学生数学建模竞赛"
+              value={draft.experienceName}
+            />
           </div>
           <div className="field-stack">
             <label className="field-label" htmlFor="company-name">
@@ -2013,7 +2320,7 @@ function FilterPanel({
 
         <section className="filter-section">
           <div className="filter-section-heading">
-            <h3>技能与原文</h3>
+            <h3>技能</h3>
             <span>支持全部或任一</span>
           </div>
           <div className="field-stack">
@@ -2037,35 +2344,188 @@ function FilterPanel({
               ))}
             </div>
           </div>
+          <span className="field-label">技能分类（非必选）</span>
+          <div className="choice-grid">
+            {filterOptions.skill_categories.map((option) => (
+              <label className="choice-row" key={option.value}>
+                <input
+                  checked={draft.skillCategories.includes(option.value)}
+                  onChange={() =>
+                    update({
+                      skillCategories: draft.skillCategories.includes(option.value)
+                        ? draft.skillCategories.filter((value) => value !== option.value)
+                        : [...draft.skillCategories, option.value],
+                    })
+                  }
+                  type="checkbox"
+                />
+                {option.label}
+              </label>
+            ))}
+          </div>
           <ChipInput
             label="核心技能"
             onChange={(skills) => update({ skills })}
             placeholder="输入技能后按 Enter"
             values={draft.skills}
           />
+        </section>
+
+        <section className="filter-section">
+          <div className="filter-section-heading">
+            <h3>英语能力</h3>
+            <span>证书之间按 OR</span>
+          </div>
+          <div className="credential-list">
+            {filterOptions.language_credentials.map((option) => {
+              const selected = draft.languageCredentials.includes(option.value);
+              return (
+                <div className="credential-row" key={option.value}>
+                  <label className="choice-row">
+                    <input
+                      checked={selected}
+                      onChange={() =>
+                        update({
+                          languageCredentials: selected
+                            ? draft.languageCredentials.filter((value) => value !== option.value)
+                            : [...draft.languageCredentials, option.value],
+                        })
+                      }
+                      type="checkbox"
+                    />
+                    {option.label}
+                  </label>
+                  {selected && option.value !== "custom" && (
+                    <input
+                      aria-label={`${option.label}最低分`}
+                      className="field score-field"
+                      min="0"
+                      onChange={(event) =>
+                        update({
+                          languageScores: {
+                            ...draft.languageScores,
+                            [option.value]: event.target.value,
+                          },
+                        })
+                      }
+                      placeholder="最低分（可选）"
+                      type="number"
+                      value={draft.languageScores[option.value] ?? ""}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {draft.languageCredentials.includes("custom") && (
+            <input
+              className="field"
+              onChange={(event) => update({ customLanguageName: event.target.value })}
+              placeholder="填写英语证书名称"
+              value={draft.customLanguageName}
+            />
+          )}
+          <span className="field-hint">
+            “四级、英语四级、CET4、CET-4”等写法均匹配大学英语四级（CET-4）。
+          </span>
+        </section>
+
+        <section className="filter-section">
+          <div className="filter-section-heading">
+            <h3>奖学金与竞赛</h3>
+            <span>均为非必选</span>
+          </div>
+          <PresenceRadio
+            label="奖学金"
+            name="scholarship-status"
+            options={filterOptions.presence_statuses}
+            value={draft.scholarshipStatus}
+            onChange={(scholarshipStatus) => update({ scholarshipStatus })}
+          />
+          {draft.scholarshipStatus === "present" && (
+            <input
+              className="field"
+              onChange={(event) => update({ scholarshipName: event.target.value })}
+              placeholder="奖学金名称（可选）"
+              value={draft.scholarshipName}
+            />
+          )}
+          <PresenceRadio
+            label="技能竞赛参赛记录"
+            name="competition-status"
+            options={filterOptions.presence_statuses}
+            value={draft.competitionStatus}
+            onChange={(competitionStatus) => update({ competitionStatus })}
+          />
+          <PresenceRadio
+            label="技能竞赛获奖记录"
+            name="competition-award-status"
+            options={filterOptions.presence_statuses}
+            value={draft.competitionAwardStatus}
+            onChange={(competitionAwardStatus) => update({ competitionAwardStatus })}
+          />
+        </section>
+
+        <section className="filter-section">
+          <div className="filter-section-heading">
+            <h3>管理与领导经历</h3>
+            <span>非必选</span>
+          </div>
+          <div className="choice-grid">
+            {([
+              ["class", "班级"],
+              ["student_org", "学生会/校内组织"],
+              ["club", "社团"],
+              ["project_team", "项目组"],
+              ["company", "公司"],
+            ] as const).map(([value, label]) => (
+              <label className="choice-row" key={value}>
+                <input
+                  checked={draft.leadershipContexts.includes(value)}
+                  onChange={() =>
+                    update({
+                      leadershipContexts: draft.leadershipContexts.includes(value)
+                        ? draft.leadershipContexts.filter((item) => item !== value)
+                        : [...draft.leadershipContexts, value],
+                    })
+                  }
+                  type="checkbox"
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+          <ChipInput
+            label="角色名称"
+            onChange={(leadershipRoles) => update({ leadershipRoles })}
+            placeholder="例如：班干部、组长、主管、经理"
+            values={draft.leadershipRoles}
+          />
+        </section>
+
+        <section className="filter-section">
+          <div className="filter-section-heading">
+            <h3>自定义关键词</h3>
+            <span>泛匹配或精准匹配</span>
+          </div>
           <div className="field-stack">
-            <span className="field-label">原文关键词匹配方式</span>
+            <span className="field-label">关键词匹配方式</span>
             <div className="choice-grid choice-grid-inline" role="radiogroup">
-              {(
-                [
-                  ["all", "全部出现"],
-                  ["any", "任一出现"],
-                ] as Array<[MatchMode, string]>
-              ).map(([value, label]) => (
-                <label className="choice-row" key={value}>
+              {filterOptions.keyword_modes.map((option) => (
+                <label className="choice-row" key={option.value}>
                   <input
-                    checked={draft.keywordsMode === value}
+                    checked={draft.keywordsMode === option.value}
                     name="keywords-match-mode"
-                    onChange={() => update({ keywordsMode: value })}
+                    onChange={() => update({ keywordsMode: option.value })}
                     type="radio"
                   />
-                  {label}
+                  {option.label}
                 </label>
               ))}
             </div>
           </div>
           <ChipInput
-            label="原文关键词"
+            label="补充关键词"
             onChange={(keywords) => update({ keywords })}
             placeholder="输入关键词后按 Enter"
             values={draft.keywords}
@@ -2090,6 +2550,39 @@ function FilterPanel({
         </button>
       </div>
     </aside>
+  );
+}
+
+function PresenceRadio({
+  label,
+  name,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  name: string;
+  options: FilterOptions["presence_statuses"];
+  value: PresenceStatus;
+  onChange: (value: PresenceStatus) => void;
+}) {
+  return (
+    <div className="field-stack">
+      <span className="field-label">{label}</span>
+      <div className="choice-grid choice-grid-inline" role="radiogroup">
+        {options.map((option) => (
+          <label className="choice-row" key={option.value}>
+            <input
+              checked={value === option.value}
+              name={name}
+              onChange={() => onChange(option.value)}
+              type="radio"
+            />
+            {option.label}
+          </label>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -2743,6 +3236,8 @@ function CandidateDrawer({
   onCreateManualSummary,
   onReparseSource,
   reparsingSource,
+  onEnrichFacts,
+  enrichingFacts,
 }: {
   candidate: SelectedResume | null;
   review: ResumeReviewDetail | null;
@@ -2763,6 +3258,8 @@ function CandidateDrawer({
   ) => Promise<void>;
   onReparseSource: () => void;
   reparsingSource: boolean;
+  onEnrichFacts: () => void;
+  enrichingFacts: boolean;
 }) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const currentSummary =
@@ -2887,7 +3384,12 @@ function CandidateDrawer({
               />
             )
           ) : (
-            <EvidenceTab loading={reviewLoading} review={review} />
+            <EvidenceTab
+              enriching={enrichingFacts}
+              loading={reviewLoading}
+              onEnrich={onEnrichFacts}
+              review={review}
+            />
           )}
         </div>
       </div>
@@ -3371,9 +3873,13 @@ function evidenceBlockLabel(ids: string[]): string {
 function EvidenceTab({
   review,
   loading,
+  onEnrich,
+  enriching,
 }: {
   review: ResumeReviewDetail | null;
   loading: boolean;
+  onEnrich: () => void;
+  enriching: boolean;
 }) {
   if (loading) return <TableSkeleton />;
   if (!review) {
@@ -3390,7 +3896,17 @@ function EvidenceTab({
   return (
     <div className="detail-review">
       <section className="content-section">
-        <h3>已提取的简历事实</h3>
+        <div className="panel-heading">
+          <div>
+            <h3>已提取的简历事实</h3>
+            <p>历史简历可按需补充英语、成绩、奖项等 V2 事实。</p>
+          </div>
+          {review.is_active && (
+            <button className="button" disabled={enriching} onClick={onEnrich} type="button">
+              {enriching ? <><i className="spinner" />正在提交</> : "补充高级筛选事实"}
+            </button>
+          )}
+        </div>
         <div className="detail-grid">
           <div className="fact-list">
             <div className="fact-row">
@@ -3398,7 +3914,11 @@ function EvidenceTab({
               {review.education.length ? review.education.map((item, index) => (
                 <span key={`${item.school_name_raw}-${index}`}>
                   {item.school_name_raw} · {degreeLabels[item.degree]}
-                  {item.major_raw ? ` · ${item.major_raw}` : ""} · {evidenceBlockLabel(item.evidence_block_ids)}
+                  {item.major_raw ? ` · ${item.major_raw}` : ""}
+                  {item.institution_tiers.length ? ` · ${item.institution_tiers.join("/")}` : ""}
+                  {item.gpa_percent != null ? ` · GPA ${item.gpa_percent.toFixed(1)}%` : ""}
+                  {item.rank_percent != null ? ` · 排名前 ${item.rank_percent.toFixed(1)}%` : ""}
+                  {` · ${evidenceBlockLabel(item.evidence_block_ids)}`}
                 </span>
               )) : <span>未提取到可验证教育经历</span>}
             </div>
@@ -3409,6 +3929,26 @@ function EvidenceTab({
                   {item.skill_display} · {evidenceBlockLabel(item.evidence_block_ids)}
                 </span>
               )) : <span>未提取到可验证技能</span>}
+            </div>
+            <div className="fact-row">
+              <strong>英语能力</strong>
+              {review.language_credentials.length ? review.language_credentials.map((item, index) => (
+                <span key={`${item.credential_code}-${index}`}>
+                  {fallbackFilterOptions.language_credentials.find(
+                    (option) => option.value === item.credential_code,
+                  )?.label ?? item.credential_name_raw}
+                  {item.score != null ? ` · ${item.score}` : ""}
+                  {` · ${evidenceBlockLabel(item.evidence_block_ids)}`}
+                </span>
+              )) : <span>未提取到明确英语证书记录</span>}
+            </div>
+            <div className="fact-row">
+              <strong>奖学金</strong>
+              {review.scholarships.length ? review.scholarships.map((item, index) => (
+                <span key={`${item.scholarship_name_raw}-${index}`}>
+                  {item.scholarship_name_raw} · {evidenceBlockLabel(item.evidence_block_ids)}
+                </span>
+              )) : <span>未提取到明确奖学金记录</span>}
             </div>
           </div>
           <div className="fact-list">
@@ -3433,6 +3973,13 @@ function EvidenceTab({
                 {item.title_raw ? ` · ${item.title_raw}` : ""}
               </strong>
               <span>{item.experience_type} · {evidenceBlockLabel(item.evidence_block_ids)}</span>
+              {(item.leadership_role || item.award_result_raw) && (
+                <span>
+                  {item.leadership_role ? `管理角色：${item.leadership_role}` : ""}
+                  {item.leadership_role && item.award_result_raw ? " · " : ""}
+                  {item.award_result_raw ? `获奖：${item.award_result_raw}` : ""}
+                </span>
+              )}
               {item.detail_items.length > 0 && (
                 <ul className="fact-row-detail-list">
                   {item.detail_items.map((detail, detailIndex) => (

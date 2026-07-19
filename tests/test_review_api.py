@@ -36,11 +36,21 @@ def test_review_endpoint_returns_evidence_facts_and_audit_history(client) -> Non
             "organization_name_raw": "Example Company",
             "start_month": "2022-07",
             "title_raw": "Python Engineer",
+            "leadership_context": None,
+            "leadership_role": None,
+            "award_level": None,
+            "award_result_raw": None,
         }
     ]
     assert payload["skills"] == [
-        {"skill_display": "Python", "evidence_block_ids": ["page-001"]}
+        {
+            "skill_display": "Python",
+            "skill_category": None,
+            "evidence_block_ids": ["page-001"],
+        }
     ]
+    assert payload["language_credentials"] == []
+    assert payload["scholarships"] == []
     assert payload["review_actions"][0]["action"] == "facts_saved_pending_school_review"
 
 

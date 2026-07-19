@@ -5,7 +5,7 @@ from typing import Final
 from app.services.normalization import normalized_key
 
 
-FILTER_OPTIONS_VERSION: Final = "filter-options.v2.20260720"
+FILTER_OPTIONS_VERSION: Final = "filter-options.v2.20260720.1"
 
 DEGREE_OPTIONS: Final = [
     {"value": "doctor", "label": "博士"},
@@ -53,6 +53,31 @@ SKILL_CATEGORY_OPTIONS: Final = [
     {"value": "finance_legal_hr", "label": "财务、法务与人力资源"},
     {"value": "office_collaboration", "label": "办公与协作工具"},
     {"value": "industry_professional", "label": "行业专业技能"},
+]
+
+LEADERSHIP_CONTEXT_OPTIONS: Final = [
+    {"value": "class", "label": "班级"},
+    {"value": "student_org", "label": "学生会/校内组织"},
+    {"value": "club", "label": "社团"},
+    {"value": "project_team", "label": "项目组"},
+    {"value": "company", "label": "公司"},
+]
+
+AWARD_LEVEL_OPTIONS: Final = [
+    {"value": "national", "label": "国家级"},
+    {"value": "provincial", "label": "省级"},
+    {"value": "school", "label": "校级"},
+    {"value": "department", "label": "院系级"},
+    {"value": "other", "label": "其他明确级别"},
+]
+
+SCHOLARSHIP_LEVEL_OPTIONS: Final = [
+    {"value": "national", "label": "国家级"},
+    {"value": "provincial", "label": "省级"},
+    {"value": "school", "label": "校级"},
+    {"value": "department", "label": "院系级"},
+    {"value": "enterprise", "label": "企业/社会奖学金"},
+    {"value": "other", "label": "其他明确级别"},
 ]
 
 LANGUAGE_CREDENTIAL_OPTIONS: Final = [
@@ -108,6 +133,9 @@ def filter_options_payload() -> dict[str, object]:
         "institution_tiers": INSTITUTION_TIER_OPTIONS,
         "experience_types": EXPERIENCE_TYPE_OPTIONS,
         "skill_categories": SKILL_CATEGORY_OPTIONS,
+        "leadership_contexts": LEADERSHIP_CONTEXT_OPTIONS,
+        "award_levels": AWARD_LEVEL_OPTIONS,
+        "scholarship_levels": SCHOLARSHIP_LEVEL_OPTIONS,
         "language_credentials": LANGUAGE_CREDENTIAL_OPTIONS,
         "graduation_statuses": [
             {"value": "any", "label": "不限"},

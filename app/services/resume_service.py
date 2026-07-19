@@ -960,6 +960,19 @@ def _assert_raw_value_grounded(
         raise FactValidationError(f"{label}_not_grounded_in_evidence")
 
 
+def _assert_numeric_value_grounded(
+    *,
+    value: float | int | None,
+    source_text: str,
+    label: str,
+) -> None:
+    if value is None:
+        return
+    rendered = f"{value:g}" if isinstance(value, float) else str(value)
+    if not normalized_contains(source_text, rendered):
+        raise FactValidationError(f"{label}_not_grounded_in_evidence")
+
+
 def prepare_ai_draft_facts(
     session: Session,
     *,
@@ -980,13 +993,19 @@ def prepare_ai_draft_facts(
         "education": [],
         "experiences": [],
         "skills": [],
+        "language_credentials": [],
+        "scholarships": [],
     }
     education_payload = payload["education"]
     experience_payload = payload["experiences"]
     skill_payload = payload["skills"]
+    language_payload = payload["language_credentials"]
+    scholarship_payload = payload["scholarships"]
     assert isinstance(education_payload, list)
     assert isinstance(experience_payload, list)
     assert isinstance(skill_payload, list)
+    assert isinstance(language_payload, list)
+    assert isinstance(scholarship_payload, list)
     partial = False
 
     if facts.candidate_name_raw:
@@ -1029,6 +1048,18 @@ def prepare_ai_draft_facts(
                 source_text=evidence_text,
                 label="major_raw",
             )
+            for label, value in (
+                ("average_score", education.average_score),
+                ("gpa_value", education.gpa_value),
+                ("gpa_scale", education.gpa_scale),
+                ("rank_position", education.rank_position),
+                ("rank_total", education.rank_total),
+            ):
+                _assert_numeric_value_grounded(
+                    value=value,
+                    source_text=evidence_text,
+                    label=label,
+                )
         except FactValidationError:
             partial = True
             continue
@@ -1055,6 +1086,16 @@ def prepare_ai_draft_facts(
                 value=experience.title_raw,
                 source_text=evidence_text,
                 label="title_raw",
+            )
+            _assert_raw_value_grounded(
+                value=experience.leadership_role,
+                source_text=evidence_text,
+                label="leadership_role",
+            )
+            _assert_raw_value_grounded(
+                value=experience.award_result_raw,
+                source_text=evidence_text,
+                label="award_result_raw",
             )
             _source_text_by_ids(
                 session,
@@ -1105,7 +1146,58 @@ def prepare_ai_draft_facts(
             continue
         skill_payload.append(skill.model_dump())
 
-    if not (education_payload or experience_payload or skill_payload):
+    for credential in facts.language_credentials:
+        try:
+            evidence_text = _source_text_by_ids(
+                session,
+                resume_id=resume_id,
+                block_ids=credential.evidence_block_ids,
+            )
+            _assert_raw_value_grounded(
+                value=credential.credential_name_raw,
+                source_text=evidence_text,
+                label="credential_name_raw",
+            )
+            if (
+                credential.credential_code != "custom"
+                and normalize_language_credential(credential.credential_name_raw)
+                != credential.credential_code
+            ):
+                raise FactValidationError("language_credential_code_not_grounded")
+            _assert_numeric_value_grounded(
+                value=credential.score,
+                source_text=evidence_text,
+                label="language_credential_score",
+            )
+        except FactValidationError:
+            partial = True
+            continue
+        language_payload.append(credential.model_dump())
+
+    for scholarship in facts.scholarships:
+        try:
+            evidence_text = _source_text_by_ids(
+                session,
+                resume_id=resume_id,
+                block_ids=scholarship.evidence_block_ids,
+            )
+            _assert_raw_value_grounded(
+                value=scholarship.scholarship_name_raw,
+                source_text=evidence_text,
+                label="scholarship_name_raw",
+            )
+        except FactValidationError:
+            partial = True
+            continue
+        scholarship_payload.append(scholarship.model_dump())
+
+    if not (
+        education_payload
+        or experience_payload
+        or skill_payload
+        or language_payload
+        or scholarship_payload
+    ):
         raise FactValidationError("ai_extraction_no_grounded_facts")
     return ResumeFactsSubmission.model_validate(payload), partial
 
@@ -1197,6 +1289,18 @@ def _replace_facts(
             source_text=evidence_text,
             label="major_raw",
         )
+        for label, value in (
+            ("average_score", education.average_score),
+            ("gpa_value", education.gpa_value),
+            ("gpa_scale", education.gpa_scale),
+            ("rank_position", education.rank_position),
+            ("rank_total", education.rank_total),
+        ):
+            _assert_numeric_value_grounded(
+                value=value,
+                source_text=evidence_text,
+                label=label,
+            )
         institution = resolve_institution(session, education.school_name_raw)
         is_local_match = institution is not None
         is_ai_rulebook_match = False

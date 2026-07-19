@@ -134,7 +134,24 @@ _EXPERIENCE_FILTER_SCHEMA: dict[str, Any] = {
         "experience_name_contains": {**_STRING_ARRAY_SCHEMA, "maxItems": 8},
         "organization_name_contains": {**_STRING_ARRAY_SCHEMA, "maxItems": 8},
         "title_contains": {**_STRING_ARRAY_SCHEMA, "maxItems": 8},
+        "leadership_contexts_any_of": {
+            "type": "array",
+            "items": {"type": "string", "enum": [
+                "class", "student_org", "club", "project_team", "company",
+            ]},
+            "maxItems": 5,
+        },
+        "leadership_roles_any_of": {**_STRING_ARRAY_SCHEMA, "maxItems": 12},
+        "award_levels_any_of": {
+            "type": "array",
+            "items": {"type": "string", "enum": [
+                "national", "provincial", "school", "department", "other",
+            ]},
+            "maxItems": 5,
+        },
+        "award_result_contains": {**_STRING_ARRAY_SCHEMA, "maxItems": 8},
     },
+    "required": ["experience_types"],
 }
 
 
@@ -166,6 +183,16 @@ _SEARCH_SCHEMA: dict[str, Any] = {
             "items": _EXPERIENCE_FILTER_SCHEMA,
             "maxItems": 10,
         },
+        "skill_categories_any_of": {
+            "type": "array",
+            "items": {"type": "string", "enum": [
+                "software", "data_ai", "product_project", "design_content",
+                "marketing_ecommerce_operations", "sales_customer_service",
+                "supply_chain_logistics", "finance_legal_hr",
+                "office_collaboration", "industry_professional",
+            ]},
+            "maxItems": 10,
+        },
         "skills_all_of": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
         "skills_any_of": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
         "language_credentials_any_of": {
@@ -185,8 +212,34 @@ _SEARCH_SCHEMA: dict[str, Any] = {
             "maxItems": 12,
         },
         "scholarship_status": {"type": "string", "enum": ["any", "present", "unknown"]},
+        "scholarship_levels_any_of": {
+            "type": "array",
+            "items": {"type": "string", "enum": [
+                "national", "provincial", "school", "department", "enterprise", "other",
+            ]},
+            "maxItems": 6,
+        },
+        "scholarship_name_contains": {**_STRING_ARRAY_SCHEMA, "maxItems": 8},
         "competition_status": {"type": "string", "enum": ["any", "present", "unknown"]},
         "competition_award_status": {"type": "string", "enum": ["any", "present", "unknown"]},
+        "leadership_any_of": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "contexts_any_of": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": [
+                            "class", "student_org", "club", "project_team", "company",
+                        ]},
+                        "maxItems": 5,
+                    },
+                    "roles_any_of": {**_STRING_ARRAY_SCHEMA, "maxItems": 12},
+                },
+            },
+            "maxItems": 5,
+        },
         "keywords": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
         "keyword_match_mode": {"type": "string", "enum": ["broad", "precise"]},
         "keywords_all_of": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
@@ -206,8 +259,10 @@ _TOOLS: list[dict[str, Any]] = [
                 "filter, or shortlist candidates. Convert years to months. Put degree, school, "
                 "and major that must be true of the same education record in one "
                 "education_any_of object. Put experience type, company, and title that must be "
-                "true of the same experience record in one experience_any_of object. Use "
-                "skills_all_of for all-required skills. For recruiter keywords use keywords "
+                "true of the same experience record, including leadership and awards, in one "
+                "experience_any_of object. Use skill_categories_any_of for categories and "
+                "skills_all_of for all-required skills. Scholarship, competition, and leadership "
+                "filters are optional and unknown never means absent. For recruiter keywords use keywords "
                 "with keyword_match_mode broad or precise. English credential alternatives "
                 "belong in language_credentials_any_of and are OR conditions."
             ),

@@ -1463,6 +1463,8 @@ def extract_resume_facts(
                     "rank, scholarship, award, leadership role, and institution tier only "
                     "when explicitly written in the cited evidence. The local server will "
                     "add official 211/985 registry tags; do not guess other school tiers. "
+                    "Set leadership_context only together with an explicit leadership_role; "
+                    "set award_level only together with an explicit award_result_raw. "
                     "A project, competition, course design, research, paper, club, or award "
                     "must never be classified as employment or internship merely because it "
                     "contains a role title. Employment/internship require explicit work or "

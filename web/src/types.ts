@@ -346,6 +346,10 @@ export interface ExperienceFilter {
   experience_name_contains?: string[];
   organization_name_contains?: string[];
   title_contains?: string[];
+  leadership_contexts_any_of?: LeadershipContext[];
+  leadership_roles_any_of?: string[];
+  award_levels_any_of?: AwardLevel[];
+  award_result_contains?: string[];
 }
 
 export type InstitutionTier =
@@ -358,6 +362,9 @@ export type LanguageCredentialCode =
   | "tem4" | "tem8" | "bec" | "toeic" | "custom";
 
 export type PresenceStatus = "any" | "present" | "unknown";
+export type LeadershipContext = "class" | "student_org" | "club" | "project_team" | "company";
+export type AwardLevel = "national" | "provincial" | "school" | "department" | "other";
+export type ScholarshipLevel = AwardLevel | "enterprise";
 
 export interface LanguageCredentialFilter {
   credential_code: LanguageCredentialCode;
@@ -366,7 +373,7 @@ export interface LanguageCredentialFilter {
 }
 
 export interface LeadershipFilter {
-  contexts_any_of?: Array<"class" | "student_org" | "club" | "project_team" | "company">;
+  contexts_any_of?: LeadershipContext[];
   roles_any_of?: string[];
 }
 
@@ -381,6 +388,9 @@ export interface FilterOptions {
   institution_tiers: Array<FilterOption<InstitutionTier>>;
   experience_types: Array<FilterOption<ExperienceType>>;
   skill_categories: Array<FilterOption<string>>;
+  leadership_contexts: Array<FilterOption<LeadershipContext>>;
+  award_levels: Array<FilterOption<AwardLevel>>;
+  scholarship_levels: Array<FilterOption<ScholarshipLevel>>;
   language_credentials: Array<FilterOption<LanguageCredentialCode>>;
   graduation_statuses: Array<FilterOption<"any" | "fresh" | "previous">>;
   presence_statuses: Array<FilterOption<PresenceStatus>>;
@@ -403,7 +413,7 @@ export interface CandidateSearchRequest {
   skills_any_of?: string[];
   language_credentials_any_of?: LanguageCredentialFilter[];
   scholarship_status?: PresenceStatus;
-  scholarship_levels_any_of?: string[];
+  scholarship_levels_any_of?: ScholarshipLevel[];
   scholarship_name_contains?: string[];
   competition_status?: PresenceStatus;
   competition_award_status?: PresenceStatus;

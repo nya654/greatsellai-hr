@@ -445,6 +445,10 @@ class ExperienceFact(ApiModel):
             raise ValueError("end_month must not be earlier than start_month")
         if self.is_current and self.end_month:
             raise ValueError("current experience must not have end_month")
+        if bool(self.leadership_context) != bool(self.leadership_role):
+            raise ValueError("leadership context and source-grounded role must be provided together")
+        if self.award_level is not None and not self.award_result_raw:
+            raise ValueError("award level requires a source-grounded award result")
         return self
 
 

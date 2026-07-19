@@ -10,7 +10,6 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.filter_options import (
-    LANGUAGE_CREDENTIAL_ALIASES,
     language_credential_label,
     normalize_language_credential,
 )
@@ -286,26 +285,24 @@ def _matches_keywords(resume: Resume, *, all_of: list[str], any_of: list[str]) -
     )
 
 
-def _broad_keyword_keys(keyword: str) -> set[str]:
-    credential_code = normalize_language_credential(keyword)
-    if credential_code is None:
-        return {normalized_key(keyword)}
-    return {
-        normalized_key(alias)
-        for alias in LANGUAGE_CREDENTIAL_ALIASES.get(credential_code, (keyword,))
-    }
-
-
 def _matches_v2_keywords(resume: Resume, *, keywords: list[str], mode: str) -> bool:
     if not keywords:
         return True
     source = normalized_key("\n".join(block.text for block in resume.source_blocks))
     if mode == "precise":
         return all(normalized_key(keyword) in source for keyword in keywords)
-    return any(
-        any(alias_key in source for alias_key in _broad_keyword_keys(keyword))
-        for keyword in keywords
-    )
+    credential_codes = {
+        credential.credential_code for credential in resume.language_credentials
+    }
+    for keyword in keywords:
+        credential_code = normalize_language_credential(keyword)
+        if credential_code is not None:
+            if credential_code in credential_codes:
+                return True
+            continue
+        if normalized_key(keyword) in source:
+            return True
+    return False
 
 
 def _matching_keyword_block_ids(resume: Resume, keywords: list[str]) -> list[str]:
@@ -324,17 +321,33 @@ def _matching_v2_keyword_block_ids(
     mode: str,
 ) -> list[str]:
     if mode == "precise":
-        keyword_key_sets = [{normalized_key(keyword)} for keyword in keywords]
-    else:
-        keyword_key_sets = [_broad_keyword_keys(keyword) for keyword in keywords]
-    return sorted(
+        keyword_keys = {normalized_key(keyword) for keyword in keywords}
+        return sorted(
+            block.block_id
+            for block in resume.source_blocks
+            if any(key in normalized_key(block.text) for key in keyword_keys)
+        )
+
+    matched_ids: set[str] = set()
+    source_keywords: list[str] = []
+    for keyword in keywords:
+        credential_code = normalize_language_credential(keyword)
+        if credential_code is None:
+            source_keywords.append(keyword)
+            continue
+        matched_ids.update(
+            block_id
+            for credential in resume.language_credentials
+            if credential.credential_code == credential_code
+            for block_id in (credential.evidence_block_ids or [])
+        )
+    source_keys = {normalized_key(keyword) for keyword in source_keywords}
+    matched_ids.update(
         block.block_id
         for block in resume.source_blocks
-        if any(
-            any(key in normalized_key(block.text) for key in key_set)
-            for key_set in keyword_key_sets
-        )
+        if any(key in normalized_key(block.text) for key in source_keys)
     )
+    return sorted(matched_ids)
 
 
 def search_candidates(

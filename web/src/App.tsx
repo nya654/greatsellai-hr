@@ -24,12 +24,15 @@ import type {
   CandidateSearchItem,
   CandidateSearchRequest,
   CandidateSearchResponse,
+  AwardLevel,
   DegreeLevel,
   ExperienceType,
   FilterOptions,
   InstitutionTier,
   LanguageCredentialCode,
+  LeadershipContext,
   PresenceStatus,
+  ScholarshipLevel,
   JobMatchBatch,
   JobMatchBatchItem,
   JobMatch,
@@ -77,12 +80,16 @@ interface FilterDraft {
   freshGraduateEndMonth: string;
   schoolName: string;
   major: string;
+  minAverageScore: string;
   minGpaPercent: string;
+  maxRankPosition: string;
   maxRankPercent: string;
   experienceTypes: ExperienceType[];
   experienceName: string;
   company: string;
   title: string;
+  experienceAwardLevels: AwardLevel[];
+  experienceAwardResult: string;
   skills: string[];
   skillCategories: string[];
   skillsMode: MatchMode;
@@ -91,9 +98,10 @@ interface FilterDraft {
   customLanguageName: string;
   scholarshipStatus: PresenceStatus;
   scholarshipName: string;
+  scholarshipLevels: ScholarshipLevel[];
   competitionStatus: PresenceStatus;
   competitionAwardStatus: PresenceStatus;
-  leadershipContexts: Array<"class" | "student_org" | "club" | "project_team" | "company">;
+  leadershipContexts: LeadershipContext[];
   leadershipRoles: string[];
   keywords: string[];
   keywordsMode: KeywordMode;
@@ -145,12 +153,16 @@ const defaultFilterDraft: FilterDraft = {
   freshGraduateEndMonth: `${new Date().getFullYear() + 1}-12`,
   schoolName: "",
   major: "",
+  minAverageScore: "",
   minGpaPercent: "",
+  maxRankPosition: "",
   maxRankPercent: "",
   experienceTypes: [],
   experienceName: "",
   company: "",
   title: "",
+  experienceAwardLevels: [],
+  experienceAwardResult: "",
   skills: [],
   skillCategories: [],
   skillsMode: "all",
@@ -159,6 +171,7 @@ const defaultFilterDraft: FilterDraft = {
   customLanguageName: "",
   scholarshipStatus: "any",
   scholarshipName: "",
+  scholarshipLevels: [],
   competitionStatus: "any",
   competitionAwardStatus: "any",
   leadershipContexts: [],
@@ -320,6 +333,28 @@ const fallbackFilterOptions: FilterOptions = {
     { value: "office_collaboration", label: "办公与协作工具" },
     { value: "industry_professional", label: "行业专业技能" },
   ],
+  leadership_contexts: [
+    { value: "class", label: "班级" },
+    { value: "student_org", label: "学生会/校内组织" },
+    { value: "club", label: "社团" },
+    { value: "project_team", label: "项目组" },
+    { value: "company", label: "公司" },
+  ],
+  award_levels: [
+    { value: "national", label: "国家级" },
+    { value: "provincial", label: "省级" },
+    { value: "school", label: "校级" },
+    { value: "department", label: "院系级" },
+    { value: "other", label: "其他明确级别" },
+  ],
+  scholarship_levels: [
+    { value: "national", label: "国家级" },
+    { value: "provincial", label: "省级" },
+    { value: "school", label: "校级" },
+    { value: "department", label: "院系级" },
+    { value: "enterprise", label: "企业/社会奖学金" },
+    { value: "other", label: "其他明确级别" },
+  ],
   language_credentials: [
     { value: "cet4", label: "大学英语四级（CET-4）" },
     { value: "cet6", label: "大学英语六级（CET-6）" },
@@ -388,10 +423,13 @@ function freshDefaultFilter(): FilterDraft {
     ...defaultFilterDraft,
     degrees: [],
     institutionTiers: [],
+    experienceTypes: [],
+    experienceAwardLevels: [],
     skills: [],
     skillCategories: [],
     languageCredentials: [],
     languageScores: {},
+    scholarshipLevels: [],
     leadershipContexts: [],
     leadershipRoles: [],
     keywords: [],
@@ -606,7 +644,9 @@ function draftToSearchRequest(
     draft.institutionTiers.length ||
     draft.schoolName.trim() ||
     draft.major.trim() ||
+    draft.minAverageScore ||
     draft.minGpaPercent ||
+    draft.maxRankPosition ||
     draft.maxRankPercent
   ) {
     request.education_any_of = [
@@ -616,8 +656,14 @@ function draftToSearchRequest(
           : [],
         major_contains: draft.major.trim() ? [draft.major.trim()] : [],
         institution_tiers_any_of: draft.institutionTiers,
+        min_average_score: draft.minAverageScore
+          ? Number(draft.minAverageScore)
+          : null,
         min_gpa_percent: draft.minGpaPercent
           ? Number(draft.minGpaPercent)
+          : null,
+        max_rank_position: draft.maxRankPosition
+          ? Number(draft.maxRankPosition)
           : null,
         max_rank_percent: draft.maxRankPercent
           ? Number(draft.maxRankPercent)
@@ -629,13 +675,15 @@ function draftToSearchRequest(
     draft.experienceTypes.length ||
     draft.experienceName.trim() ||
     draft.company.trim() ||
-    draft.title.trim()
+    draft.title.trim() ||
+    draft.experienceAwardLevels.length ||
+    draft.experienceAwardResult.trim()
   ) {
     request.experience_any_of = [
       {
         experience_types: draft.experienceTypes.length
           ? draft.experienceTypes
-          : undefined,
+          : experienceTypeOptions.map((option) => option.value),
         experience_name_contains: draft.experienceName.trim()
           ? [draft.experienceName.trim()]
           : [],
@@ -643,6 +691,10 @@ function draftToSearchRequest(
           ? [draft.company.trim()]
           : [],
         title_contains: draft.title.trim() ? [draft.title.trim()] : [],
+        award_levels_any_of: draft.experienceAwardLevels,
+        award_result_contains: draft.experienceAwardResult.trim()
+          ? [draft.experienceAwardResult.trim()]
+          : [],
       },
     ];
   }
@@ -676,6 +728,8 @@ function draftToSearchRequest(
       draft.scholarshipStatus === "present" && draft.scholarshipName.trim()
       ? [draft.scholarshipName.trim()]
       : [];
+    request.scholarship_levels_any_of =
+      draft.scholarshipStatus === "present" ? draft.scholarshipLevels : [];
   }
   if (draft.competitionStatus !== "any") {
     request.competition_status = draft.competitionStatus;
@@ -701,18 +755,21 @@ function draftToSearchRequest(
 function searchRequestToDraft(request: CandidateSearchRequest): FilterDraft {
   const education = request.education_any_of?.[0];
   const experience = request.experience_any_of?.[0];
+  const savedDegrees = request.highest_degree_in ?? education?.degree_in ?? [];
+  const savedInstitutionTiers = education?.institution_tiers_any_of ?? [];
   return {
-    school:
-      request.is_985_211 === true
-        ? "yes"
-        : request.is_985_211 === false
-          ? "no"
-          : "any",
+    // V1's positive 985/211 switch maps visibly to 211 because every official
+    // 985 entry is also tagged 211. The removed negative/unknown controls must
+    // never survive as invisible conditions in the V2 editor.
+    school: "any",
     minEmploymentMonths: request.min_employment_months ?? 0,
     minEmploymentOrInternshipMonths:
       request.min_employment_or_internship_months ?? 0,
-    degrees: request.highest_degree_in ?? education?.degree_in ?? [],
-    institutionTiers: education?.institution_tiers_any_of ?? [],
+    degrees: savedDegrees.filter((degree) => degree !== "unknown"),
+    institutionTiers:
+      savedInstitutionTiers.length || request.is_985_211 !== true
+        ? savedInstitutionTiers
+        : ["211"],
     graduationStatus: request.graduation_status ?? "any",
     freshGraduateStartMonth:
       request.fresh_graduate_start_month ?? defaultFilterDraft.freshGraduateStartMonth,
@@ -720,12 +777,16 @@ function searchRequestToDraft(request: CandidateSearchRequest): FilterDraft {
       request.fresh_graduate_end_month ?? defaultFilterDraft.freshGraduateEndMonth,
     schoolName: education?.school_name_contains?.[0] ?? "",
     major: education?.major_contains?.[0] ?? "",
+    minAverageScore: education?.min_average_score?.toString() ?? "",
     minGpaPercent: education?.min_gpa_percent?.toString() ?? "",
+    maxRankPosition: education?.max_rank_position?.toString() ?? "",
     maxRankPercent: education?.max_rank_percent?.toString() ?? "",
     experienceTypes: experience?.experience_types ?? [],
     experienceName: experience?.experience_name_contains?.[0] ?? "",
     company: experience?.organization_name_contains?.[0] ?? "",
     title: experience?.title_contains?.[0] ?? "",
+    experienceAwardLevels: experience?.award_levels_any_of ?? [],
+    experienceAwardResult: experience?.award_result_contains?.[0] ?? "",
     skills: request.skills_all_of ?? request.skills_any_of ?? [],
     skillCategories: request.skill_categories_any_of ?? [],
     skillsMode: request.skills_any_of?.length ? "any" : "all",
@@ -742,6 +803,7 @@ function searchRequestToDraft(request: CandidateSearchRequest): FilterDraft {
       )?.custom_name_contains ?? "",
     scholarshipStatus: request.scholarship_status ?? "any",
     scholarshipName: request.scholarship_name_contains?.[0] ?? "",
+    scholarshipLevels: request.scholarship_levels_any_of ?? [],
     competitionStatus: request.competition_status ?? "any",
     competitionAwardStatus: request.competition_award_status ?? "any",
     leadershipContexts: request.leadership_any_of?.[0]?.contexts_any_of ?? [],
@@ -2162,6 +2224,18 @@ function FilterPanel({
             <summary>成绩、绩点与排名（非必选）</summary>
             <div className="filter-inline-fields">
               <label className="field-stack">
+                <span className="field-label">最低平均成绩</span>
+                <input
+                  className="field"
+                  max="100"
+                  min="0"
+                  onChange={(event) => update({ minAverageScore: event.target.value })}
+                  placeholder="例如：85"
+                  type="number"
+                  value={draft.minAverageScore}
+                />
+              </label>
+              <label className="field-stack">
                 <span className="field-label">最低绩点百分比</span>
                 <input
                   className="field"
@@ -2171,6 +2245,17 @@ function FilterPanel({
                   placeholder="例如：85"
                   type="number"
                   value={draft.minGpaPercent}
+                />
+              </label>
+              <label className="field-stack">
+                <span className="field-label">专业名次不低于</span>
+                <input
+                  className="field"
+                  min="1"
+                  onChange={(event) => update({ maxRankPosition: event.target.value })}
+                  placeholder="例如：10（前 10 名）"
+                  type="number"
+                  value={draft.maxRankPosition}
                 />
               </label>
               <label className="field-stack">
@@ -2186,6 +2271,9 @@ function FilterPanel({
                 />
               </label>
             </div>
+            <span className="field-hint">
+              只匹配简历中有明确成绩、绩点或排名证据的同一条教育经历。
+            </span>
           </details>
           <div className="field-stack">
             <label className="field-label" htmlFor="major-name">
@@ -2316,6 +2404,33 @@ function FilterPanel({
               value={draft.title}
             />
           </div>
+          <details className="advanced-filter">
+            <summary>经历获奖情况（非必选）</summary>
+            <div className="choice-grid">
+              {filterOptions.award_levels.map((option) => (
+                <label className="choice-row" key={option.value}>
+                  <input
+                    checked={draft.experienceAwardLevels.includes(option.value)}
+                    onChange={() =>
+                      update({
+                        experienceAwardLevels: draft.experienceAwardLevels.includes(option.value)
+                          ? draft.experienceAwardLevels.filter((value) => value !== option.value)
+                          : [...draft.experienceAwardLevels, option.value],
+                      })
+                    }
+                    type="checkbox"
+                  />
+                  {option.label}
+                </label>
+              ))}
+            </div>
+            <input
+              className="field"
+              onChange={(event) => update({ experienceAwardResult: event.target.value })}
+              placeholder="获奖结果，例如：一等奖"
+              value={draft.experienceAwardResult}
+            />
+          </details>
         </section>
 
         <section className="filter-section">
@@ -2443,12 +2558,32 @@ function FilterPanel({
             onChange={(scholarshipStatus) => update({ scholarshipStatus })}
           />
           {draft.scholarshipStatus === "present" && (
-            <input
-              className="field"
-              onChange={(event) => update({ scholarshipName: event.target.value })}
-              placeholder="奖学金名称（可选）"
-              value={draft.scholarshipName}
-            />
+            <div className="field-stack">
+              <div className="choice-grid">
+                {filterOptions.scholarship_levels.map((option) => (
+                  <label className="choice-row" key={option.value}>
+                    <input
+                      checked={draft.scholarshipLevels.includes(option.value)}
+                      onChange={() =>
+                        update({
+                          scholarshipLevels: draft.scholarshipLevels.includes(option.value)
+                            ? draft.scholarshipLevels.filter((value) => value !== option.value)
+                            : [...draft.scholarshipLevels, option.value],
+                        })
+                      }
+                      type="checkbox"
+                    />
+                    {option.label}
+                  </label>
+                ))}
+              </div>
+              <input
+                className="field"
+                onChange={(event) => update({ scholarshipName: event.target.value })}
+                placeholder="奖学金名称（可选）"
+                value={draft.scholarshipName}
+              />
+            </div>
           )}
           <PresenceRadio
             label="技能竞赛参赛记录"
@@ -2472,26 +2607,20 @@ function FilterPanel({
             <span>非必选</span>
           </div>
           <div className="choice-grid">
-            {([
-              ["class", "班级"],
-              ["student_org", "学生会/校内组织"],
-              ["club", "社团"],
-              ["project_team", "项目组"],
-              ["company", "公司"],
-            ] as const).map(([value, label]) => (
-              <label className="choice-row" key={value}>
+            {filterOptions.leadership_contexts.map((option) => (
+              <label className="choice-row" key={option.value}>
                 <input
-                  checked={draft.leadershipContexts.includes(value)}
+                  checked={draft.leadershipContexts.includes(option.value)}
                   onChange={() =>
                     update({
-                      leadershipContexts: draft.leadershipContexts.includes(value)
-                        ? draft.leadershipContexts.filter((item) => item !== value)
-                        : [...draft.leadershipContexts, value],
+                      leadershipContexts: draft.leadershipContexts.includes(option.value)
+                        ? draft.leadershipContexts.filter((item) => item !== option.value)
+                        : [...draft.leadershipContexts, option.value],
                     })
                   }
                   type="checkbox"
                 />
-                {label}
+                {option.label}
               </label>
             ))}
           </div>

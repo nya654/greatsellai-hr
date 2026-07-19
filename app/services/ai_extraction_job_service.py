@@ -24,6 +24,7 @@ from app.services.resume_service import (
     _assert_raw_value_grounded,
     _source_text_by_ids,
     get_resume,
+    merge_filter_v2_enrichment,
     prepare_ai_draft_facts,
     reparse_clone_auto_activation_allowed,
     save_facts,
@@ -60,6 +61,7 @@ class ClaimedAiExtractionJob:
     job_id: str
     resume_id: str
     input_facts_version: int
+    job_kind: str
     previous_error: str | None
 
 
@@ -103,6 +105,7 @@ def enqueue_uploaded_resume_ai_extraction(
     now = utcnow()
     job = ResumeAiExtractionJob(
         resume_id=resume.id,
+        job_kind="initial",
         status=(
             AI_EXTRACTION_QUEUED
             if settings.deepseek_api_key
@@ -152,6 +155,45 @@ def request_resume_ai_extraction(
         raise AiExtractionJobError("resume_has_no_native_text_for_ai_extraction")
 
     now = utcnow()
+    job.status = (
+        AI_EXTRACTION_QUEUED if settings.deepseek_api_key else AI_EXTRACTION_UNAVAILABLE
+    )
+    job.attempt_count = 0
+    job.max_attempts = settings.ai_extraction_job_max_attempts
+    job.input_facts_version = resume.facts_version
+    job.next_attempt_at = now if settings.deepseek_api_key else None
+    job.lease_owner = None
+    job.lease_expires_at = None
+    job.last_error = None if settings.deepseek_api_key else _NO_KEY_ERROR
+    job.requested_at = now
+    job.started_at = None
+    job.completed_at = None
+    session.flush()
+    return resume
+
+
+def request_resume_filter_v2_enrichment(
+    session: Session,
+    *,
+    resume_id: str,
+    settings: AppSettings,
+) -> Resume:
+    """Queue a version-guarded, additive V2 enrichment for an active resume."""
+
+    resume = get_resume(session, resume_id)
+    if not resume.is_active or resume.extraction_status != "ready":
+        raise AiExtractionJobError("filter_enrichment_requires_active_ready_resume")
+    if not resume.source_blocks:
+        raise AiExtractionJobError("resume_has_no_native_text_for_ai_extraction")
+    job = resume.ai_extraction_job
+    if job is None:
+        job = ResumeAiExtractionJob(resume_id=resume.id, status=AI_EXTRACTION_QUEUED)
+        session.add(job)
+        resume.ai_extraction_job = job
+    elif job.status in {AI_EXTRACTION_QUEUED, AI_EXTRACTION_RUNNING}:
+        return resume
+    now = utcnow()
+    job.job_kind = "filter_v2_enrichment"
     job.status = (
         AI_EXTRACTION_QUEUED if settings.deepseek_api_key else AI_EXTRACTION_UNAVAILABLE
     )
@@ -374,6 +416,7 @@ def _claim_next_job(
             job_id=job.id,
             resume_id=job.resume_id,
             input_facts_version=job.input_facts_version,
+            job_kind=job.job_kind,
             previous_error=previous_error,
         )
         session.commit()
@@ -465,7 +508,10 @@ def _process_claimed_job(
         )
         return
 
-    core_fallback = claimed.previous_error in _RETRYABLE_STRUCTURED_RESPONSE_ERRORS
+    core_fallback = (
+        claimed.job_kind == "initial"
+        and claimed.previous_error in _RETRYABLE_STRUCTURED_RESPONSE_ERRORS
+    )
     try:
         if core_fallback:
             facts = extract_resume_core_facts(
@@ -615,10 +661,19 @@ def _save_completed_ai_facts(
                 session,
                 resume=resume,
             )
+            facts_to_save = (
+                merge_filter_v2_enrichment(
+                    session,
+                    resume_id=resume.id,
+                    enrichment=prepared_facts,
+                )
+                if claimed.job_kind == "filter_v2_enrichment"
+                else prepared_facts
+            )
             saved_resume = save_facts(
                 session,
                 resume_id=resume.id,
-                request=ResumeFactsSaveRequest(facts=prepared_facts),
+                request=ResumeFactsSaveRequest(facts=facts_to_save),
                 created_by=f"ai:{model}",
                 force_pending_review=True,
                 auto_activate=auto_activate,
@@ -632,6 +687,8 @@ def _save_completed_ai_facts(
                 quality_flags.add("ai_draft_details_pending")
             else:
                 quality_flags.discard("ai_draft_details_pending")
+            if claimed.job_kind == "filter_v2_enrichment":
+                quality_flags.add("filter_v2_enriched")
             if auto_activate:
                 quality_flags.discard("reparse_source_superseded_before_completion")
             else:
@@ -714,10 +771,14 @@ def _assert_resume_unchanged_for_job(
     *,
     job: ResumeAiExtractionJob,
 ) -> None:
-    if resume.is_active or resume.extraction_status == "ready":
-        raise AiExtractionJobError("resume_changed_before_ai_extraction_completed")
-    if resume.extraction_status not in {"text_ready", "needs_review"}:
-        raise AiExtractionJobError("resume_has_no_native_text_for_ai_extraction")
+    if job.job_kind == "filter_v2_enrichment":
+        if not resume.is_active or resume.extraction_status != "ready":
+            raise AiExtractionJobError("resume_changed_before_ai_extraction_completed")
+    else:
+        if resume.is_active or resume.extraction_status == "ready":
+            raise AiExtractionJobError("resume_changed_before_ai_extraction_completed")
+        if resume.extraction_status not in {"text_ready", "needs_review"}:
+            raise AiExtractionJobError("resume_has_no_native_text_for_ai_extraction")
     if resume.facts_version != job.input_facts_version:
         raise AiExtractionJobError("resume_changed_before_ai_extraction_completed")
 
@@ -744,5 +805,6 @@ __all__ = [
     "backfill_unnamed_candidate_names",
     "enqueue_uploaded_resume_ai_extraction",
     "request_resume_ai_extraction",
+    "request_resume_filter_v2_enrichment",
     "run_ai_extraction_worker_once",
 ]

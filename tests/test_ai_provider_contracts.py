@@ -74,7 +74,24 @@ def _fact_snapshot() -> dict[str, object]:
 def _v3_fact_snapshot() -> dict[str, object]:
     snapshot = deepcopy(_fact_snapshot())
     snapshot["schema_version"] = FACT_SNAPSHOT_SCHEMA_VERSION
+    snapshot["facts_schema_version"] = "resume_facts.v2"
+    snapshot["language_credentials"] = []
+    snapshot["scholarships"] = []
     snapshot["source_block_ids"] = ["page-001", "page-002"]
+    education = snapshot["education"][0]
+    assert isinstance(education, dict)
+    education.update(
+        {
+            "institution_tiers": [],
+            "average_score": None,
+            "gpa_value": None,
+            "gpa_scale": None,
+            "gpa_percent": None,
+            "rank_position": None,
+            "rank_total": None,
+            "rank_percent": None,
+        }
+    )
     experience = snapshot["experiences"][0]
     assert isinstance(experience, dict)
     experience.update(
@@ -87,8 +104,15 @@ def _v3_fact_snapshot() -> dict[str, object]:
                     "evidence_block_ids": ["page-002"],
                 }
             ],
+            "leadership_context": None,
+            "leadership_role": None,
+            "award_level": None,
+            "award_result_raw": None,
         }
     )
+    skill = snapshot["skills"][0]
+    assert isinstance(skill, dict)
+    skill["skill_category"] = None
     return snapshot
 
 
@@ -315,7 +339,7 @@ def test_score_helper_rejects_raw_pdf_like_input_before_any_provider_call() -> N
         )
 
 
-def test_fact_snapshot_validator_accepts_legacy_v2_and_rich_v3_experiences() -> None:
+def test_fact_snapshot_validator_accepts_legacy_v2_and_rich_v4_facts() -> None:
     v2, v2_fact_ids = _validate_fact_snapshot(_fact_snapshot())
     v3, v3_fact_ids = _validate_fact_snapshot(_v3_fact_snapshot())
 

@@ -19,6 +19,13 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    op.add_column(
+        "resume_ai_extraction_jobs",
+        sa.Column("job_kind", sa.String(length=32), nullable=True),
+    )
+    op.execute(
+        "UPDATE resume_ai_extraction_jobs SET job_kind = 'initial' WHERE job_kind IS NULL"
+    )
     op.add_column("institutions", sa.Column("tier_tags", sa.JSON(), nullable=True))
     op.add_column("resume_educations", sa.Column("institution_tiers", sa.JSON(), nullable=True))
     op.add_column("resume_educations", sa.Column("average_score", sa.Float(), nullable=True))
@@ -107,3 +114,4 @@ def downgrade() -> None:
     op.drop_column("resume_educations", "average_score")
     op.drop_column("resume_educations", "institution_tiers")
     op.drop_column("institutions", "tier_tags")
+    op.drop_column("resume_ai_extraction_jobs", "job_kind")

@@ -1638,6 +1638,190 @@ def save_facts(
     return resume
 
 
+def merge_filter_v2_enrichment(
+    session: Session,
+    *,
+    resume_id: str,
+    enrichment: ResumeFactsSubmission,
+) -> ResumeFactsSubmission:
+    """Merge a V2 extraction into current grounded facts without deleting them.
+
+    Historical resumes can lack V2-only attributes. The enrichment worker runs
+    against the same source blocks, then overlays only matching rows and adds
+    newly discovered source-cited rows. Existing facts remain the baseline.
+    """
+
+    resume = get_resume(session, resume_id)
+    education: list[dict[str, object]] = [
+        {
+            "school_name_raw": item.school_name_raw,
+            "degree": item.degree,
+            "major_raw": item.major_raw,
+            "start_month": item.start_month,
+            "end_month": item.end_month,
+            "institution_tiers": item.institution_tiers or [],
+            "average_score": item.average_score,
+            "gpa_value": item.gpa_value,
+            "gpa_scale": item.gpa_scale,
+            "rank_position": item.rank_position,
+            "rank_total": item.rank_total,
+            "evidence_block_ids": item.evidence_block_ids or [],
+        }
+        for item in resume.educations
+    ]
+    education_by_key = {
+        (normalized_key(item["school_name_raw"]), item["degree"]): item
+        for item in education
+    }
+    for incoming in enrichment.education:
+        values = incoming.model_dump(
+            exclude={"ai_985_211_judgment", "ai_institution_roster_id"}
+        )
+        key = (normalized_key(incoming.school_name_raw), incoming.degree)
+        existing = education_by_key.get(key)
+        if existing is None:
+            education.append(values)
+            education_by_key[key] = values
+            continue
+        for field in (
+            "institution_tiers",
+            "average_score",
+            "gpa_value",
+            "gpa_scale",
+            "rank_position",
+            "rank_total",
+        ):
+            value = values.get(field)
+            if value not in (None, []):
+                existing[field] = value
+
+    experiences: list[dict[str, object]] = [
+        {
+            "experience_type": item.experience_type,
+            "experience_name_raw": item.experience_name_raw,
+            "organization_name_raw": item.organization_name_raw,
+            "title_raw": item.title_raw,
+            "start_month": item.start_month,
+            "end_month": item.end_month,
+            "is_current": item.is_current,
+            "evidence_block_ids": item.evidence_block_ids or [],
+            "classification_evidence_block_ids": (
+                item.classification_evidence_block_ids or []
+            ),
+            "detail_items": item.detail_items or [],
+            "leadership_context": item.leadership_context,
+            "leadership_role": item.leadership_role,
+            "award_level": item.award_level,
+            "award_result_raw": item.award_result_raw,
+        }
+        for item in resume.experiences
+    ]
+
+    def experience_key(value: object) -> tuple[str, str, str]:
+        return (
+            normalized_key(value.experience_name_raw),
+            normalized_key(value.organization_name_raw),
+            normalized_key(value.title_raw),
+        )
+
+    experience_by_key = {
+        (
+            normalized_key(item["experience_name_raw"]),
+            normalized_key(item["organization_name_raw"]),
+            normalized_key(item["title_raw"]),
+        ): item
+        for item in experiences
+    }
+    for incoming in enrichment.experiences:
+        values = incoming.model_dump()
+        key = experience_key(incoming)
+        existing = experience_by_key.get(key)
+        if existing is None:
+            experiences.append(values)
+            experience_by_key[key] = values
+            continue
+        if existing["experience_type"] in {"unknown", "other"}:
+            existing["experience_type"] = incoming.experience_type
+        for field in (
+            "leadership_context",
+            "leadership_role",
+            "award_level",
+            "award_result_raw",
+        ):
+            if values.get(field) is not None:
+                existing[field] = values[field]
+
+    skills: list[dict[str, object]] = [
+        {
+            "skill_display": item.skill_display,
+            "skill_category": item.skill_category,
+            "evidence_block_ids": item.evidence_block_ids or [],
+        }
+        for item in resume.skills
+    ]
+    skill_by_key = {normalized_key(item["skill_display"]): item for item in skills}
+    for incoming in enrichment.skills:
+        existing = skill_by_key.get(normalized_key(incoming.skill_display))
+        if existing is None:
+            values = incoming.model_dump()
+            skills.append(values)
+            skill_by_key[normalized_key(incoming.skill_display)] = values
+        elif incoming.skill_category is not None:
+            existing["skill_category"] = incoming.skill_category
+
+    language_credentials = [
+        {
+            "credential_code": item.credential_code,
+            "credential_name_raw": item.credential_name_raw,
+            "score": item.score,
+            "passed": item.passed,
+            "evidence_block_ids": item.evidence_block_ids or [],
+        }
+        for item in resume.language_credentials
+    ]
+    language_keys = {
+        (item["credential_code"], item["score"], normalized_key(item["credential_name_raw"]))
+        for item in language_credentials
+    }
+    for incoming in enrichment.language_credentials:
+        key = (
+            incoming.credential_code,
+            incoming.score,
+            normalized_key(incoming.credential_name_raw),
+        )
+        if key not in language_keys:
+            language_credentials.append(incoming.model_dump())
+            language_keys.add(key)
+
+    scholarships = [
+        {
+            "scholarship_name_raw": item.scholarship_name_raw,
+            "scholarship_level": item.scholarship_level,
+            "evidence_block_ids": item.evidence_block_ids or [],
+        }
+        for item in resume.scholarships
+    ]
+    scholarship_keys = {
+        normalized_key(item["scholarship_name_raw"]) for item in scholarships
+    }
+    for incoming in enrichment.scholarships:
+        key = normalized_key(incoming.scholarship_name_raw)
+        if key not in scholarship_keys:
+            scholarships.append(incoming.model_dump())
+            scholarship_keys.add(key)
+
+    return ResumeFactsSubmission.model_validate(
+        {
+            "schema_version": "resume_facts.v2",
+            "education": education,
+            "experiences": experiences,
+            "skills": skills,
+            "language_credentials": language_credentials,
+            "scholarships": scholarships,
+        }
+    )
+
+
 def activate_ready_resume(
     session: Session,
     *,

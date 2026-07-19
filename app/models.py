@@ -243,6 +243,7 @@ class ResumeAiExtractionJob(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     resume_id: Mapped[str] = mapped_column(ForeignKey("resumes.id"), index=True)
+    job_kind: Mapped[str] = mapped_column(String(32), default="initial")
     status: Mapped[str] = mapped_column(String(32), index=True)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, default=3)

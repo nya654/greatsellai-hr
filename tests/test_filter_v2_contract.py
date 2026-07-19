@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from test_resume_flow import create_candidate, replace_page_evidence, upload_text_resume
+from app.models import ResumeAiExtractionJob
 
 
 def _save_v2_resume(client) -> str:
@@ -164,3 +165,15 @@ def test_language_minimum_score_does_not_match_missing_or_lower_score(client) ->
     )
     assert response.status_code == 200, response.text
     assert response.json()["items"] == []
+
+
+def test_active_resume_can_queue_additive_filter_v2_enrichment(client) -> None:
+    resume_id = _save_v2_resume(client)
+    response = client.post(f"/v1/resumes/{resume_id}/enrich-filter-facts")
+    assert response.status_code == 200, response.text
+    assert response.json()["ai_extraction_status"] == "unavailable"
+
+    with client.app.state.database.session_factory() as session:
+        job = session.query(ResumeAiExtractionJob).filter_by(resume_id=resume_id).one()
+        assert job.job_kind == "filter_v2_enrichment"
+        assert job.input_facts_version == 1

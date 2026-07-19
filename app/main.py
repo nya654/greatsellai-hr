@@ -85,6 +85,7 @@ from app.services.ai_extraction_job_service import (
     ai_extraction_state,
     enqueue_uploaded_resume_ai_extraction,
     request_resume_ai_extraction,
+    request_resume_filter_v2_enrichment,
 )
 from app.services.resume_service import (
     FactValidationError,
@@ -1024,6 +1025,30 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                 else status.HTTP_409_CONFLICT
             )
             raise HTTPException(status_code=response_status, detail=str(exc)) from exc
+        _commit_or_raise(session)
+        return _resume_detail(resume)
+
+    @app.post(
+        "/v1/resumes/{resume_id}/enrich-filter-facts",
+        response_model=ResumeDetail,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def post_enrich_resume_filter_facts(
+        resume_id: str,
+        session: Session = Depends(get_session),
+    ) -> ResumeDetail:
+        try:
+            resume = request_resume_filter_v2_enrichment(
+                session,
+                resume_id=resume_id,
+                settings=settings,
+            )
+        except NotFoundError as exc:
+            session.rollback()
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except AiExtractionJobError as exc:
+            session.rollback()
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         _commit_or_raise(session)
         return _resume_detail(resume)
 

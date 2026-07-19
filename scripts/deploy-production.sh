@@ -132,8 +132,11 @@ if [[ "$mode" == "deploy" && "$migration_changed" -eq 1 ]]; then
   backup_required=1
 fi
 
+previous_tag_arg="${previous_tag:-__none__}"
+previous_commit_arg="${previous_commit:-__none__}"
+
 ssh_run bash -s -- "$project_dir" "$history_dir" "$tag" "$release_commit" \
-  "$previous_tag" "$previous_commit" "$mode" "$backup_required" <<'REMOTE_PRECHECK'
+  "$previous_tag_arg" "$previous_commit_arg" "$mode" "$backup_required" <<'REMOTE_PRECHECK'
 set -Eeuo pipefail
 project_dir="$1"
 history_dir="$2"
@@ -143,6 +146,9 @@ previous_tag="$5"
 previous_commit="$6"
 mode="$7"
 backup_required="$8"
+
+[ "$previous_tag" = "__none__" ] && previous_tag=""
+[ "$previous_commit" = "__none__" ] && previous_commit=""
 
 [ -f "$project_dir/compose.yml" ] || { echo "Live compose.yml is missing." >&2; exit 1; }
 [ -f "$project_dir/.env.production" ] || { echo "Live .env.production is missing." >&2; exit 1; }
@@ -183,7 +189,7 @@ if [[ "$mode" == "rollback" && "$migration_changed" -eq 1 ]]; then
 fi
 
 ssh_run bash -s -- "$project_dir" "$history_dir" "$tag" "$release_commit" \
-  "$previous_tag" "$previous_commit" "$mode" "$skip_migrate" <<'REMOTE_DEPLOY'
+  "$previous_tag_arg" "$previous_commit_arg" "$mode" "$skip_migrate" <<'REMOTE_DEPLOY'
 set -Eeuo pipefail
 project_dir="$1"
 history_dir="$2"
@@ -193,6 +199,9 @@ previous_tag="$5"
 previous_commit="$6"
 mode="$7"
 skip_migrate="$8"
+
+[ "$previous_tag" = "__none__" ] && previous_tag=""
+[ "$previous_commit" = "__none__" ] && previous_commit=""
 compose=(sudo -n docker compose --project-directory "$project_dir" -f "$project_dir/compose.yml" --env-file "$project_dir/.env.production")
 
 if [ "$skip_migrate" = "1" ]; then

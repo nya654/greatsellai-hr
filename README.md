@@ -5,6 +5,7 @@
 - [产品需求文档](docs/PRD.md)
 - [全项目实施计划](docs/IMPLEMENTATION_PLAN.md)
 - [AI 提取后台任务](docs/AI_EXTRACTION_WORKER.md)
+- [条件筛选 V2 规则与接口](docs/FILTER_V2.md)
 
 当前版本已覆盖：重新上传 PDF → 解析质量校验 → AI 从原文识别候选人姓名（不可靠则留空）并提取教育/经历/技能 → 字段级原文证据校验并自动启用 → 简历库汇总（AI 总结预览、最新 AI 评分、原 PDF）→ 条件筛选 → AI 评分、总结与 JD 匹配；React/Vite 工作台通过同域名 Caddy 静态部署，浏览器只请求同源的 `/v1/*` API。
 
@@ -80,7 +81,7 @@ git pull --ff-only origin main
 
 ## 已实现的 API 闭环
 
-- 筛选：`POST /v1/candidates/search`，支持 985/211、学历、经历、技能、关键词和保存筛选器。
+- 筛选：`POST /v1/candidates/search`，支持最高学历、院校多层级与简称、应届窗口、经历与技能分类、英语证书及分数、奖学金、竞赛获奖、成绩排名、领导经历、泛/精准关键词和保存筛选器；`GET /v1/filter-options` 提供版本化选项。
 - 简历库：`GET /v1/resume-library` 返回每份已上传 PDF 的处理状态、AI 总结预览与最新 AI 评分；不暴露结构化事实明细。
 - 原件核验：`GET /v1/resumes/{resume_id}/original-file` 受登录会话保护，以 `inline` PDF 返回；前端使用同源会话的 Blob 预览，不把口令暴露到 URL。
 - 评分：创建评分模板、按不可变事实快照评分、保留评分历史，并可人工覆写单个维度。

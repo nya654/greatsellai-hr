@@ -9,6 +9,11 @@ from datetime import datetime
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.filter_options import (
+    LANGUAGE_CREDENTIAL_ALIASES,
+    language_credential_label,
+    normalize_language_credential,
+)
 from app.models import Candidate, Resume, ResumeScore, ResumeSummary
 from app.schemas import (
     CandidateSearchItem,
@@ -17,8 +22,11 @@ from app.schemas import (
     CandidateSearchResponse,
     EducationFilter,
     ExperienceFilter,
+    LeadershipFilter,
+    LanguageCredentialFilter,
 )
-from app.services.normalization import normalized_contains, normalized_key
+from app.services.institution_service import resolve_institution
+from app.services.normalization import DEGREE_RANK, normalized_contains, normalized_key
 from app.services.resume_eligibility import is_resume_screening_eligible
 
 
@@ -78,12 +86,67 @@ def _matches_any_text(value: str | None, expected_values: list[str]) -> bool:
     )
 
 
-def _matches_education(filter_item: EducationFilter, education: object) -> bool:
+def _matches_school_name(
+    session: Session,
+    education: object,
+    expected_values: list[str],
+) -> bool:
+    if not expected_values:
+        return True
+    for value in expected_values:
+        institution = resolve_institution(session, value)
+        if institution is not None and education.institution_id == institution.id:
+            return True
+        if institution is None and normalized_contains(education.school_name_raw, value):
+            return True
+    return False
+
+
+def _matches_education(
+    session: Session,
+    filter_item: EducationFilter,
+    education: object,
+) -> bool:
     degree_in = filter_item.degree_in
     return (
         (not degree_in or education.degree in degree_in)
-        and _matches_any_text(education.school_name_raw, filter_item.school_name_contains)
+        and _matches_school_name(session, education, filter_item.school_name_contains)
         and _matches_any_text(education.major_raw, filter_item.major_contains)
+        and (
+            not filter_item.institution_tiers_any_of
+            or bool(
+                set(education.institution_tiers or [])
+                & set(filter_item.institution_tiers_any_of)
+            )
+        )
+        and (
+            filter_item.min_average_score is None
+            or (
+                education.average_score is not None
+                and education.average_score >= filter_item.min_average_score
+            )
+        )
+        and (
+            filter_item.min_gpa_percent is None
+            or (
+                education.gpa_percent is not None
+                and education.gpa_percent >= filter_item.min_gpa_percent
+            )
+        )
+        and (
+            filter_item.max_rank_position is None
+            or (
+                education.rank_position is not None
+                and education.rank_position <= filter_item.max_rank_position
+            )
+        )
+        and (
+            filter_item.max_rank_percent is None
+            or (
+                education.rank_percent is not None
+                and education.rank_percent <= filter_item.max_rank_percent
+            )
+        )
     )
 
 
@@ -91,10 +154,90 @@ def _matches_experience(filter_item: ExperienceFilter, experience: object) -> bo
     return (
         experience.experience_type in filter_item.experience_types
         and _matches_any_text(
+            experience.experience_name_raw,
+            filter_item.experience_name_contains,
+        )
+        and _matches_any_text(
             experience.organization_name_raw,
             filter_item.organization_name_contains,
         )
         and _matches_any_text(experience.title_raw, filter_item.title_contains)
+        and (
+            not filter_item.leadership_contexts_any_of
+            or experience.leadership_context in filter_item.leadership_contexts_any_of
+        )
+        and (
+            not filter_item.leadership_roles_any_of
+            or _matches_any_text(
+                experience.leadership_role,
+                filter_item.leadership_roles_any_of,
+            )
+        )
+        and (
+            not filter_item.award_levels_any_of
+            or experience.award_level in filter_item.award_levels_any_of
+        )
+        and _matches_any_text(
+            experience.award_result_raw,
+            filter_item.award_result_contains,
+        )
+    )
+
+
+def _highest_education(resume: Resume) -> object | None:
+    return max(
+        resume.educations,
+        key=lambda item: (
+            DEGREE_RANK.get(item.degree, 0),
+            item.end_month or "",
+            item.id,
+        ),
+        default=None,
+    )
+
+
+def _matches_graduation_status(resume: Resume, request: CandidateSearchRequest) -> bool:
+    if request.graduation_status == "any":
+        return True
+    education = _highest_education(resume)
+    if education is None or not education.end_month:
+        return False
+    if request.graduation_status == "fresh":
+        return bool(
+            request.fresh_graduate_start_month
+            <= education.end_month
+            <= request.fresh_graduate_end_month
+        )
+    return bool(education.end_month < request.fresh_graduate_start_month)
+
+
+def _matches_language_filter(
+    filter_item: LanguageCredentialFilter,
+    credential: object,
+) -> bool:
+    if credential.credential_code != filter_item.credential_code:
+        return False
+    if filter_item.custom_name_contains and not normalized_contains(
+        credential.credential_name_raw,
+        filter_item.custom_name_contains,
+    ):
+        return False
+    return filter_item.min_score is None or (
+        credential.score is not None and credential.score >= filter_item.min_score
+    )
+
+
+def _matches_leadership(filter_item: LeadershipFilter, experience: object) -> bool:
+    return bool(
+        experience.leadership_role
+        and (
+            not filter_item.contexts_any_of
+            or experience.leadership_context in filter_item.contexts_any_of
+        )
+        and (
+            not filter_item.roles_any_of
+            or _matches_any_text(experience.leadership_role, filter_item.roles_any_of)
+        )
     )
 
 
@@ -143,6 +286,28 @@ def _matches_keywords(resume: Resume, *, all_of: list[str], any_of: list[str]) -
     )
 
 
+def _broad_keyword_keys(keyword: str) -> set[str]:
+    credential_code = normalize_language_credential(keyword)
+    if credential_code is None:
+        return {normalized_key(keyword)}
+    return {
+        normalized_key(alias)
+        for alias in LANGUAGE_CREDENTIAL_ALIASES.get(credential_code, (keyword,))
+    }
+
+
+def _matches_v2_keywords(resume: Resume, *, keywords: list[str], mode: str) -> bool:
+    if not keywords:
+        return True
+    source = normalized_key("\n".join(block.text for block in resume.source_blocks))
+    if mode == "precise":
+        return all(normalized_key(keyword) in source for keyword in keywords)
+    return any(
+        any(alias_key in source for alias_key in _broad_keyword_keys(keyword))
+        for keyword in keywords
+    )
+
+
 def _matching_keyword_block_ids(resume: Resume, keywords: list[str]) -> list[str]:
     keys = {normalized_key(keyword) for keyword in keywords}
     return sorted(
@@ -163,6 +328,8 @@ def search_candidates(
             selectinload(Resume.educations),
             selectinload(Resume.experiences),
             selectinload(Resume.skills),
+            selectinload(Resume.language_credentials),
+            selectinload(Resume.scholarships),
             selectinload(Resume.source_blocks),
             selectinload(Resume.candidate),
             selectinload(Resume.summaries),
@@ -173,6 +340,8 @@ def search_candidates(
     )
     if request.is_985_211 is not None:
         statement = statement.where(Resume.is_985_211.is_(request.is_985_211))
+    if request.highest_degree_in:
+        statement = statement.where(Resume.highest_degree.in_(request.highest_degree_in))
     if request.min_employment_months is not None:
         statement = statement.where(
             Resume.employment_months >= request.min_employment_months
@@ -203,6 +372,44 @@ def search_candidates(
             continue
         matched_filters: list[str] = []
         matched_evidence: list[CandidateSearchMatch] = []
+
+        if not _matches_graduation_status(resume, request):
+            continue
+
+        if request.highest_degree_in:
+            matched_filters.append("highest_degree_in")
+            highest_education = _highest_education(resume)
+            matched_evidence.append(
+                CandidateSearchMatch(
+                    filter_key="highest_degree_in",
+                    label=resume.highest_degree or "",
+                    fact_type="education",
+                    evidence_block_ids=(
+                        highest_education.evidence_block_ids
+                        if highest_education is not None
+                        else []
+                    ),
+                )
+            )
+
+        if request.graduation_status != "any":
+            highest_education = _highest_education(resume)
+            matched_filters.append("graduation_status")
+            matched_evidence.append(
+                CandidateSearchMatch(
+                    filter_key="graduation_status",
+                    label=(
+                        f"{request.graduation_status}: "
+                        f"{highest_education.end_month if highest_education else ''}"
+                    ),
+                    fact_type="education",
+                    evidence_block_ids=(
+                        highest_education.evidence_block_ids
+                        if highest_education is not None
+                        else []
+                    ),
+                )
+            )
 
         if request.is_985_211 is not None:
             matched_filters.append(f"is_985_211={str(request.is_985_211).lower()}")
@@ -248,7 +455,7 @@ def search_candidates(
                 education
                 for filter_item in request.education_any_of
                 for education in resume.educations
-                if _matches_education(filter_item, education)
+                if _matches_education(session, filter_item, education)
             ]
             if not matching_education:
                 continue
@@ -299,6 +506,25 @@ def search_candidates(
                 for experience in matching_experience
             )
 
+        if request.skill_categories_any_of:
+            matching_category_skills = [
+                skill
+                for skill in resume.skills
+                if skill.skill_category in request.skill_categories_any_of
+            ]
+            if not matching_category_skills:
+                continue
+            matched_filters.append("skill_categories_any_of")
+            matched_evidence.extend(
+                CandidateSearchMatch(
+                    filter_key="skill_categories_any_of",
+                    label=skill.skill_display,
+                    fact_type="skill",
+                    evidence_block_ids=skill.evidence_block_ids or [],
+                )
+                for skill in matching_category_skills
+            )
+
         skill_keys = {skill.skill_key for skill in resume.skills}
         required_skill_keys = {normalized_key(item) for item in request.skills_all_of}
         optional_skill_keys = {normalized_key(item) for item in request.skills_any_of}
@@ -331,10 +557,136 @@ def search_candidates(
                 if skill.skill_key in optional_skill_keys
             )
 
+        if request.language_credentials_any_of:
+            matching_credentials = [
+                credential
+                for filter_item in request.language_credentials_any_of
+                for credential in resume.language_credentials
+                if _matches_language_filter(filter_item, credential)
+            ]
+            if not matching_credentials:
+                continue
+            matched_filters.append("language_credentials_any_of")
+            matched_evidence.extend(
+                CandidateSearchMatch(
+                    filter_key="language_credentials_any_of",
+                    label=(
+                        language_credential_label(credential.credential_code)
+                        + (
+                            f" {credential.score:g}"
+                            if credential.score is not None
+                            else ""
+                        )
+                    ),
+                    fact_type="language",
+                    evidence_block_ids=credential.evidence_block_ids or [],
+                )
+                for credential in matching_credentials
+            )
+
+        if request.scholarship_status == "unknown":
+            if resume.scholarships:
+                continue
+            matched_filters.append("scholarship_status=unknown")
+        elif request.scholarship_status == "present" and not resume.scholarships:
+            continue
+        matching_scholarships = [
+            scholarship
+            for scholarship in resume.scholarships
+            if (
+                not request.scholarship_levels_any_of
+                or scholarship.scholarship_level in request.scholarship_levels_any_of
+            )
+            and _matches_any_text(
+                scholarship.scholarship_name_raw,
+                request.scholarship_name_contains,
+            )
+        ]
+        if (
+            request.scholarship_status == "present"
+            or request.scholarship_levels_any_of
+            or request.scholarship_name_contains
+        ):
+            if not matching_scholarships:
+                continue
+            matched_filters.append("scholarship")
+            matched_evidence.extend(
+                CandidateSearchMatch(
+                    filter_key="scholarship",
+                    label=scholarship.scholarship_name_raw,
+                    fact_type="scholarship",
+                    evidence_block_ids=scholarship.evidence_block_ids or [],
+                )
+                for scholarship in matching_scholarships
+            )
+
+        competition_experiences = [
+            experience
+            for experience in resume.experiences
+            if experience.experience_type == "competition"
+        ]
+        competition_awards = [
+            experience
+            for experience in competition_experiences
+            if experience.award_level or experience.award_result_raw
+        ]
+        if request.competition_status == "present" and not competition_experiences:
+            continue
+        if request.competition_status == "unknown" and competition_experiences:
+            continue
+        if request.competition_award_status == "present" and not competition_awards:
+            continue
+        if request.competition_award_status == "unknown" and competition_awards:
+            continue
+        if request.competition_status != "any" or request.competition_award_status != "any":
+            matched_filters.append("competition")
+            matched_evidence.extend(
+                CandidateSearchMatch(
+                    filter_key="competition",
+                    label=" | ".join(
+                        value
+                        for value in (
+                            experience.experience_name_raw,
+                            experience.award_result_raw,
+                        )
+                        if value
+                    ),
+                    fact_type="experience",
+                    evidence_block_ids=experience.evidence_block_ids or [],
+                )
+                for experience in (competition_awards or competition_experiences)
+            )
+
+        if request.leadership_any_of:
+            matching_leadership = [
+                experience
+                for filter_item in request.leadership_any_of
+                for experience in resume.experiences
+                if _matches_leadership(filter_item, experience)
+            ]
+            if not matching_leadership:
+                continue
+            matched_filters.append("leadership")
+            matched_evidence.extend(
+                CandidateSearchMatch(
+                    filter_key="leadership",
+                    label=experience.leadership_role or "",
+                    fact_type="experience",
+                    evidence_block_ids=experience.evidence_block_ids or [],
+                )
+                for experience in matching_leadership
+            )
+
         if not _matches_keywords(
             resume,
             all_of=request.keywords_all_of,
             any_of=request.keywords_any_of,
+        ):
+            continue
+        if not _matches_v2_keywords(
+            resume,
+            keywords=request.keywords,
+            mode=request.keyword_match_mode,
         ):
             continue
         if request.keywords_all_of:
@@ -360,6 +712,19 @@ def search_candidates(
                     evidence_block_ids=_matching_keyword_block_ids(
                         resume,
                         request.keywords_any_of,
+                    ),
+                )
+            )
+        if request.keywords:
+            matched_filters.append(f"keywords_{request.keyword_match_mode}")
+            matched_evidence.append(
+                CandidateSearchMatch(
+                    filter_key="keywords",
+                    label=", ".join(request.keywords),
+                    fact_type="keyword",
+                    evidence_block_ids=_matching_keyword_block_ids(
+                        resume,
+                        request.keywords,
                     ),
                 )
             )

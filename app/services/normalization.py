@@ -23,10 +23,12 @@ def normalized_contains(haystack: str | None, needle: str | None) -> bool:
 
 DEGREE_RANK = {
     "unknown": 0,
-    "associate": 1,
-    "bachelor": 2,
-    "master": 3,
-    "doctor": 4,
+    "vocational_or_below": 1,
+    "high_school": 2,
+    "associate": 3,
+    "bachelor": 4,
+    "master": 5,
+    "doctor": 6,
 }
 
 

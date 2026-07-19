@@ -27,6 +27,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import AppSettings
 from app.database import Database, get_session
+from app.filter_options import filter_options_payload
 from app.models import Candidate, Resume
 from app.schemas import (
     AuthLogin,
@@ -1042,6 +1043,14 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(exc),
             ) from exc
+
+    @app.get(
+        "/v1/filter-options",
+        response_model=dict[str, object],
+        dependencies=[Depends(require_single_admin)],
+    )
+    def get_filter_options() -> dict[str, object]:
+        return filter_options_payload()
 
     @app.get(
         "/v1/resume-library",

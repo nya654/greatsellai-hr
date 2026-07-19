@@ -17,12 +17,18 @@ from app.models import (
     ResumeEducation,
     ResumeExperience,
     ResumeFactSnapshot,
+    ResumeLanguageCredential,
     ResumeReviewAction,
+    ResumeScholarship,
     ResumeSkill,
     ResumeSourceBlock,
     ResumeSummary,
     ResumeUploadIdempotencyKey,
     utcnow,
+)
+from app.filter_options import (
+    INSTITUTION_TIER_OPTIONS,
+    normalize_language_credential,
 )
 from app.schemas import ResumeFactsSaveRequest, ResumeFactsSubmission
 from app.services.deepseek_provider import (
@@ -703,6 +709,8 @@ def _fact_snapshot(resume: Resume) -> dict[str, object]:
         "education_count": len(resume.educations),
         "experience_count": len(resume.experiences),
         "skill_count": len(resume.skills),
+        "language_credential_count": len(resume.language_credentials),
+        "scholarship_count": len(resume.scholarships),
     }
 
 
@@ -736,6 +744,14 @@ def _canonical_fact_payload(
     skills = session.scalars(
         select(ResumeSkill).where(ResumeSkill.resume_id == resume.id)
     ).all()
+    language_credentials = session.scalars(
+        select(ResumeLanguageCredential).where(
+            ResumeLanguageCredential.resume_id == resume.id
+        )
+    ).all()
+    scholarships = session.scalars(
+        select(ResumeScholarship).where(ResumeScholarship.resume_id == resume.id)
+    ).all()
 
     source_block_ids: set[str] = set()
     education_entries: list[dict[str, object]] = []
@@ -752,6 +768,14 @@ def _canonical_fact_payload(
                 "major_key": education.major_key,
                 "start_month": education.start_month,
                 "end_month": education.end_month,
+                "institution_tiers": sorted(education.institution_tiers or []),
+                "average_score": education.average_score,
+                "gpa_value": education.gpa_value,
+                "gpa_scale": education.gpa_scale,
+                "gpa_percent": education.gpa_percent,
+                "rank_position": education.rank_position,
+                "rank_total": education.rank_total,
+                "rank_percent": education.rank_percent,
                 "evidence_block_ids": evidence_block_ids,
             }
         )
@@ -797,6 +821,10 @@ def _canonical_fact_payload(
                 "evidence_block_ids": evidence_block_ids,
                 "classification_evidence_block_ids": classification_evidence_block_ids,
                 "detail_items": detail_items,
+                "leadership_context": experience.leadership_context,
+                "leadership_role": experience.leadership_role,
+                "award_level": experience.award_level,
+                "award_result_raw": experience.award_result_raw,
             }
         )
 
@@ -808,6 +836,34 @@ def _canonical_fact_payload(
             {
                 "skill_key": skill.skill_key,
                 "skill_display": skill.skill_display,
+                "skill_category": skill.skill_category,
+                "evidence_block_ids": evidence_block_ids,
+            }
+        )
+
+    language_entries: list[dict[str, object]] = []
+    for credential in language_credentials:
+        evidence_block_ids = _sorted_block_ids(credential.evidence_block_ids)
+        source_block_ids.update(evidence_block_ids)
+        language_entries.append(
+            {
+                "credential_code": credential.credential_code,
+                "credential_name_raw": credential.credential_name_raw,
+                "score": credential.score,
+                "passed": credential.passed,
+                "evidence_block_ids": evidence_block_ids,
+            }
+        )
+
+    scholarship_entries: list[dict[str, object]] = []
+    for scholarship in scholarships:
+        evidence_block_ids = _sorted_block_ids(scholarship.evidence_block_ids)
+        source_block_ids.update(evidence_block_ids)
+        scholarship_entries.append(
+            {
+                "scholarship_name_raw": scholarship.scholarship_name_raw,
+                "scholarship_name_key": scholarship.scholarship_name_key,
+                "scholarship_level": scholarship.scholarship_level,
                 "evidence_block_ids": evidence_block_ids,
             }
         )
@@ -815,20 +871,28 @@ def _canonical_fact_payload(
     education_entries.sort(key=_canonical_json)
     experience_entries.sort(key=_canonical_json)
     skill_entries.sort(key=_canonical_json)
+    language_entries.sort(key=_canonical_json)
+    scholarship_entries.sort(key=_canonical_json)
     for index, entry in enumerate(education_entries, start=1):
         entry["fact_id"] = f"education-{index:03d}"
     for index, entry in enumerate(experience_entries, start=1):
         entry["fact_id"] = f"experience-{index:03d}"
     for index, entry in enumerate(skill_entries, start=1):
         entry["fact_id"] = f"skill-{index:03d}"
+    for index, entry in enumerate(language_entries, start=1):
+        entry["fact_id"] = f"language-{index:03d}"
+    for index, entry in enumerate(scholarship_entries, start=1):
+        entry["fact_id"] = f"scholarship-{index:03d}"
     sorted_source_block_ids = sorted(source_block_ids)
     return (
         {
-            "schema_version": "resume_fact_snapshot.v3",
-            "facts_schema_version": "resume_facts.v1",
+            "schema_version": "resume_fact_snapshot.v4",
+            "facts_schema_version": "resume_facts.v2",
             "education": education_entries,
             "experiences": experience_entries,
             "skills": skill_entries,
+            "language_credentials": language_entries,
+            "scholarships": scholarship_entries,
             "derived": {
                 "is_985_211": resume.is_985_211,
                 "highest_degree": resume.highest_degree,
@@ -1103,6 +1167,14 @@ def _replace_facts(
     session.execute(delete(ResumeEducation).where(ResumeEducation.resume_id == resume.id))
     session.execute(delete(ResumeExperience).where(ResumeExperience.resume_id == resume.id))
     session.execute(delete(ResumeSkill).where(ResumeSkill.resume_id == resume.id))
+    session.execute(
+        delete(ResumeLanguageCredential).where(
+            ResumeLanguageCredential.resume_id == resume.id
+        )
+    )
+    session.execute(
+        delete(ResumeScholarship).where(ResumeScholarship.resume_id == resume.id)
+    )
     session.flush()
 
     has_985_211 = False
@@ -1147,6 +1219,28 @@ def _replace_facts(
             has_unresolved_school = True
         if institution is not None and institution.is_985_211:
             has_985_211 = True
+        registry_tiers = list(institution.tier_tags or []) if institution else []
+        explicit_tiers: list[str] = []
+        tier_labels = {
+            item["value"]: item["label"] for item in INSTITUTION_TIER_OPTIONS
+        }
+        for tier in education.institution_tiers:
+            if tier in registry_tiers:
+                continue
+            if not normalized_contains(evidence_text, tier_labels[tier]):
+                raise FactValidationError("institution_tier_not_grounded_in_evidence")
+            explicit_tiers.append(tier)
+        institution_tiers = sorted(set([*registry_tiers, *explicit_tiers]))
+        gpa_percent = (
+            round(education.gpa_value / education.gpa_scale * 100, 4)
+            if education.gpa_value is not None and education.gpa_scale is not None
+            else None
+        )
+        rank_percent = (
+            round(education.rank_position / education.rank_total * 100, 4)
+            if education.rank_position is not None and education.rank_total is not None
+            else None
+        )
         session.add(
             ResumeEducation(
                 resume_id=resume.id,
@@ -1182,6 +1276,14 @@ def _replace_facts(
                 major_key=normalized_key(education.major_raw) or None,
                 start_month=education.start_month,
                 end_month=education.end_month,
+                institution_tiers=institution_tiers,
+                average_score=education.average_score,
+                gpa_value=education.gpa_value,
+                gpa_scale=education.gpa_scale,
+                gpa_percent=gpa_percent,
+                rank_position=education.rank_position,
+                rank_total=education.rank_total,
+                rank_percent=rank_percent,
                 evidence_block_ids=education.evidence_block_ids,
             )
         )
@@ -1208,6 +1310,16 @@ def _replace_facts(
             value=experience.title_raw,
             source_text=evidence_text,
             label="title_raw",
+        )
+        _assert_raw_value_grounded(
+            value=experience.leadership_role,
+            source_text=evidence_text,
+            label="leadership_role",
+        )
+        _assert_raw_value_grounded(
+            value=experience.award_result_raw,
+            source_text=evidence_text,
+            label="award_result_raw",
         )
         classification_text = _source_text_by_ids(
             session,
@@ -1279,6 +1391,18 @@ def _replace_facts(
                 evidence_block_ids=experience.evidence_block_ids,
                 classification_evidence_block_ids=experience.classification_evidence_block_ids,
                 detail_items=stored_detail_items,
+                leadership_context=experience.leadership_context,
+                leadership_role=(
+                    experience.leadership_role.strip()
+                    if experience.leadership_role
+                    else None
+                ),
+                award_level=experience.award_level,
+                award_result_raw=(
+                    experience.award_result_raw.strip()
+                    if experience.award_result_raw
+                    else None
+                ),
             )
         )
         interval = (experience.start_month, experience.end_month, experience.is_current)
@@ -1309,7 +1433,62 @@ def _replace_facts(
                 resume_id=resume.id,
                 skill_key=key,
                 skill_display=skill.skill_display.strip(),
+                skill_category=skill.skill_category,
                 evidence_block_ids=skill.evidence_block_ids,
+            )
+        )
+
+    for credential in facts.language_credentials:
+        evidence_text = _source_text_by_ids(
+            session,
+            resume_id=resume.id,
+            block_ids=credential.evidence_block_ids,
+        )
+        _assert_raw_value_grounded(
+            value=credential.credential_name_raw,
+            source_text=evidence_text,
+            label="credential_name_raw",
+        )
+        normalized_code = normalize_language_credential(
+            credential.credential_name_raw
+        )
+        if credential.credential_code != "custom" and normalized_code != credential.credential_code:
+            raise FactValidationError("language_credential_code_not_grounded")
+        if credential.score is not None and not normalized_contains(
+            evidence_text, f"{credential.score:g}"
+        ):
+            raise FactValidationError("language_credential_score_not_grounded")
+        session.add(
+            ResumeLanguageCredential(
+                resume_id=resume.id,
+                credential_code=credential.credential_code,
+                credential_name_raw=credential.credential_name_raw.strip(),
+                score=credential.score,
+                passed=credential.passed,
+                evidence_block_ids=credential.evidence_block_ids,
+            )
+        )
+
+    for scholarship in facts.scholarships:
+        evidence_text = _source_text_by_ids(
+            session,
+            resume_id=resume.id,
+            block_ids=scholarship.evidence_block_ids,
+        )
+        _assert_raw_value_grounded(
+            value=scholarship.scholarship_name_raw,
+            source_text=evidence_text,
+            label="scholarship_name_raw",
+        )
+        session.add(
+            ResumeScholarship(
+                resume_id=resume.id,
+                scholarship_name_raw=scholarship.scholarship_name_raw.strip(),
+                scholarship_name_key=normalized_key(
+                    scholarship.scholarship_name_raw
+                ),
+                scholarship_level=scholarship.scholarship_level,
+                evidence_block_ids=scholarship.evidence_block_ids,
             )
         )
 

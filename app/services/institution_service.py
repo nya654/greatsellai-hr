@@ -15,6 +15,30 @@ from app.services.normalization import normalized_key
 REGISTRY_PATH = Path(__file__).resolve().parents[1] / "resources" / "985_211_institutions.json"
 AI_RULEBOOK_PATH = Path(__file__).resolve().parents[1] / "resources" / "ai_985_211_rulebook.md"
 
+# Only unambiguous, commonly used abbreviations are accepted. Ambiguous short
+# names (for example "广大") are intentionally absent and are never AI-guessed.
+COMMON_INSTITUTION_ALIASES: dict[str, tuple[str, ...]] = {
+    "北京大学": ("北大",),
+    "清华大学": ("清华",),
+    "北京航空航天大学": ("北航",),
+    "北京理工大学": ("北理工",),
+    "北京师范大学": ("北师大",),
+    "北京邮电大学": ("北邮",),
+    "复旦大学": ("复旦",),
+    "上海交通大学": ("上海交大", "上交"),
+    "浙江大学": ("浙大",),
+    "中国科学技术大学": ("中科大",),
+    "哈尔滨工业大学": ("哈工大",),
+    "武汉大学": ("武大",),
+    "华中科技大学": ("华中大", "华科"),
+    "厦门大学": ("厦大",),
+    "华南理工大学": ("华工",),
+    "四川大学": ("川大",),
+    "电子科技大学": ("电子科大", "成电"),
+    "重庆大学": ("重大",),
+    "西安交通大学": ("西安交大", "西交"),
+}
+
 
 class InstitutionRegistryError(RuntimeError):
     pass
@@ -55,6 +79,7 @@ def load_registry() -> InstitutionRegistry:
             raise InstitutionRegistryError("invalid_registry_identity")
         if not isinstance(is_985_211, bool) or not isinstance(aliases, list):
             raise InstitutionRegistryError("invalid_registry_attributes")
+        aliases = [*aliases, *COMMON_INSTITUTION_ALIASES.get(canonical_name, ())]
         all_names = [canonical_name, *aliases]
         for name in all_names:
             key = normalized_key(name)
@@ -117,6 +142,11 @@ def seed_institution_registry(session: Session) -> None:
                 canonical_name=entry.canonical_name,
                 canonical_key=normalized_key(entry.canonical_name),
                 is_985_211=entry.is_985_211,
+                tier_tags=(
+                    ["211", "985"]
+                    if entry.roster_id.startswith("cn-985-")
+                    else ["211"]
+                ),
                 registry_version=registry.version,
             )
             session.add(institution)
@@ -124,6 +154,11 @@ def seed_institution_registry(session: Session) -> None:
             institution.canonical_name = entry.canonical_name
             institution.canonical_key = normalized_key(entry.canonical_name)
             institution.is_985_211 = entry.is_985_211
+            institution.tier_tags = (
+                ["211", "985"]
+                if entry.roster_id.startswith("cn-985-")
+                else ["211"]
+            )
             institution.registry_version = registry.version
     session.flush()
 

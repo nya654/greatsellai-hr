@@ -38,9 +38,74 @@
 
 未配置密钥时，新任务会显示为 `unavailable` 而不会调用模型；配置密钥并重启 `worker` 后会安全地重新进入队列。任务状态、租约、重试上限和本地启动方式见 [AI 提取后台任务](AI_EXTRACTION_WORKER.md)。
 
-## 更新与备份
+## 受控更新、发布标签与回滚
 
-- 更新镜像/代码后重复 `docker compose --env-file .env.production up --build -d`；迁移任务是幂等的。
-- 定期执行 PostgreSQL 逻辑备份，并演练恢复。上传的 PDF 当前位于 Docker volume `uploads_data`，备份时必须与数据库一起处理。
-- 管理接口需要请求头 `X-Admin-Token`。服务端的期望值只配置在环境变量中；首期单账号工作台由管理员在“连接配置”中把同一口令保存在自己的浏览器 `localStorage` 后随请求头发送，绝不写入源码、请求 URL 或上传内容。后续接入正式登录时，应改为 HttpOnly 会话而不是沿用浏览器存储。
+### 代码基线
+
+- GitHub `main` 是唯一代码基线。开发在功能分支完成、测试通过、PR 审核并合并后，才允许发布。
+- 服务器目录 `/home/ubuntu/resume-screening-v3` 只是部署目标，不是 Git 协作工作区。不要直接修改其中的业务代码，也不要把它反向同步到 GitHub。
+- `.env.production`、PostgreSQL 数据、Docker 卷、候选人 PDF、SSH 私钥和任何服务端密钥都不进入 Git，也不由发布脚本传输或删除。
+
+### 创建生产版本
+
+在本地干净的、与 `origin/main` 完全一致的 `main` 分支上运行：
+
+```bash
+scripts/create-production-tag.sh
+```
+
+脚本会创建并推送带注释的 `prod-YYYYMMDD-<commit短码>` 标签。标签已经存在时会失败；
+不要移动、删除或重用生产标签。仓库管理员还应在 GitHub 设置中保护 `prod-*` 标签，
+禁止强制更新和删除。
+
+### 部署标签
+
+从仓库根目录运行（私钥路径仅作为本地命令参数，绝不写入仓库）：
+
+```bash
+scripts/deploy-production.sh prod-YYYYMMDD-<commit短码> \
+  --ssh-key /path/to/server-key
+```
+
+脚本只接受已推送到 GitHub、且可从 `origin/main` 追溯的 `prod-*` 标签。它通过
+`git archive` 传输 Git 受控源码，不使用删除式同步，因此不会覆盖或删除生产环境
+文件、数据库、上传 PDF 或 Docker 卷。
+
+部署前，脚本会读取服务器项目目录外的发布记录。首次部署或发现 `migrations/`
+变化时，会在 `/home/ubuntu/greatsellai-hr-deployments/backups/` 创建受限权限的
+PostgreSQL 逻辑备份。发布记录位于
+`/home/ubuntu/greatsellai-hr-deployments/releases/`，仅记录标签、提交号、时间和
+验证状态，不记录密钥或候选人信息。
+
+脚本重建 `api`、`worker` 和 `caddy`，让 Compose 正常执行迁移依赖，并验证：
+
+- Caddy 配置有效；
+- `https://<RESUME_V3_DOMAIN>/health` 可用；
+- 未登录会话仍处于登录保护状态；
+- 不携带认证信息时，伪造 ID 的原 PDF 请求被拒绝。
+
+只有这些检查通过后，发布才会成为服务器的当前生产版本。
+
+### 应用回滚
+
+选择之前成功发布过的标签：
+
+```bash
+scripts/rollback-production.sh prod-YYYYMMDD-<commit短码> \
+  --ssh-key /path/to/server-key
+```
+
+回滚同样会重建应用并完成健康检查，且会把回滚结果写入部署记录。它绝不从服务器
+当前文件“回滚”。
+
+如果当前版本与目标版本间包含 Alembic 迁移，脚本默认拒绝回滚。负责人必须先判断
+旧应用代码是否可以读取当前数据库 schema；只有确认兼容后才能显式传入
+`--allow-schema-ahead`。该模式跳过迁移并保留当前数据库，**不会**自动执行
+`alembic downgrade`。如确实需要恢复数据库，必须基于部署前逻辑备份单独审批和
+执行，避免覆盖新产生的业务数据与候选人资料。
+
+### 例行备份与安全
+
+- 定期执行 PostgreSQL 逻辑备份并演练恢复。上传的 PDF 位于 Docker volume `uploads_data`，备份时必须与数据库一起处理。
+- 单账号登录口令只配置在服务端环境变量。浏览器通过同源 `/v1/auth/login` 提交口令，服务端签发 `HttpOnly`、`SameSite=Strict` 的会话 Cookie；口令绝不写入源码、`localStorage`、请求 URL 或上传内容。
 - 在上线真实简历前，务必使用 HTTPS 域名并限制服务器 SSH、数据库端口和 Docker 管理权限。

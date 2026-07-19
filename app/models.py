@@ -96,6 +96,14 @@ class Resume(Base):
         back_populates="resume",
         cascade="all, delete-orphan",
     )
+    language_credentials: Mapped[list["ResumeLanguageCredential"]] = relationship(
+        back_populates="resume",
+        cascade="all, delete-orphan",
+    )
+    scholarships: Mapped[list["ResumeScholarship"]] = relationship(
+        back_populates="resume",
+        cascade="all, delete-orphan",
+    )
     review_actions: Mapped[list["ResumeReviewAction"]] = relationship(
         back_populates="resume",
         cascade="all, delete-orphan",
@@ -235,6 +243,7 @@ class ResumeAiExtractionJob(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     resume_id: Mapped[str] = mapped_column(ForeignKey("resumes.id"), index=True)
+    job_kind: Mapped[str] = mapped_column(String(32), default="initial")
     status: Mapped[str] = mapped_column(String(32), index=True)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, default=3)
@@ -283,6 +292,14 @@ class ResumeEducation(Base):
     major_key: Mapped[str | None] = mapped_column(String(255), index=True)
     start_month: Mapped[str | None] = mapped_column(String(7))
     end_month: Mapped[str | None] = mapped_column(String(7))
+    institution_tiers: Mapped[list[str]] = mapped_column(JSON, default=list)
+    average_score: Mapped[float | None] = mapped_column(Float)
+    gpa_value: Mapped[float | None] = mapped_column(Float)
+    gpa_scale: Mapped[float | None] = mapped_column(Float)
+    gpa_percent: Mapped[float | None] = mapped_column(Float, index=True)
+    rank_position: Mapped[int | None] = mapped_column(Integer)
+    rank_total: Mapped[int | None] = mapped_column(Integer)
+    rank_percent: Mapped[float | None] = mapped_column(Float, index=True)
     evidence_block_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
 
     resume: Mapped[Resume] = relationship(back_populates="educations")
@@ -312,6 +329,10 @@ class ResumeExperience(Base):
     # V1 does not filter on individual responsibilities, so a JSON column
     # keeps the parent fact and its per-detail proof atomic at save time.
     detail_items: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
+    leadership_context: Mapped[str | None] = mapped_column(String(32), index=True)
+    leadership_role: Mapped[str | None] = mapped_column(String(64), index=True)
+    award_level: Mapped[str | None] = mapped_column(String(32), index=True)
+    award_result_raw: Mapped[str | None] = mapped_column(String(255))
 
     resume: Mapped[Resume] = relationship(back_populates="experiences")
 
@@ -324,9 +345,45 @@ class ResumeSkill(Base):
     resume_id: Mapped[str] = mapped_column(ForeignKey("resumes.id"), index=True)
     skill_key: Mapped[str] = mapped_column(String(120), index=True)
     skill_display: Mapped[str] = mapped_column(String(120))
+    skill_category: Mapped[str | None] = mapped_column(String(64), index=True)
     evidence_block_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
 
     resume: Mapped[Resume] = relationship(back_populates="skills")
+
+
+class ResumeLanguageCredential(Base):
+    __tablename__ = "resume_language_credentials"
+    __table_args__ = (
+        UniqueConstraint(
+            "resume_id",
+            "credential_code",
+            "score",
+            name="uq_resume_language_credential",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    resume_id: Mapped[str] = mapped_column(ForeignKey("resumes.id"), index=True)
+    credential_code: Mapped[str] = mapped_column(String(32), index=True)
+    credential_name_raw: Mapped[str] = mapped_column(String(120))
+    score: Mapped[float | None] = mapped_column(Float, index=True)
+    passed: Mapped[bool | None] = mapped_column(Boolean)
+    evidence_block_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+    resume: Mapped[Resume] = relationship(back_populates="language_credentials")
+
+
+class ResumeScholarship(Base):
+    __tablename__ = "resume_scholarships"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    resume_id: Mapped[str] = mapped_column(ForeignKey("resumes.id"), index=True)
+    scholarship_name_raw: Mapped[str] = mapped_column(String(255))
+    scholarship_name_key: Mapped[str] = mapped_column(String(255), index=True)
+    scholarship_level: Mapped[str | None] = mapped_column(String(32), index=True)
+    evidence_block_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+    resume: Mapped[Resume] = relationship(back_populates="scholarships")
 
 
 class ResumeReviewAction(Base):
@@ -375,6 +432,7 @@ class Institution(Base):
     canonical_name: Mapped[str] = mapped_column(String(255))
     canonical_key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     is_985_211: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    tier_tags: Mapped[list[str]] = mapped_column(JSON, default=list)
     registry_version: Mapped[str] = mapped_column(String(64))
 
     aliases: Mapped[list["InstitutionAlias"]] = relationship(

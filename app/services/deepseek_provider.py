@@ -36,9 +36,12 @@ class CandidateNameDraft:
     evidence_block_ids: list[str]
 
 
-FACT_SNAPSHOT_SCHEMA_VERSION = "resume_fact_snapshot.v3"
-LEGACY_FACT_SNAPSHOT_SCHEMA_VERSION = "resume_fact_snapshot.v2"
-FACTS_SCHEMA_VERSION = "resume_facts.v1"
+FACT_SNAPSHOT_SCHEMA_VERSION = "resume_fact_snapshot.v4"
+LEGACY_FACT_SNAPSHOT_SCHEMA_VERSIONS = {
+    "resume_fact_snapshot.v2",
+    "resume_fact_snapshot.v3",
+}
+FACTS_SCHEMA_VERSION = "resume_facts.v2"
 SCORE_SCHEMA_VERSION = "resume_score.v1"
 SUMMARY_SCHEMA_VERSION = "resume_summary.v1"
 JD_REQUIREMENTS_SCHEMA_VERSION = "jd_requirements.v1"
@@ -55,8 +58,14 @@ _FACT_SNAPSHOT_KEYS = {
     "education",
     "experiences",
     "skills",
+    "language_credentials",
+    "scholarships",
     "derived",
     "source_block_ids",
+}
+_FACT_SNAPSHOT_KEYS_V3 = _FACT_SNAPSHOT_KEYS - {
+    "language_credentials",
+    "scholarships",
 }
 _EDUCATION_SNAPSHOT_KEYS = {
     "fact_id",
@@ -68,7 +77,25 @@ _EDUCATION_SNAPSHOT_KEYS = {
     "major_key",
     "start_month",
     "end_month",
+    "institution_tiers",
+    "average_score",
+    "gpa_value",
+    "gpa_scale",
+    "gpa_percent",
+    "rank_position",
+    "rank_total",
+    "rank_percent",
     "evidence_block_ids",
+}
+_EDUCATION_SNAPSHOT_V3_KEYS = _EDUCATION_SNAPSHOT_KEYS - {
+    "institution_tiers",
+    "average_score",
+    "gpa_value",
+    "gpa_scale",
+    "gpa_percent",
+    "rank_position",
+    "rank_total",
+    "rank_percent",
 }
 _EXPERIENCE_SNAPSHOT_V2_KEYS = {
     "fact_id",
@@ -89,11 +116,35 @@ _EXPERIENCE_SNAPSHOT_V3_KEYS = {
     "experience_name_key",
     "detail_items",
 }
+_EXPERIENCE_SNAPSHOT_V4_KEYS = {
+    *_EXPERIENCE_SNAPSHOT_V3_KEYS,
+    "leadership_context",
+    "leadership_role",
+    "award_level",
+    "award_result_raw",
+}
 _EXPERIENCE_DETAIL_SNAPSHOT_KEYS = {"detail_raw", "evidence_block_ids"}
 _SKILL_SNAPSHOT_KEYS = {
     "fact_id",
     "skill_key",
     "skill_display",
+    "skill_category",
+    "evidence_block_ids",
+}
+_SKILL_SNAPSHOT_V3_KEYS = _SKILL_SNAPSHOT_KEYS - {"skill_category"}
+_LANGUAGE_SNAPSHOT_KEYS = {
+    "fact_id",
+    "credential_code",
+    "credential_name_raw",
+    "score",
+    "passed",
+    "evidence_block_ids",
+}
+_SCHOLARSHIP_SNAPSHOT_KEYS = {
+    "fact_id",
+    "scholarship_name_raw",
+    "scholarship_name_key",
+    "scholarship_level",
     "evidence_block_ids",
 }
 _DERIVED_SNAPSHOT_KEYS = {
@@ -102,7 +153,9 @@ _DERIVED_SNAPSHOT_KEYS = {
     "employment_months",
     "employment_or_internship_months",
 }
-_FACT_ID_PATTERN = re.compile(r"^(education|experience|skill)-\d{3}$")
+_FACT_ID_PATTERN = re.compile(
+    r"^(education|experience|skill|language|scholarship)-\d{3}$"
+)
 _DIMENSION_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 _EXTERNAL_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
 _JD_CLAUSE_KEYS = {"clause_id", "text"}
@@ -208,18 +261,20 @@ def _validate_fact_snapshot(
         raise _contract_error("snapshot_too_large")
     if not isinstance(snapshot, dict):
         raise _contract_error("snapshot_must_be_object")
-    _require_exact_keys(
-        snapshot,
-        _FACT_SNAPSHOT_KEYS,
-        code="snapshot_unexpected_fields",
-    )
     schema_version = snapshot.get("schema_version")
     if schema_version not in {
         FACT_SNAPSHOT_SCHEMA_VERSION,
-        LEGACY_FACT_SNAPSHOT_SCHEMA_VERSION,
+        *LEGACY_FACT_SNAPSHOT_SCHEMA_VERSIONS,
     }:
         raise _contract_error("snapshot_schema_version")
-    if snapshot.get("facts_schema_version") != FACTS_SCHEMA_VERSION:
+    is_v4 = schema_version == FACT_SNAPSHOT_SCHEMA_VERSION
+    _require_exact_keys(
+        snapshot,
+        _FACT_SNAPSHOT_KEYS if is_v4 else _FACT_SNAPSHOT_KEYS_V3,
+        code="snapshot_unexpected_fields",
+    )
+    expected_facts_schema = FACTS_SCHEMA_VERSION if is_v4 else "resume_facts.v1"
+    if snapshot.get("facts_schema_version") != expected_facts_schema:
         raise _contract_error("snapshot_facts_schema_version")
 
     source_block_ids = _require_string_list(
@@ -236,19 +291,38 @@ def _validate_fact_snapshot(
 
     fact_ids: list[str] = []
     seen_fact_ids: set[str] = set()
-    categories = (
-        ("education", "education", _EDUCATION_SNAPSHOT_KEYS),
+    categories = [
+        (
+            "education",
+            "education",
+            _EDUCATION_SNAPSHOT_KEYS if is_v4 else _EDUCATION_SNAPSHOT_V3_KEYS,
+        ),
         (
             "experiences",
             "experience",
             (
-                _EXPERIENCE_SNAPSHOT_V3_KEYS
-                if schema_version == FACT_SNAPSHOT_SCHEMA_VERSION
-                else _EXPERIENCE_SNAPSHOT_V2_KEYS
+                _EXPERIENCE_SNAPSHOT_V4_KEYS
+                if is_v4
+                else (
+                    _EXPERIENCE_SNAPSHOT_V3_KEYS
+                    if schema_version == "resume_fact_snapshot.v3"
+                    else _EXPERIENCE_SNAPSHOT_V2_KEYS
+                )
             ),
         ),
-        ("skills", "skill", _SKILL_SNAPSHOT_KEYS),
-    )
+        (
+            "skills",
+            "skill",
+            _SKILL_SNAPSHOT_KEYS if is_v4 else _SKILL_SNAPSHOT_V3_KEYS,
+        ),
+    ]
+    if is_v4:
+        categories.extend(
+            [
+                ("language_credentials", "language", _LANGUAGE_SNAPSHOT_KEYS),
+                ("scholarships", "scholarship", _SCHOLARSHIP_SNAPSHOT_KEYS),
+            ]
+        )
     for category, prefix, expected_keys in categories:
         entries = snapshot[category]
         if not isinstance(entries, list):
@@ -281,7 +355,7 @@ def _validate_fact_snapshot(
                     code="snapshot_classification_evidence_block_ids",
                     allowed_values=set(source_block_ids),
                 )
-                if schema_version == FACT_SNAPSHOT_SCHEMA_VERSION:
+                if schema_version != "resume_fact_snapshot.v2":
                     detail_items = entry["detail_items"]
                     if not isinstance(detail_items, list):
                         raise _contract_error("snapshot_experience_detail_items")
@@ -542,7 +616,10 @@ def resume_facts_tool_schema() -> dict[str, Any]:
             "school_name_raw": {"type": "string", "minLength": 1, "maxLength": 255},
             "degree": {
                 "type": "string",
-                "enum": ["unknown", "associate", "bachelor", "master", "doctor"],
+                "enum": [
+                    "unknown", "vocational_or_below", "high_school",
+                    "associate", "bachelor", "master", "doctor",
+                ],
             },
             "ai_985_211_judgment": {"type": "boolean"},
             "ai_institution_roster_id": {
@@ -561,6 +638,23 @@ def resume_facts_tool_schema() -> dict[str, Any]:
                     {"type": "null"},
                 ]
             },
+            "institution_tiers": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": [
+                        "211", "985", "double_first_class", "key_undergraduate",
+                        "first_tier", "second_tier", "regular_undergraduate",
+                        "private_undergraduate", "higher_vocational", "overseas",
+                    ],
+                },
+                "maxItems": 10,
+            },
+            "average_score": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+            "gpa_value": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+            "gpa_scale": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+            "rank_position": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+            "rank_total": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
             "evidence_block_ids": {"type": "array", "items": evidence, "minItems": 1, "maxItems": 8},
         },
         "required": [
@@ -571,6 +665,12 @@ def resume_facts_tool_schema() -> dict[str, Any]:
             "major_raw",
             "start_month",
             "end_month",
+            "institution_tiers",
+            "average_score",
+            "gpa_value",
+            "gpa_scale",
+            "rank_position",
+            "rank_total",
             "evidence_block_ids",
         ],
         "additionalProperties": False,
@@ -598,7 +698,13 @@ def resume_facts_tool_schema() -> dict[str, Any]:
                     "employment",
                     "internship",
                     "project",
+                    "research",
                     "competition",
+                    "campus",
+                    "club",
+                    "volunteer",
+                    "entrepreneurship",
+                    "training",
                     "other",
                     "unknown",
                 ],
@@ -630,6 +736,20 @@ def resume_facts_tool_schema() -> dict[str, Any]:
                 "maxItems": 8,
             },
             "detail_items": {"type": "array", "items": experience_detail, "maxItems": 12},
+            "leadership_context": {
+                "anyOf": [
+                    {"type": "string", "enum": ["class", "student_org", "club", "project_team", "company"]},
+                    {"type": "null"},
+                ]
+            },
+            "leadership_role": {"anyOf": [{"type": "string", "maxLength": 64}, {"type": "null"}]},
+            "award_level": {
+                "anyOf": [
+                    {"type": "string", "enum": ["national", "provincial", "school", "department", "other"]},
+                    {"type": "null"},
+                ]
+            },
+            "award_result_raw": {"anyOf": [{"type": "string", "maxLength": 255}, {"type": "null"}]},
         },
         "required": [
             "experience_type",
@@ -642,6 +762,10 @@ def resume_facts_tool_schema() -> dict[str, Any]:
             "evidence_block_ids",
             "classification_evidence_block_ids",
             "detail_items",
+            "leadership_context",
+            "leadership_role",
+            "award_level",
+            "award_result_raw",
         ],
         "additionalProperties": False,
     }
@@ -649,15 +773,56 @@ def resume_facts_tool_schema() -> dict[str, Any]:
         "type": "object",
         "properties": {
             "skill_display": {"type": "string", "minLength": 1, "maxLength": 120},
+            "skill_category": {
+                "anyOf": [
+                    {"type": "string", "enum": [
+                        "software", "data_ai", "product_project", "design_content",
+                        "marketing_ecommerce_operations", "sales_customer_service",
+                        "supply_chain_logistics", "finance_legal_hr",
+                        "office_collaboration", "industry_professional",
+                    ]},
+                    {"type": "null"},
+                ]
+            },
             "evidence_block_ids": {"type": "array", "items": evidence, "minItems": 1, "maxItems": 4},
         },
-        "required": ["skill_display", "evidence_block_ids"],
+        "required": ["skill_display", "skill_category", "evidence_block_ids"],
+        "additionalProperties": False,
+    }
+    language_credential = {
+        "type": "object",
+        "properties": {
+            "credential_code": {
+                "type": "string",
+                "enum": ["cet4", "cet6", "ielts", "toefl", "tem4", "tem8", "bec", "toeic", "custom"],
+            },
+            "credential_name_raw": {"type": "string", "minLength": 1, "maxLength": 120},
+            "score": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+            "passed": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+            "evidence_block_ids": {"type": "array", "items": evidence, "minItems": 1, "maxItems": 4},
+        },
+        "required": ["credential_code", "credential_name_raw", "score", "passed", "evidence_block_ids"],
+        "additionalProperties": False,
+    }
+    scholarship = {
+        "type": "object",
+        "properties": {
+            "scholarship_name_raw": {"type": "string", "minLength": 1, "maxLength": 255},
+            "scholarship_level": {
+                "anyOf": [
+                    {"type": "string", "enum": ["national", "provincial", "school", "department", "enterprise", "other"]},
+                    {"type": "null"},
+                ]
+            },
+            "evidence_block_ids": {"type": "array", "items": evidence, "minItems": 1, "maxItems": 4},
+        },
+        "required": ["scholarship_name_raw", "scholarship_level", "evidence_block_ids"],
         "additionalProperties": False,
     }
     return {
         "type": "object",
         "properties": {
-            "schema_version": {"type": "string", "enum": ["resume_facts.v1"]},
+            "schema_version": {"type": "string", "enum": ["resume_facts.v2"]},
             "candidate_name_raw": {
                 "anyOf": [
                     {"type": "string", "minLength": 1, "maxLength": 80},
@@ -672,6 +837,8 @@ def resume_facts_tool_schema() -> dict[str, Any]:
             "education": {"type": "array", "items": education, "maxItems": 8},
             "experiences": {"type": "array", "items": experience, "maxItems": 20},
             "skills": {"type": "array", "items": skill, "maxItems": 50},
+            "language_credentials": {"type": "array", "items": language_credential, "maxItems": 12},
+            "scholarships": {"type": "array", "items": scholarship, "maxItems": 20},
         },
         "required": [
             "schema_version",
@@ -680,6 +847,8 @@ def resume_facts_tool_schema() -> dict[str, Any]:
             "education",
             "experiences",
             "skills",
+            "language_credentials",
+            "scholarships",
         ],
         "additionalProperties": False,
     }
@@ -714,7 +883,10 @@ def resume_core_facts_tool_schema() -> dict[str, Any]:
             "school_name_raw": {"type": "string", "minLength": 1, "maxLength": 255},
             "degree": {
                 "type": "string",
-                "enum": ["unknown", "associate", "bachelor", "master", "doctor"],
+                "enum": [
+                    "unknown", "vocational_or_below", "high_school",
+                    "associate", "bachelor", "master", "doctor",
+                ],
             },
             "major_raw": nullable_text,
             "start_month": nullable_month,
@@ -735,7 +907,9 @@ def resume_core_facts_tool_schema() -> dict[str, Any]:
             "experience_type": {
                 "type": "string",
                 "enum": [
-                    "employment", "internship", "project", "competition", "other", "unknown",
+                    "employment", "internship", "project", "research", "competition",
+                    "campus", "club", "volunteer", "entrepreneurship", "training",
+                    "other", "unknown",
                 ],
             },
             "experience_name_raw": nullable_text,
@@ -1270,7 +1444,8 @@ def extract_resume_facts(
             {
                 "role": "user",
                 "content": (
-                    "Extract the candidate name, education, experience and skills from the "
+                    "Extract the candidate name, education, experience, skills, English "
+                    "credentials and scholarships from the "
                     "evidence blocks. candidate_name_raw must be the exact name text only "
                     "(without a `姓名`/`Name` label), and candidate_name_evidence_block_ids "
                     "must be empty exactly when candidate_name_raw is null. "
@@ -1281,6 +1456,15 @@ def extract_resume_facts(
                     "rulebook and return its boolean judgment plus a roster ID only for "
                     "a positive match. "
                     "Copy raw fields character-for-character; do not translate or normalize. "
+                    "For English credentials, map 四级/英语四级/大学英语四级/CET4/CET-4 "
+                    "to cet4, 六级 equivalents to cet6, 专四 only to tem4, and 专八 only "
+                    "to tem8. Preserve the exact written name and score. Never turn a "
+                    "generic statement such as 英语熟练 into a certificate. Extract GPA, "
+                    "rank, scholarship, award, leadership role, and institution tier only "
+                    "when explicitly written in the cited evidence. The local server will "
+                    "add official 211/985 registry tags; do not guess other school tiers. "
+                    "Set leadership_context only together with an explicit leadership_role; "
+                    "set award_level only together with an explicit award_result_raw. "
                     "A project, competition, course design, research, paper, club, or award "
                     "must never be classified as employment or internship merely because it "
                     "contains a role title. Employment/internship require explicit work or "
@@ -1388,7 +1572,13 @@ def _flatten_evidence_block_ids(payload: dict[str, Any]) -> None:
                 raise ValueError("invalid_evidence_item")
         owner[field_name] = flattened
 
-    for category in ("education", "experiences", "skills"):
+    for category in (
+        "education",
+        "experiences",
+        "skills",
+        "language_credentials",
+        "scholarships",
+    ):
         entries = payload.get(category, [])
         if not isinstance(entries, list):
             raise ValueError("invalid_category_shape")
@@ -1441,8 +1631,14 @@ def _validate_resume_facts_payload(payload: object) -> ResumeFactsSubmission:
     if not isinstance(payload, dict):
         raise ValueError("invalid_resume_facts_payload")
     if all(
-        isinstance(payload.get(category), list) and not payload[category]
-        for category in ("education", "experiences", "skills")
+        not payload.get(category, [])
+        for category in (
+            "education",
+            "experiences",
+            "skills",
+            "language_credentials",
+            "scholarships",
+        )
     ):
         # A name alone is not enough to build a screening profile.  Keep this
         # distinct from malformed JSON so a queue retry remains actionable.

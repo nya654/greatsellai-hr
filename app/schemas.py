@@ -10,15 +10,57 @@ from app.services.normalization import normalized_contains, normalized_key
 
 
 Month = str
-DegreeLevel = Literal["unknown", "associate", "bachelor", "master", "doctor"]
+DegreeLevel = Literal[
+    "unknown",
+    "vocational_or_below",
+    "high_school",
+    "associate",
+    "bachelor",
+    "master",
+    "doctor",
+]
 ExperienceType = Literal[
     "employment",
     "internship",
     "project",
+    "research",
     "competition",
+    "campus",
+    "club",
+    "volunteer",
+    "entrepreneurship",
+    "training",
     "other",
     "unknown",
 ]
+InstitutionTier = Literal[
+    "211",
+    "985",
+    "double_first_class",
+    "key_undergraduate",
+    "first_tier",
+    "second_tier",
+    "regular_undergraduate",
+    "private_undergraduate",
+    "higher_vocational",
+    "overseas",
+]
+SkillCategory = Literal[
+    "software",
+    "data_ai",
+    "product_project",
+    "design_content",
+    "marketing_ecommerce_operations",
+    "sales_customer_service",
+    "supply_chain_logistics",
+    "finance_legal_hr",
+    "office_collaboration",
+    "industry_professional",
+]
+LanguageCredentialCode = Literal[
+    "cet4", "cet6", "ielts", "toefl", "tem4", "tem8", "bec", "toeic", "custom"
+]
+PresenceStatus = Literal["any", "present", "unknown"]
 
 MONTH_PATTERN = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 CANDIDATE_NAME_LABEL_PATTERN = re.compile(
@@ -219,6 +261,14 @@ class ResumeEducationResponse(ApiModel):
     major_raw: str | None
     start_month: Month | None
     end_month: Month | None
+    institution_tiers: list[InstitutionTier]
+    average_score: float | None
+    gpa_value: float | None
+    gpa_scale: float | None
+    gpa_percent: float | None
+    rank_position: int | None
+    rank_total: int | None
+    rank_percent: float | None
     evidence_block_ids: list[str]
 
 
@@ -238,10 +288,29 @@ class ResumeExperienceResponse(ApiModel):
     evidence_block_ids: list[str]
     classification_evidence_block_ids: list[str]
     detail_items: list[ResumeExperienceDetailResponse]
+    leadership_context: str | None
+    leadership_role: str | None
+    award_level: str | None
+    award_result_raw: str | None
 
 
 class ResumeSkillResponse(ApiModel):
     skill_display: str
+    skill_category: SkillCategory | None
+    evidence_block_ids: list[str]
+
+
+class ResumeLanguageCredentialResponse(ApiModel):
+    credential_code: LanguageCredentialCode
+    credential_name_raw: str
+    score: float | None
+    passed: bool | None
+    evidence_block_ids: list[str]
+
+
+class ResumeScholarshipResponse(ApiModel):
+    scholarship_name_raw: str
+    scholarship_level: str | None
     evidence_block_ids: list[str]
 
 
@@ -259,6 +328,8 @@ class ResumeReviewDetail(ResumeDetail):
     education: list[ResumeEducationResponse]
     experiences: list[ResumeExperienceResponse]
     skills: list[ResumeSkillResponse]
+    language_credentials: list[ResumeLanguageCredentialResponse]
+    scholarships: list[ResumeScholarshipResponse]
     review_actions: list[ResumeReviewActionResponse]
 
 
@@ -272,6 +343,12 @@ class EducationFact(ApiModel):
     major_raw: str | None = Field(default=None, max_length=255)
     start_month: Month | None = None
     end_month: Month | None = None
+    institution_tiers: list[InstitutionTier] = Field(default_factory=list, max_length=10)
+    average_score: float | None = Field(default=None, ge=0, le=100)
+    gpa_value: float | None = Field(default=None, ge=0, le=100)
+    gpa_scale: float | None = Field(default=None, gt=0, le=100)
+    rank_position: int | None = Field(default=None, ge=1, le=1_000_000)
+    rank_total: int | None = Field(default=None, ge=1, le=1_000_000)
     evidence_block_ids: list[str] = Field(min_length=1, max_length=8)
 
     @field_validator("start_month", "end_month")
@@ -290,6 +367,18 @@ class EducationFact(ApiModel):
     def valid_date_range(self) -> "EducationFact":
         if self.start_month and self.end_month and self.end_month < self.start_month:
             raise ValueError("end_month must not be earlier than start_month")
+        if self.gpa_value is not None and self.gpa_scale is None:
+            raise ValueError("gpa_scale is required when gpa_value is provided")
+        if self.gpa_value is None and self.gpa_scale is not None:
+            raise ValueError("gpa_value is required when gpa_scale is provided")
+        if self.gpa_value is not None and self.gpa_scale is not None and self.gpa_value > self.gpa_scale:
+            raise ValueError("gpa_value must not exceed gpa_scale")
+        if self.rank_position is not None and self.rank_total is None:
+            raise ValueError("rank_total is required when rank_position is provided")
+        if self.rank_position is None and self.rank_total is not None:
+            raise ValueError("rank_position is required when rank_total is provided")
+        if self.rank_position is not None and self.rank_total is not None and self.rank_position > self.rank_total:
+            raise ValueError("rank_position must not exceed rank_total")
         return self
 
 
@@ -324,6 +413,10 @@ class ExperienceFact(ApiModel):
     evidence_block_ids: list[str] = Field(min_length=1, max_length=8)
     classification_evidence_block_ids: list[str] = Field(default_factory=list, max_length=8)
     detail_items: list[ExperienceDetailItem] = Field(default_factory=list, max_length=12)
+    leadership_context: Literal["class", "student_org", "club", "project_team", "company"] | None = None
+    leadership_role: str | None = Field(default=None, max_length=64)
+    award_level: Literal["national", "provincial", "school", "department", "other"] | None = None
+    award_result_raw: str | None = Field(default=None, max_length=255)
 
     @field_validator("start_month", "end_month")
     @classmethod
@@ -352,11 +445,42 @@ class ExperienceFact(ApiModel):
             raise ValueError("end_month must not be earlier than start_month")
         if self.is_current and self.end_month:
             raise ValueError("current experience must not have end_month")
+        if bool(self.leadership_context) != bool(self.leadership_role):
+            raise ValueError("leadership context and source-grounded role must be provided together")
+        if self.award_level is not None and not self.award_result_raw:
+            raise ValueError("award level requires a source-grounded award result")
         return self
 
 
 class SkillFact(ApiModel):
     skill_display: str = Field(min_length=1, max_length=120)
+    skill_category: SkillCategory | None = None
+    evidence_block_ids: list[str] = Field(min_length=1, max_length=4)
+
+    @field_validator("evidence_block_ids")
+    @classmethod
+    def valid_evidence_block_ids(cls, value: list[str]) -> list[str]:
+        return clean_string_list(value)
+
+
+class LanguageCredentialFact(ApiModel):
+    credential_code: LanguageCredentialCode
+    credential_name_raw: str = Field(min_length=1, max_length=120)
+    score: float | None = Field(default=None, ge=0, le=1000)
+    passed: bool | None = None
+    evidence_block_ids: list[str] = Field(min_length=1, max_length=4)
+
+    @field_validator("evidence_block_ids")
+    @classmethod
+    def valid_evidence_block_ids(cls, value: list[str]) -> list[str]:
+        return clean_string_list(value)
+
+
+class ScholarshipFact(ApiModel):
+    scholarship_name_raw: str = Field(min_length=1, max_length=255)
+    scholarship_level: Literal[
+        "national", "provincial", "school", "department", "enterprise", "other"
+    ] | None = None
     evidence_block_ids: list[str] = Field(min_length=1, max_length=4)
 
     @field_validator("evidence_block_ids")
@@ -366,7 +490,7 @@ class SkillFact(ApiModel):
 
 
 class ResumeFactsSubmission(ApiModel):
-    schema_version: Literal["resume_facts.v1"] = "resume_facts.v1"
+    schema_version: Literal["resume_facts.v1", "resume_facts.v2"] = "resume_facts.v2"
     # Identity is used only to name the candidate record after AI extraction.
     # It is intentionally excluded from the immutable fact snapshot consumed
     # by summaries, scoring, and JD matching.
@@ -378,6 +502,8 @@ class ResumeFactsSubmission(ApiModel):
     education: list[EducationFact] = Field(default_factory=list, max_length=8)
     experiences: list[ExperienceFact] = Field(default_factory=list, max_length=20)
     skills: list[SkillFact] = Field(default_factory=list, max_length=50)
+    language_credentials: list[LanguageCredentialFact] = Field(default_factory=list, max_length=12)
+    scholarships: list[ScholarshipFact] = Field(default_factory=list, max_length=20)
 
     @field_validator("candidate_name_raw")
     @classmethod
@@ -404,7 +530,13 @@ class ResumeFactsSubmission(ApiModel):
             raise ValueError("candidate_name_requires_evidence_block_id")
         if not self.candidate_name_raw and self.candidate_name_evidence_block_ids:
             raise ValueError("candidate_name_evidence_requires_candidate_name")
-        if not (self.education or self.experiences or self.skills):
+        if not (
+            self.education
+            or self.experiences
+            or self.skills
+            or self.language_credentials
+            or self.scholarships
+        ):
             raise ValueError("at least one structured fact is required")
         return self
 
@@ -432,6 +564,11 @@ class EducationFilter(ApiModel):
     degree_in: list[DegreeLevel] = Field(default_factory=list, max_length=5)
     school_name_contains: list[str] = Field(default_factory=list, max_length=8)
     major_contains: list[str] = Field(default_factory=list, max_length=8)
+    institution_tiers_any_of: list[InstitutionTier] = Field(default_factory=list, max_length=10)
+    min_average_score: float | None = Field(default=None, ge=0, le=100)
+    min_gpa_percent: float | None = Field(default=None, ge=0, le=100)
+    max_rank_position: int | None = Field(default=None, ge=1, le=1_000_000)
+    max_rank_percent: float | None = Field(default=None, gt=0, le=100)
 
     @field_validator("school_name_contains", "major_contains")
     @classmethod
@@ -442,25 +579,83 @@ class EducationFilter(ApiModel):
 class ExperienceFilter(ApiModel):
     experience_types: list[ExperienceType] = Field(
         default_factory=lambda: ["employment", "internship"],
-        max_length=5,
+        max_length=12,
     )
+    experience_name_contains: list[str] = Field(default_factory=list, max_length=8)
     organization_name_contains: list[str] = Field(default_factory=list, max_length=8)
     title_contains: list[str] = Field(default_factory=list, max_length=8)
+    leadership_contexts_any_of: list[
+        Literal["class", "student_org", "club", "project_team", "company"]
+    ] = Field(default_factory=list, max_length=5)
+    leadership_roles_any_of: list[str] = Field(default_factory=list, max_length=12)
+    award_levels_any_of: list[
+        Literal["national", "provincial", "school", "department", "other"]
+    ] = Field(default_factory=list, max_length=5)
+    award_result_contains: list[str] = Field(default_factory=list, max_length=8)
 
-    @field_validator("organization_name_contains", "title_contains")
+    @field_validator(
+        "experience_name_contains",
+        "organization_name_contains",
+        "title_contains",
+        "leadership_roles_any_of",
+        "award_result_contains",
+    )
     @classmethod
     def valid_text_filters(cls, value: list[str]) -> list[str]:
         return clean_string_list(value)
 
 
+class LanguageCredentialFilter(ApiModel):
+    credential_code: LanguageCredentialCode
+    custom_name_contains: str | None = Field(default=None, max_length=120)
+    min_score: float | None = Field(default=None, ge=0, le=1000)
+
+    @model_validator(mode="after")
+    def custom_name_is_scoped(self) -> "LanguageCredentialFilter":
+        if self.credential_code == "custom" and not self.custom_name_contains:
+            raise ValueError("custom language credential requires a name")
+        if self.credential_code != "custom" and self.custom_name_contains:
+            raise ValueError("custom language credential name is only valid for custom")
+        return self
+
+
+class LeadershipFilter(ApiModel):
+    contexts_any_of: list[
+        Literal["class", "student_org", "club", "project_team", "company"]
+    ] = Field(default_factory=list, max_length=5)
+    roles_any_of: list[str] = Field(default_factory=list, max_length=12)
+
+    @field_validator("roles_any_of")
+    @classmethod
+    def valid_roles(cls, value: list[str]) -> list[str]:
+        return clean_string_list(value)
+
+
 class CandidateSearchRequest(ApiModel):
+    schema_version: Literal["candidate_filter.v2"] = "candidate_filter.v2"
     is_985_211: bool | None = None
+    highest_degree_in: list[DegreeLevel] = Field(default_factory=list, max_length=6)
+    graduation_status: Literal["any", "fresh", "previous"] = "any"
+    fresh_graduate_start_month: Month | None = None
+    fresh_graduate_end_month: Month | None = None
     min_employment_months: int | None = Field(default=None, ge=0, le=720)
     min_employment_or_internship_months: int | None = Field(default=None, ge=0, le=720)
     education_any_of: list[EducationFilter] = Field(default_factory=list, max_length=10)
     experience_any_of: list[ExperienceFilter] = Field(default_factory=list, max_length=10)
+    skill_categories_any_of: list[SkillCategory] = Field(default_factory=list, max_length=10)
     skills_all_of: list[str] = Field(default_factory=list, max_length=20)
     skills_any_of: list[str] = Field(default_factory=list, max_length=20)
+    language_credentials_any_of: list[LanguageCredentialFilter] = Field(default_factory=list, max_length=12)
+    scholarship_status: PresenceStatus = "any"
+    scholarship_levels_any_of: list[
+        Literal["national", "provincial", "school", "department", "enterprise", "other"]
+    ] = Field(default_factory=list, max_length=6)
+    scholarship_name_contains: list[str] = Field(default_factory=list, max_length=8)
+    competition_status: PresenceStatus = "any"
+    competition_award_status: PresenceStatus = "any"
+    leadership_any_of: list[LeadershipFilter] = Field(default_factory=list, max_length=5)
+    keywords: list[str] = Field(default_factory=list, max_length=10)
+    keyword_match_mode: Literal["broad", "precise"] = "broad"
     keywords_all_of: list[str] = Field(default_factory=list, max_length=10)
     keywords_any_of: list[str] = Field(default_factory=list, max_length=10)
     limit: int = Field(default=20, ge=1, le=100)
@@ -471,10 +666,32 @@ class CandidateSearchRequest(ApiModel):
         "skills_any_of",
         "keywords_all_of",
         "keywords_any_of",
+        "keywords",
+        "scholarship_name_contains",
     )
     @classmethod
     def valid_skill_filters(cls, value: list[str]) -> list[str]:
         return clean_string_list(value)
+
+    @field_validator("fresh_graduate_start_month", "fresh_graduate_end_month")
+    @classmethod
+    def valid_filter_month(cls, value: Month | None) -> Month | None:
+        if value is not None and not MONTH_PATTERN.fullmatch(value):
+            raise ValueError("month must use YYYY-MM")
+        return value
+
+    @model_validator(mode="after")
+    def valid_v2_semantics(self) -> "CandidateSearchRequest":
+        if self.graduation_status != "any":
+            if not self.fresh_graduate_start_month or not self.fresh_graduate_end_month:
+                raise ValueError("fresh graduate window is required")
+            if self.fresh_graduate_end_month < self.fresh_graduate_start_month:
+                raise ValueError("fresh graduate window end must not be earlier than start")
+        if self.scholarship_status == "unknown" and (
+            self.scholarship_levels_any_of or self.scholarship_name_contains
+        ):
+            raise ValueError("unknown scholarship status cannot include detail filters")
+        return self
 
 
 class CandidateSearchItem(ApiModel):
@@ -496,7 +713,9 @@ class CandidateSearchItem(ApiModel):
 class CandidateSearchMatch(ApiModel):
     filter_key: str
     label: str
-    fact_type: Literal["aggregate", "education", "experience", "skill", "keyword"]
+    fact_type: Literal[
+        "aggregate", "education", "experience", "skill", "language", "scholarship", "keyword"
+    ]
     evidence_block_ids: list[str]
 
 

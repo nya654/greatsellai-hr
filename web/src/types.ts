@@ -5,6 +5,8 @@
 
 export type DegreeLevel =
   | "unknown"
+  | "vocational_or_below"
+  | "high_school"
   | "associate"
   | "bachelor"
   | "master"
@@ -14,7 +16,13 @@ export type ExperienceType =
   | "employment"
   | "internship"
   | "project"
+  | "research"
   | "competition"
+  | "campus"
+  | "club"
+  | "volunteer"
+  | "entrepreneurship"
+  | "training"
   | "other"
   | "unknown";
 
@@ -204,6 +212,14 @@ export interface ResumeEducation {
   major_raw: string | null;
   start_month: string | null;
   end_month: string | null;
+  institution_tiers: InstitutionTier[];
+  average_score: number | null;
+  gpa_value: number | null;
+  gpa_scale: number | null;
+  gpa_percent: number | null;
+  rank_position: number | null;
+  rank_total: number | null;
+  rank_percent: number | null;
   evidence_block_ids: string[];
 }
 
@@ -218,6 +234,10 @@ export interface ResumeExperience {
   evidence_block_ids: string[];
   classification_evidence_block_ids: string[];
   detail_items: ResumeExperienceDetailItem[];
+  leadership_context: string | null;
+  leadership_role: string | null;
+  award_level: string | null;
+  award_result_raw: string | null;
 }
 
 export interface ResumeExperienceDetailItem {
@@ -227,6 +247,21 @@ export interface ResumeExperienceDetailItem {
 
 export interface ResumeSkill {
   skill_display: string;
+  skill_category: string | null;
+  evidence_block_ids: string[];
+}
+
+export interface ResumeLanguageCredential {
+  credential_code: LanguageCredentialCode;
+  credential_name_raw: string;
+  score: number | null;
+  passed: boolean | null;
+  evidence_block_ids: string[];
+}
+
+export interface ResumeScholarship {
+  scholarship_name_raw: string;
+  scholarship_level: string | null;
   evidence_block_ids: string[];
 }
 
@@ -244,6 +279,8 @@ export interface ResumeReviewDetail extends ResumeDetail {
   education: ResumeEducation[];
   experiences: ResumeExperience[];
   skills: ResumeSkill[];
+  language_credentials: ResumeLanguageCredential[];
+  scholarships: ResumeScholarship[];
   review_actions: ResumeReviewAction[];
 }
 
@@ -297,22 +334,92 @@ export interface EducationFilter {
   degree_in?: DegreeLevel[];
   school_name_contains?: string[];
   major_contains?: string[];
+  institution_tiers_any_of?: InstitutionTier[];
+  min_average_score?: number | null;
+  min_gpa_percent?: number | null;
+  max_rank_position?: number | null;
+  max_rank_percent?: number | null;
 }
 
 export interface ExperienceFilter {
   experience_types?: ExperienceType[];
+  experience_name_contains?: string[];
   organization_name_contains?: string[];
   title_contains?: string[];
+  leadership_contexts_any_of?: LeadershipContext[];
+  leadership_roles_any_of?: string[];
+  award_levels_any_of?: AwardLevel[];
+  award_result_contains?: string[];
+}
+
+export type InstitutionTier =
+  | "211" | "985" | "double_first_class" | "key_undergraduate"
+  | "first_tier" | "second_tier" | "regular_undergraduate"
+  | "private_undergraduate" | "higher_vocational" | "overseas";
+
+export type LanguageCredentialCode =
+  | "cet4" | "cet6" | "ielts" | "toefl"
+  | "tem4" | "tem8" | "bec" | "toeic" | "custom";
+
+export type PresenceStatus = "any" | "present" | "unknown";
+export type LeadershipContext = "class" | "student_org" | "club" | "project_team" | "company";
+export type AwardLevel = "national" | "provincial" | "school" | "department" | "other";
+export type ScholarshipLevel = AwardLevel | "enterprise";
+
+export interface LanguageCredentialFilter {
+  credential_code: LanguageCredentialCode;
+  custom_name_contains?: string | null;
+  min_score?: number | null;
+}
+
+export interface LeadershipFilter {
+  contexts_any_of?: LeadershipContext[];
+  roles_any_of?: string[];
+}
+
+export interface FilterOption<T extends string = string> {
+  value: T;
+  label: string;
+}
+
+export interface FilterOptions {
+  schema_version: string;
+  degrees: Array<FilterOption<DegreeLevel>>;
+  institution_tiers: Array<FilterOption<InstitutionTier>>;
+  experience_types: Array<FilterOption<ExperienceType>>;
+  skill_categories: Array<FilterOption<string>>;
+  leadership_contexts: Array<FilterOption<LeadershipContext>>;
+  award_levels: Array<FilterOption<AwardLevel>>;
+  scholarship_levels: Array<FilterOption<ScholarshipLevel>>;
+  language_credentials: Array<FilterOption<LanguageCredentialCode>>;
+  graduation_statuses: Array<FilterOption<"any" | "fresh" | "previous">>;
+  presence_statuses: Array<FilterOption<PresenceStatus>>;
+  keyword_modes: Array<FilterOption<"broad" | "precise">>;
 }
 
 export interface CandidateSearchRequest {
+  schema_version?: "candidate_filter.v2";
   is_985_211?: boolean | null;
+  highest_degree_in?: DegreeLevel[];
+  graduation_status?: "any" | "fresh" | "previous";
+  fresh_graduate_start_month?: string | null;
+  fresh_graduate_end_month?: string | null;
   min_employment_months?: number | null;
   min_employment_or_internship_months?: number | null;
   education_any_of?: EducationFilter[];
   experience_any_of?: ExperienceFilter[];
+  skill_categories_any_of?: string[];
   skills_all_of?: string[];
   skills_any_of?: string[];
+  language_credentials_any_of?: LanguageCredentialFilter[];
+  scholarship_status?: PresenceStatus;
+  scholarship_levels_any_of?: ScholarshipLevel[];
+  scholarship_name_contains?: string[];
+  competition_status?: PresenceStatus;
+  competition_award_status?: PresenceStatus;
+  leadership_any_of?: LeadershipFilter[];
+  keywords?: string[];
+  keyword_match_mode?: "broad" | "precise";
   keywords_all_of?: string[];
   keywords_any_of?: string[];
   limit?: number;
@@ -322,7 +429,9 @@ export interface CandidateSearchRequest {
 export interface CandidateSearchMatch {
   filter_key: string;
   label: string;
-  fact_type: "aggregate" | "education" | "experience" | "skill" | "keyword";
+  fact_type:
+    | "aggregate" | "education" | "experience" | "skill"
+    | "language" | "scholarship" | "keyword";
   evidence_block_ids: string[];
 }
 

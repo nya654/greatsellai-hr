@@ -218,6 +218,9 @@ def test_agent_search_supports_full_recruiter_filter_contract(
                                             "degree_in": ["master"],
                                             "school_name_contains": ["清华大学"],
                                             "major_contains": ["计算机"],
+                                            "institution_tiers_any_of": ["211"],
+                                            "min_average_score": 85,
+                                            "max_rank_position": 10,
                                         }
                                     ],
                                     "experience_any_of": [
@@ -228,10 +231,29 @@ def test_agent_search_supports_full_recruiter_filter_contract(
                                             ],
                                             "organization_name_contains": ["Acme"],
                                             "title_contains": ["Engineer"],
+                                            "leadership_contexts_any_of": ["company"],
+                                            "leadership_roles_any_of": ["主管"],
+                                            "award_levels_any_of": ["national"],
+                                            "award_result_contains": ["一等奖"],
                                         }
                                     ],
+                                    "skill_categories_any_of": ["software"],
                                     "skills_all_of": ["Python", "SQL"],
                                     "skills_any_of": ["Kubernetes", "Ray"],
+                                    "language_credentials_any_of": [
+                                        {"credential_code": "cet4", "min_score": 500},
+                                        {"credential_code": "ielts", "min_score": 6.5},
+                                    ],
+                                    "scholarship_status": "present",
+                                    "scholarship_levels_any_of": ["national"],
+                                    "scholarship_name_contains": ["国家奖学金"],
+                                    "competition_status": "present",
+                                    "competition_award_status": "present",
+                                    "leadership_any_of": [
+                                        {"contexts_any_of": ["company"], "roles_any_of": ["经理"]}
+                                    ],
+                                    "keywords": ["CET-4"],
+                                    "keyword_match_mode": "broad",
                                     "keywords_all_of": ["FastAPI"],
                                     "keywords_any_of": ["LLM", "Agent"],
                                 }
@@ -269,11 +291,27 @@ def test_agent_search_supports_full_recruiter_filter_contract(
     assert request.education_any_of[0].degree_in == ["master"]
     assert request.education_any_of[0].school_name_contains == ["清华大学"]
     assert request.education_any_of[0].major_contains == ["计算机"]
+    assert request.education_any_of[0].institution_tiers_any_of == ["211"]
+    assert request.education_any_of[0].min_average_score == 85
+    assert request.education_any_of[0].max_rank_position == 10
     assert request.experience_any_of[0].experience_types == ["employment", "internship"]
     assert request.experience_any_of[0].organization_name_contains == ["Acme"]
     assert request.experience_any_of[0].title_contains == ["Engineer"]
+    assert request.experience_any_of[0].leadership_contexts_any_of == ["company"]
+    assert request.experience_any_of[0].leadership_roles_any_of == ["主管"]
+    assert request.experience_any_of[0].award_levels_any_of == ["national"]
+    assert request.experience_any_of[0].award_result_contains == ["一等奖"]
+    assert request.skill_categories_any_of == ["software"]
     assert request.skills_all_of == ["Python", "SQL"]
     assert request.skills_any_of == ["Kubernetes", "Ray"]
+    assert [item.credential_code for item in request.language_credentials_any_of] == [
+        "cet4", "ielts"
+    ]
+    assert request.scholarship_levels_any_of == ["national"]
+    assert request.scholarship_name_contains == ["国家奖学金"]
+    assert request.leadership_any_of[0].roles_any_of == ["经理"]
+    assert request.keywords == ["CET-4"]
+    assert request.keyword_match_mode == "broad"
     assert request.keywords_all_of == ["FastAPI"]
     assert request.keywords_any_of == ["LLM", "Agent"]
 
@@ -281,7 +319,14 @@ def test_agent_search_supports_full_recruiter_filter_contract(
         item["function"] for item in _TOOLS if item["function"]["name"] == "search_candidates"
     )
     properties = search_tool["parameters"]["properties"]
-    assert {"education_any_of", "experience_any_of", "skills_all_of", "skills_any_of", "keywords_all_of", "keywords_any_of"}.issubset(properties)
+    assert {
+        "education_any_of", "experience_any_of", "skill_categories_any_of",
+        "skills_all_of", "skills_any_of", "language_credentials_any_of",
+        "scholarship_status", "scholarship_levels_any_of",
+        "scholarship_name_contains", "competition_status",
+        "competition_award_status", "leadership_any_of", "keywords",
+        "keyword_match_mode", "keywords_all_of", "keywords_any_of",
+    }.issubset(properties)
 
 
 def test_agent_runs_current_candidate_score_with_existing_template(

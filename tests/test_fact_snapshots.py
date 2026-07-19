@@ -119,7 +119,8 @@ def test_saved_facts_create_append_only_canonical_snapshots(client) -> None:
     assert first_snapshot.created_by == "single_admin"
     assert first_snapshot.source_block_ids == ["page-001"]
     assert canonical_payload["source_block_ids"] == ["page-001"]
-    assert canonical_payload["schema_version"] == "resume_fact_snapshot.v3"
+    assert canonical_payload["schema_version"] == "resume_fact_snapshot.v4"
+    assert canonical_payload["facts_schema_version"] == "resume_facts.v2"
     assert canonical_payload["experiences"] == [
         {
             "classification_evidence_block_ids": [],
@@ -133,6 +134,10 @@ def test_saved_facts_create_append_only_canonical_snapshots(client) -> None:
                     "evidence_block_ids": ["page-001"],
                 },
             ],
+            "leadership_context": None,
+            "leadership_role": None,
+            "award_level": None,
+            "award_result_raw": None,
             "end_month": "2024-06",
             "evidence_block_ids": ["page-001"],
             "experience_name_key": "dataplatformproject",
@@ -153,8 +158,11 @@ def test_saved_facts_create_append_only_canonical_snapshots(client) -> None:
             "fact_id": "skill-001",
             "skill_display": "Python",
             "skill_key": "python",
+            "skill_category": None,
         }
     ]
+    assert canonical_payload["language_credentials"] == []
+    assert canonical_payload["scholarships"] == []
     assert first_json == json.dumps(
         canonical_payload,
         ensure_ascii=False,

@@ -27,6 +27,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import AppSettings
 from app.database import Database, get_session
+from app.filter_options import filter_options_payload
 from app.models import Candidate, Resume
 from app.schemas import (
     AuthLogin,
@@ -61,6 +62,8 @@ from app.schemas import (
     ResumeReviewQueueItem,
     ResumeReviewQueueResponse,
     ResumeLibraryResponse,
+    ResumeLanguageCredentialResponse,
+    ResumeScholarshipResponse,
     ResumeSkillResponse,
     ResumeUploadResponse,
     RecruitingAgentRequest,
@@ -84,6 +87,7 @@ from app.services.ai_extraction_job_service import (
     ai_extraction_state,
     enqueue_uploaded_resume_ai_extraction,
     request_resume_ai_extraction,
+    request_resume_filter_v2_enrichment,
 )
 from app.services.resume_service import (
     FactValidationError,
@@ -304,6 +308,14 @@ def _resume_review_detail(resume: object) -> ResumeReviewDetail:
                 major_raw=education.major_raw,
                 start_month=education.start_month,
                 end_month=education.end_month,
+                institution_tiers=education.institution_tiers or [],
+                average_score=education.average_score,
+                gpa_value=education.gpa_value,
+                gpa_scale=education.gpa_scale,
+                gpa_percent=education.gpa_percent,
+                rank_position=education.rank_position,
+                rank_total=education.rank_total,
+                rank_percent=education.rank_percent,
                 evidence_block_ids=education.evidence_block_ids or [],
             )
             for education in resume.educations
@@ -331,15 +343,38 @@ def _resume_review_detail(resume: object) -> ResumeReviewDetail:
                     and isinstance(item.get("detail_raw"), str)
                     and isinstance(item.get("evidence_block_ids"), list)
                 ],
+                leadership_context=experience.leadership_context,
+                leadership_role=experience.leadership_role,
+                award_level=experience.award_level,
+                award_result_raw=experience.award_result_raw,
             )
             for experience in resume.experiences
         ],
         skills=[
             ResumeSkillResponse(
                 skill_display=skill.skill_display,
+                skill_category=skill.skill_category,
                 evidence_block_ids=skill.evidence_block_ids or [],
             )
             for skill in resume.skills
+        ],
+        language_credentials=[
+            ResumeLanguageCredentialResponse(
+                credential_code=credential.credential_code,
+                credential_name_raw=credential.credential_name_raw,
+                score=credential.score,
+                passed=credential.passed,
+                evidence_block_ids=credential.evidence_block_ids or [],
+            )
+            for credential in resume.language_credentials
+        ],
+        scholarships=[
+            ResumeScholarshipResponse(
+                scholarship_name_raw=scholarship.scholarship_name_raw,
+                scholarship_level=scholarship.scholarship_level,
+                evidence_block_ids=scholarship.evidence_block_ids or [],
+            )
+            for scholarship in resume.scholarships
         ],
         review_actions=[
             ResumeReviewActionResponse(
@@ -1027,6 +1062,30 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         return _resume_detail(resume)
 
     @app.post(
+        "/v1/resumes/{resume_id}/enrich-filter-facts",
+        response_model=ResumeDetail,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def post_enrich_resume_filter_facts(
+        resume_id: str,
+        session: Session = Depends(get_session),
+    ) -> ResumeDetail:
+        try:
+            resume = request_resume_filter_v2_enrichment(
+                session,
+                resume_id=resume_id,
+                settings=settings,
+            )
+        except NotFoundError as exc:
+            session.rollback()
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except AiExtractionJobError as exc:
+            session.rollback()
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        _commit_or_raise(session)
+        return _resume_detail(resume)
+
+    @app.post(
         "/v1/candidates/search",
         response_model=CandidateSearchResponse,
         dependencies=[Depends(require_single_admin)],
@@ -1042,6 +1101,14 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(exc),
             ) from exc
+
+    @app.get(
+        "/v1/filter-options",
+        response_model=dict[str, object],
+        dependencies=[Depends(require_single_admin)],
+    )
+    def get_filter_options() -> dict[str, object]:
+        return filter_options_payload()
 
     @app.get(
         "/v1/resume-library",

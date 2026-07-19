@@ -3,6 +3,7 @@ import type {
   CandidateCreated,
   CandidateSearchRequest,
   CandidateSearchResponse,
+  FilterOptions,
   JobCreate,
   JobDescriptionGenerateInput,
   JobDescriptionGeneration,
@@ -324,6 +325,14 @@ export function createApiClient(options: ApiClientOptions = {}) {
 
     searchCandidates(input: CandidateSearchRequest = {}): Promise<CandidateSearchResponse> {
       return request<CandidateSearchResponse>("/candidates/search", { method: "POST", body: input });
+    },
+
+    getFilterOptions(): Promise<FilterOptions> {
+      return request<FilterOptions>("/filter-options");
+    },
+
+    enrichFilterFacts(resumeId: string): Promise<ResumeDetail> {
+      return request<ResumeDetail>(`/resumes/${resourcePath(resumeId)}/enrich-filter-facts`, { method: "POST" });
     },
 
     listResumeLibrary(page = 1, pageSize = 50): Promise<ResumeLibraryResponse> {

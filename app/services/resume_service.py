@@ -17,12 +17,18 @@ from app.models import (
     ResumeEducation,
     ResumeExperience,
     ResumeFactSnapshot,
+    ResumeLanguageCredential,
     ResumeReviewAction,
+    ResumeScholarship,
     ResumeSkill,
     ResumeSourceBlock,
     ResumeSummary,
     ResumeUploadIdempotencyKey,
     utcnow,
+)
+from app.filter_options import (
+    INSTITUTION_TIER_OPTIONS,
+    normalize_language_credential,
 )
 from app.schemas import ResumeFactsSaveRequest, ResumeFactsSubmission
 from app.services.deepseek_provider import (
@@ -703,6 +709,8 @@ def _fact_snapshot(resume: Resume) -> dict[str, object]:
         "education_count": len(resume.educations),
         "experience_count": len(resume.experiences),
         "skill_count": len(resume.skills),
+        "language_credential_count": len(resume.language_credentials),
+        "scholarship_count": len(resume.scholarships),
     }
 
 
@@ -736,6 +744,14 @@ def _canonical_fact_payload(
     skills = session.scalars(
         select(ResumeSkill).where(ResumeSkill.resume_id == resume.id)
     ).all()
+    language_credentials = session.scalars(
+        select(ResumeLanguageCredential).where(
+            ResumeLanguageCredential.resume_id == resume.id
+        )
+    ).all()
+    scholarships = session.scalars(
+        select(ResumeScholarship).where(ResumeScholarship.resume_id == resume.id)
+    ).all()
 
     source_block_ids: set[str] = set()
     education_entries: list[dict[str, object]] = []
@@ -752,6 +768,14 @@ def _canonical_fact_payload(
                 "major_key": education.major_key,
                 "start_month": education.start_month,
                 "end_month": education.end_month,
+                "institution_tiers": sorted(education.institution_tiers or []),
+                "average_score": education.average_score,
+                "gpa_value": education.gpa_value,
+                "gpa_scale": education.gpa_scale,
+                "gpa_percent": education.gpa_percent,
+                "rank_position": education.rank_position,
+                "rank_total": education.rank_total,
+                "rank_percent": education.rank_percent,
                 "evidence_block_ids": evidence_block_ids,
             }
         )
@@ -797,6 +821,10 @@ def _canonical_fact_payload(
                 "evidence_block_ids": evidence_block_ids,
                 "classification_evidence_block_ids": classification_evidence_block_ids,
                 "detail_items": detail_items,
+                "leadership_context": experience.leadership_context,
+                "leadership_role": experience.leadership_role,
+                "award_level": experience.award_level,
+                "award_result_raw": experience.award_result_raw,
             }
         )
 
@@ -808,6 +836,34 @@ def _canonical_fact_payload(
             {
                 "skill_key": skill.skill_key,
                 "skill_display": skill.skill_display,
+                "skill_category": skill.skill_category,
+                "evidence_block_ids": evidence_block_ids,
+            }
+        )
+
+    language_entries: list[dict[str, object]] = []
+    for credential in language_credentials:
+        evidence_block_ids = _sorted_block_ids(credential.evidence_block_ids)
+        source_block_ids.update(evidence_block_ids)
+        language_entries.append(
+            {
+                "credential_code": credential.credential_code,
+                "credential_name_raw": credential.credential_name_raw,
+                "score": credential.score,
+                "passed": credential.passed,
+                "evidence_block_ids": evidence_block_ids,
+            }
+        )
+
+    scholarship_entries: list[dict[str, object]] = []
+    for scholarship in scholarships:
+        evidence_block_ids = _sorted_block_ids(scholarship.evidence_block_ids)
+        source_block_ids.update(evidence_block_ids)
+        scholarship_entries.append(
+            {
+                "scholarship_name_raw": scholarship.scholarship_name_raw,
+                "scholarship_name_key": scholarship.scholarship_name_key,
+                "scholarship_level": scholarship.scholarship_level,
                 "evidence_block_ids": evidence_block_ids,
             }
         )
@@ -815,20 +871,28 @@ def _canonical_fact_payload(
     education_entries.sort(key=_canonical_json)
     experience_entries.sort(key=_canonical_json)
     skill_entries.sort(key=_canonical_json)
+    language_entries.sort(key=_canonical_json)
+    scholarship_entries.sort(key=_canonical_json)
     for index, entry in enumerate(education_entries, start=1):
         entry["fact_id"] = f"education-{index:03d}"
     for index, entry in enumerate(experience_entries, start=1):
         entry["fact_id"] = f"experience-{index:03d}"
     for index, entry in enumerate(skill_entries, start=1):
         entry["fact_id"] = f"skill-{index:03d}"
+    for index, entry in enumerate(language_entries, start=1):
+        entry["fact_id"] = f"language-{index:03d}"
+    for index, entry in enumerate(scholarship_entries, start=1):
+        entry["fact_id"] = f"scholarship-{index:03d}"
     sorted_source_block_ids = sorted(source_block_ids)
     return (
         {
-            "schema_version": "resume_fact_snapshot.v3",
-            "facts_schema_version": "resume_facts.v1",
+            "schema_version": "resume_fact_snapshot.v4",
+            "facts_schema_version": "resume_facts.v2",
             "education": education_entries,
             "experiences": experience_entries,
             "skills": skill_entries,
+            "language_credentials": language_entries,
+            "scholarships": scholarship_entries,
             "derived": {
                 "is_985_211": resume.is_985_211,
                 "highest_degree": resume.highest_degree,
@@ -896,6 +960,19 @@ def _assert_raw_value_grounded(
         raise FactValidationError(f"{label}_not_grounded_in_evidence")
 
 
+def _assert_numeric_value_grounded(
+    *,
+    value: float | int | None,
+    source_text: str,
+    label: str,
+) -> None:
+    if value is None:
+        return
+    rendered = f"{value:g}" if isinstance(value, float) else str(value)
+    if not normalized_contains(source_text, rendered):
+        raise FactValidationError(f"{label}_not_grounded_in_evidence")
+
+
 def prepare_ai_draft_facts(
     session: Session,
     *,
@@ -916,13 +993,19 @@ def prepare_ai_draft_facts(
         "education": [],
         "experiences": [],
         "skills": [],
+        "language_credentials": [],
+        "scholarships": [],
     }
     education_payload = payload["education"]
     experience_payload = payload["experiences"]
     skill_payload = payload["skills"]
+    language_payload = payload["language_credentials"]
+    scholarship_payload = payload["scholarships"]
     assert isinstance(education_payload, list)
     assert isinstance(experience_payload, list)
     assert isinstance(skill_payload, list)
+    assert isinstance(language_payload, list)
+    assert isinstance(scholarship_payload, list)
     partial = False
 
     if facts.candidate_name_raw:
@@ -965,6 +1048,18 @@ def prepare_ai_draft_facts(
                 source_text=evidence_text,
                 label="major_raw",
             )
+            for label, value in (
+                ("average_score", education.average_score),
+                ("gpa_value", education.gpa_value),
+                ("gpa_scale", education.gpa_scale),
+                ("rank_position", education.rank_position),
+                ("rank_total", education.rank_total),
+            ):
+                _assert_numeric_value_grounded(
+                    value=value,
+                    source_text=evidence_text,
+                    label=label,
+                )
         except FactValidationError:
             partial = True
             continue
@@ -991,6 +1086,16 @@ def prepare_ai_draft_facts(
                 value=experience.title_raw,
                 source_text=evidence_text,
                 label="title_raw",
+            )
+            _assert_raw_value_grounded(
+                value=experience.leadership_role,
+                source_text=evidence_text,
+                label="leadership_role",
+            )
+            _assert_raw_value_grounded(
+                value=experience.award_result_raw,
+                source_text=evidence_text,
+                label="award_result_raw",
             )
             _source_text_by_ids(
                 session,
@@ -1041,7 +1146,58 @@ def prepare_ai_draft_facts(
             continue
         skill_payload.append(skill.model_dump())
 
-    if not (education_payload or experience_payload or skill_payload):
+    for credential in facts.language_credentials:
+        try:
+            evidence_text = _source_text_by_ids(
+                session,
+                resume_id=resume_id,
+                block_ids=credential.evidence_block_ids,
+            )
+            _assert_raw_value_grounded(
+                value=credential.credential_name_raw,
+                source_text=evidence_text,
+                label="credential_name_raw",
+            )
+            if (
+                credential.credential_code != "custom"
+                and normalize_language_credential(credential.credential_name_raw)
+                != credential.credential_code
+            ):
+                raise FactValidationError("language_credential_code_not_grounded")
+            _assert_numeric_value_grounded(
+                value=credential.score,
+                source_text=evidence_text,
+                label="language_credential_score",
+            )
+        except FactValidationError:
+            partial = True
+            continue
+        language_payload.append(credential.model_dump())
+
+    for scholarship in facts.scholarships:
+        try:
+            evidence_text = _source_text_by_ids(
+                session,
+                resume_id=resume_id,
+                block_ids=scholarship.evidence_block_ids,
+            )
+            _assert_raw_value_grounded(
+                value=scholarship.scholarship_name_raw,
+                source_text=evidence_text,
+                label="scholarship_name_raw",
+            )
+        except FactValidationError:
+            partial = True
+            continue
+        scholarship_payload.append(scholarship.model_dump())
+
+    if not (
+        education_payload
+        or experience_payload
+        or skill_payload
+        or language_payload
+        or scholarship_payload
+    ):
         raise FactValidationError("ai_extraction_no_grounded_facts")
     return ResumeFactsSubmission.model_validate(payload), partial
 
@@ -1103,6 +1259,14 @@ def _replace_facts(
     session.execute(delete(ResumeEducation).where(ResumeEducation.resume_id == resume.id))
     session.execute(delete(ResumeExperience).where(ResumeExperience.resume_id == resume.id))
     session.execute(delete(ResumeSkill).where(ResumeSkill.resume_id == resume.id))
+    session.execute(
+        delete(ResumeLanguageCredential).where(
+            ResumeLanguageCredential.resume_id == resume.id
+        )
+    )
+    session.execute(
+        delete(ResumeScholarship).where(ResumeScholarship.resume_id == resume.id)
+    )
     session.flush()
 
     has_985_211 = False
@@ -1125,6 +1289,18 @@ def _replace_facts(
             source_text=evidence_text,
             label="major_raw",
         )
+        for label, value in (
+            ("average_score", education.average_score),
+            ("gpa_value", education.gpa_value),
+            ("gpa_scale", education.gpa_scale),
+            ("rank_position", education.rank_position),
+            ("rank_total", education.rank_total),
+        ):
+            _assert_numeric_value_grounded(
+                value=value,
+                source_text=evidence_text,
+                label=label,
+            )
         institution = resolve_institution(session, education.school_name_raw)
         is_local_match = institution is not None
         is_ai_rulebook_match = False
@@ -1147,6 +1323,28 @@ def _replace_facts(
             has_unresolved_school = True
         if institution is not None and institution.is_985_211:
             has_985_211 = True
+        registry_tiers = list(institution.tier_tags or []) if institution else []
+        explicit_tiers: list[str] = []
+        tier_labels = {
+            item["value"]: item["label"] for item in INSTITUTION_TIER_OPTIONS
+        }
+        for tier in education.institution_tiers:
+            if tier in registry_tiers:
+                continue
+            if not normalized_contains(evidence_text, tier_labels[tier]):
+                raise FactValidationError("institution_tier_not_grounded_in_evidence")
+            explicit_tiers.append(tier)
+        institution_tiers = sorted(set([*registry_tiers, *explicit_tiers]))
+        gpa_percent = (
+            round(education.gpa_value / education.gpa_scale * 100, 4)
+            if education.gpa_value is not None and education.gpa_scale is not None
+            else None
+        )
+        rank_percent = (
+            round(education.rank_position / education.rank_total * 100, 4)
+            if education.rank_position is not None and education.rank_total is not None
+            else None
+        )
         session.add(
             ResumeEducation(
                 resume_id=resume.id,
@@ -1182,6 +1380,14 @@ def _replace_facts(
                 major_key=normalized_key(education.major_raw) or None,
                 start_month=education.start_month,
                 end_month=education.end_month,
+                institution_tiers=institution_tiers,
+                average_score=education.average_score,
+                gpa_value=education.gpa_value,
+                gpa_scale=education.gpa_scale,
+                gpa_percent=gpa_percent,
+                rank_position=education.rank_position,
+                rank_total=education.rank_total,
+                rank_percent=rank_percent,
                 evidence_block_ids=education.evidence_block_ids,
             )
         )
@@ -1208,6 +1414,16 @@ def _replace_facts(
             value=experience.title_raw,
             source_text=evidence_text,
             label="title_raw",
+        )
+        _assert_raw_value_grounded(
+            value=experience.leadership_role,
+            source_text=evidence_text,
+            label="leadership_role",
+        )
+        _assert_raw_value_grounded(
+            value=experience.award_result_raw,
+            source_text=evidence_text,
+            label="award_result_raw",
         )
         classification_text = _source_text_by_ids(
             session,
@@ -1279,6 +1495,18 @@ def _replace_facts(
                 evidence_block_ids=experience.evidence_block_ids,
                 classification_evidence_block_ids=experience.classification_evidence_block_ids,
                 detail_items=stored_detail_items,
+                leadership_context=experience.leadership_context,
+                leadership_role=(
+                    experience.leadership_role.strip()
+                    if experience.leadership_role
+                    else None
+                ),
+                award_level=experience.award_level,
+                award_result_raw=(
+                    experience.award_result_raw.strip()
+                    if experience.award_result_raw
+                    else None
+                ),
             )
         )
         interval = (experience.start_month, experience.end_month, experience.is_current)
@@ -1309,7 +1537,62 @@ def _replace_facts(
                 resume_id=resume.id,
                 skill_key=key,
                 skill_display=skill.skill_display.strip(),
+                skill_category=skill.skill_category,
                 evidence_block_ids=skill.evidence_block_ids,
+            )
+        )
+
+    for credential in facts.language_credentials:
+        evidence_text = _source_text_by_ids(
+            session,
+            resume_id=resume.id,
+            block_ids=credential.evidence_block_ids,
+        )
+        _assert_raw_value_grounded(
+            value=credential.credential_name_raw,
+            source_text=evidence_text,
+            label="credential_name_raw",
+        )
+        normalized_code = normalize_language_credential(
+            credential.credential_name_raw
+        )
+        if credential.credential_code != "custom" and normalized_code != credential.credential_code:
+            raise FactValidationError("language_credential_code_not_grounded")
+        if credential.score is not None and not normalized_contains(
+            evidence_text, f"{credential.score:g}"
+        ):
+            raise FactValidationError("language_credential_score_not_grounded")
+        session.add(
+            ResumeLanguageCredential(
+                resume_id=resume.id,
+                credential_code=credential.credential_code,
+                credential_name_raw=credential.credential_name_raw.strip(),
+                score=credential.score,
+                passed=credential.passed,
+                evidence_block_ids=credential.evidence_block_ids,
+            )
+        )
+
+    for scholarship in facts.scholarships:
+        evidence_text = _source_text_by_ids(
+            session,
+            resume_id=resume.id,
+            block_ids=scholarship.evidence_block_ids,
+        )
+        _assert_raw_value_grounded(
+            value=scholarship.scholarship_name_raw,
+            source_text=evidence_text,
+            label="scholarship_name_raw",
+        )
+        session.add(
+            ResumeScholarship(
+                resume_id=resume.id,
+                scholarship_name_raw=scholarship.scholarship_name_raw.strip(),
+                scholarship_name_key=normalized_key(
+                    scholarship.scholarship_name_raw
+                ),
+                scholarship_level=scholarship.scholarship_level,
+                evidence_block_ids=scholarship.evidence_block_ids,
             )
         )
 
@@ -1457,6 +1740,190 @@ def save_facts(
     )
     session.flush()
     return resume
+
+
+def merge_filter_v2_enrichment(
+    session: Session,
+    *,
+    resume_id: str,
+    enrichment: ResumeFactsSubmission,
+) -> ResumeFactsSubmission:
+    """Merge a V2 extraction into current grounded facts without deleting them.
+
+    Historical resumes can lack V2-only attributes. The enrichment worker runs
+    against the same source blocks, then overlays only matching rows and adds
+    newly discovered source-cited rows. Existing facts remain the baseline.
+    """
+
+    resume = get_resume(session, resume_id)
+    education: list[dict[str, object]] = [
+        {
+            "school_name_raw": item.school_name_raw,
+            "degree": item.degree,
+            "major_raw": item.major_raw,
+            "start_month": item.start_month,
+            "end_month": item.end_month,
+            "institution_tiers": item.institution_tiers or [],
+            "average_score": item.average_score,
+            "gpa_value": item.gpa_value,
+            "gpa_scale": item.gpa_scale,
+            "rank_position": item.rank_position,
+            "rank_total": item.rank_total,
+            "evidence_block_ids": item.evidence_block_ids or [],
+        }
+        for item in resume.educations
+    ]
+    education_by_key = {
+        (normalized_key(item["school_name_raw"]), item["degree"]): item
+        for item in education
+    }
+    for incoming in enrichment.education:
+        values = incoming.model_dump(
+            exclude={"ai_985_211_judgment", "ai_institution_roster_id"}
+        )
+        key = (normalized_key(incoming.school_name_raw), incoming.degree)
+        existing = education_by_key.get(key)
+        if existing is None:
+            education.append(values)
+            education_by_key[key] = values
+            continue
+        for field in (
+            "institution_tiers",
+            "average_score",
+            "gpa_value",
+            "gpa_scale",
+            "rank_position",
+            "rank_total",
+        ):
+            value = values.get(field)
+            if value not in (None, []):
+                existing[field] = value
+
+    experiences: list[dict[str, object]] = [
+        {
+            "experience_type": item.experience_type,
+            "experience_name_raw": item.experience_name_raw,
+            "organization_name_raw": item.organization_name_raw,
+            "title_raw": item.title_raw,
+            "start_month": item.start_month,
+            "end_month": item.end_month,
+            "is_current": item.is_current,
+            "evidence_block_ids": item.evidence_block_ids or [],
+            "classification_evidence_block_ids": (
+                item.classification_evidence_block_ids or []
+            ),
+            "detail_items": item.detail_items or [],
+            "leadership_context": item.leadership_context,
+            "leadership_role": item.leadership_role,
+            "award_level": item.award_level,
+            "award_result_raw": item.award_result_raw,
+        }
+        for item in resume.experiences
+    ]
+
+    def experience_key(value: object) -> tuple[str, str, str]:
+        return (
+            normalized_key(value.experience_name_raw),
+            normalized_key(value.organization_name_raw),
+            normalized_key(value.title_raw),
+        )
+
+    experience_by_key = {
+        (
+            normalized_key(item["experience_name_raw"]),
+            normalized_key(item["organization_name_raw"]),
+            normalized_key(item["title_raw"]),
+        ): item
+        for item in experiences
+    }
+    for incoming in enrichment.experiences:
+        values = incoming.model_dump()
+        key = experience_key(incoming)
+        existing = experience_by_key.get(key)
+        if existing is None:
+            experiences.append(values)
+            experience_by_key[key] = values
+            continue
+        if existing["experience_type"] in {"unknown", "other"}:
+            existing["experience_type"] = incoming.experience_type
+        for field in (
+            "leadership_context",
+            "leadership_role",
+            "award_level",
+            "award_result_raw",
+        ):
+            if values.get(field) is not None:
+                existing[field] = values[field]
+
+    skills: list[dict[str, object]] = [
+        {
+            "skill_display": item.skill_display,
+            "skill_category": item.skill_category,
+            "evidence_block_ids": item.evidence_block_ids or [],
+        }
+        for item in resume.skills
+    ]
+    skill_by_key = {normalized_key(item["skill_display"]): item for item in skills}
+    for incoming in enrichment.skills:
+        existing = skill_by_key.get(normalized_key(incoming.skill_display))
+        if existing is None:
+            values = incoming.model_dump()
+            skills.append(values)
+            skill_by_key[normalized_key(incoming.skill_display)] = values
+        elif incoming.skill_category is not None:
+            existing["skill_category"] = incoming.skill_category
+
+    language_credentials = [
+        {
+            "credential_code": item.credential_code,
+            "credential_name_raw": item.credential_name_raw,
+            "score": item.score,
+            "passed": item.passed,
+            "evidence_block_ids": item.evidence_block_ids or [],
+        }
+        for item in resume.language_credentials
+    ]
+    language_keys = {
+        (item["credential_code"], item["score"], normalized_key(item["credential_name_raw"]))
+        for item in language_credentials
+    }
+    for incoming in enrichment.language_credentials:
+        key = (
+            incoming.credential_code,
+            incoming.score,
+            normalized_key(incoming.credential_name_raw),
+        )
+        if key not in language_keys:
+            language_credentials.append(incoming.model_dump())
+            language_keys.add(key)
+
+    scholarships = [
+        {
+            "scholarship_name_raw": item.scholarship_name_raw,
+            "scholarship_level": item.scholarship_level,
+            "evidence_block_ids": item.evidence_block_ids or [],
+        }
+        for item in resume.scholarships
+    ]
+    scholarship_keys = {
+        normalized_key(item["scholarship_name_raw"]) for item in scholarships
+    }
+    for incoming in enrichment.scholarships:
+        key = normalized_key(incoming.scholarship_name_raw)
+        if key not in scholarship_keys:
+            scholarships.append(incoming.model_dump())
+            scholarship_keys.add(key)
+
+    return ResumeFactsSubmission.model_validate(
+        {
+            "schema_version": "resume_facts.v2",
+            "education": education,
+            "experiences": experiences,
+            "skills": skills,
+            "language_credentials": language_credentials,
+            "scholarships": scholarships,
+        }
+    )
 
 
 def activate_ready_resume(

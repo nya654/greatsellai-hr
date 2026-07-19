@@ -134,49 +134,14 @@ fi
 
 previous_tag_arg="${previous_tag:-__none__}"
 previous_commit_arg="${previous_commit:-__none__}"
+remote_helper="/tmp/greatsell-release-${tag}.sh"
 
-ssh_run bash -s -- "$project_dir" "$history_dir" "$tag" "$release_commit" \
-  "$previous_tag_arg" "$previous_commit_arg" "$mode" "$backup_required" <<'REMOTE_PRECHECK'
-set -Eeuo pipefail
-project_dir="$1"
-history_dir="$2"
-tag="$3"
-release_commit="$4"
-previous_tag="$5"
-previous_commit="$6"
-mode="$7"
-backup_required="$8"
-
-[ "$previous_tag" = "__none__" ] && previous_tag=""
-[ "$previous_commit" = "__none__" ] && previous_commit=""
-
-[ -f "$project_dir/compose.yml" ] || { echo "Live compose.yml is missing." >&2; exit 1; }
-[ -f "$project_dir/.env.production" ] || { echo "Live .env.production is missing." >&2; exit 1; }
-mkdir -p "$history_dir/releases" "$history_dir/backups"
-chmod 700 "$history_dir" "$history_dir/releases" "$history_dir/backups"
-
-if [ "$backup_required" = "1" ]; then
-  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-  backup_path="$history_dir/backups/pre-${tag}-${timestamp}.sql.gz"
-  umask 077
-  sudo -n docker compose --project-directory "$project_dir" -f "$project_dir/compose.yml" \
-    --env-file "$project_dir/.env.production" exec -T db \
-    pg_dump -U resume_v3 -d resume_v3 </dev/null | gzip > "$backup_path"
-  test -s "$backup_path" || { echo "Database backup is empty." >&2; exit 1; }
-fi
-
-pending="$history_dir/pending-release.env"
-umask 077
-cat > "$pending" <<EOF
-tag=$tag
-commit=$release_commit
-previous_tag=$previous_tag
-previous_commit=$previous_commit
-mode=$mode
-backup_required=$backup_required
-prepared_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-EOF
-REMOTE_PRECHECK
+git show "$tag:scripts/remote-release-helper.sh" | ssh "${ssh_options[@]}" "$remote_host" \
+  "umask 077 && cat > $(shell_quote "$remote_helper") && chmod 700 $(shell_quote "$remote_helper")"
+remote_release() {
+  ssh_run "bash $(shell_quote "$remote_helper") $(shell_quote "$1") $(shell_quote "$project_dir") $(shell_quote "$history_dir") $(shell_quote "$tag") $(shell_quote "$release_commit") $(shell_quote "$previous_tag_arg") $(shell_quote "$previous_commit_arg") $(shell_quote "$mode") $(shell_quote "$2")"
+}
+remote_release precheck "$backup_required"
 
 # git archive contains tracked source only. It cannot include ignored production
 # secrets or data, and extraction intentionally does not delete unknown files.
@@ -188,69 +153,7 @@ if [[ "$mode" == "rollback" && "$migration_changed" -eq 1 ]]; then
   skip_migrate=1
 fi
 
-ssh_run bash -s -- "$project_dir" "$history_dir" "$tag" "$release_commit" \
-  "$previous_tag_arg" "$previous_commit_arg" "$mode" "$skip_migrate" <<'REMOTE_DEPLOY'
-set -Eeuo pipefail
-project_dir="$1"
-history_dir="$2"
-tag="$3"
-release_commit="$4"
-previous_tag="$5"
-previous_commit="$6"
-mode="$7"
-skip_migrate="$8"
-
-[ "$previous_tag" = "__none__" ] && previous_tag=""
-[ "$previous_commit" = "__none__" ] && previous_commit=""
-compose=(sudo -n docker compose --project-directory "$project_dir" -f "$project_dir/compose.yml" --env-file "$project_dir/.env.production")
-
-if [ "$skip_migrate" = "1" ]; then
-  "${compose[@]}" up --build -d --no-deps api worker caddy </dev/null
-else
-  "${compose[@]}" up --build -d api worker caddy </dev/null
-fi
-
-"${compose[@]}" exec -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile </dev/null >/dev/null
-
-domain="$(sed -n 's/^RESUME_V3_DOMAIN=//p' "$project_dir/.env.production" | tail -n 1 | tr -d '\r' | sed -e 's/^"//' -e 's/"$//')"
-[ -n "$domain" ] || { echo "RESUME_V3_DOMAIN is not set." >&2; exit 1; }
-
-for attempt in $(seq 1 30); do
-  if curl --fail --silent --show-error --connect-timeout 5 --max-time 15 "https://$domain/health" >/dev/null; then
-    break
-  fi
-  [ "$attempt" -eq 30 ] && { echo "HTTPS health check did not become ready." >&2; exit 1; }
-  sleep 2
-done
-
-session_body="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 15 "https://$domain/v1/auth/session")"
-case "$session_body" in
-  *'"authenticated":false'*'"login_required":true'*) ;;
-  *) echo "Unexpected unauthenticated session response." >&2; exit 1 ;;
-esac
-
-protected_status="$(curl --silent --output /dev/null --write-out '%{http_code}' --connect-timeout 5 --max-time 15 \
-  "https://$domain/v1/resumes/00000000-0000-0000-0000-000000000000/original-file")"
-[ "$protected_status" = "401" ] || { echo "Protected PDF endpoint did not reject an unauthenticated request." >&2; exit 1; }
-
-timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-record="$history_dir/releases/${timestamp}-${tag}.env"
-umask 077
-cat > "$record" <<EOF
-tag=$tag
-commit=$release_commit
-previous_tag=$previous_tag
-previous_commit=$previous_commit
-mode=$mode
-database_schema_action=$( [ "$skip_migrate" = "1" ] && echo preserved || echo migrate_checked )
-health_check=pass
-session_protection=pass
-protected_pdf_check=pass
-deployed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-EOF
-cp "$record" "$history_dir/current-release.env"
-rm -f "$history_dir/pending-release.env"
-printf 'Deployment recorded: %s\n' "$record"
-REMOTE_DEPLOY
+remote_release deploy "$skip_migrate"
+ssh_run "rm -f $(shell_quote "$remote_helper")"
 
 echo "Deployment succeeded: $tag ($release_commit)"

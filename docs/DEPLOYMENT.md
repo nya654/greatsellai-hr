@@ -30,7 +30,7 @@
 
 生产 Web 进程不会运行 `create_all()`，也不会在启动时改写院校名单。这避免多副本启动时的 DDL/种子数据竞争。
 
-浏览器使用同源的 `/v1/*` 请求 API，不需要在生产环境设置前端 API 域名或开放 CORS。首次签发 HTTPS 证书前，请确认域名 A/AAAA 记录已生效，并且云防火墙放行 `80` 与 `443`。
+浏览器使用同源的 `/v1/*` 请求 API，不需要在生产环境设置前端 API 域名或开放 CORS。产品首页部署在 `https://hr.greatsellai.net/`；登录和工作台分别位于 `https://greatsellai.net/greatsellhr/login` 与 `https://greatsellai.net/greatsellhr`，两者都必须解析到同一套 Caddy 服务。首次签发 HTTPS 证书前，请确认两个域名的 A/AAAA 记录均已生效，并且云防火墙放行 `80` 与 `443`。
 
 ## AI 提取 worker
 

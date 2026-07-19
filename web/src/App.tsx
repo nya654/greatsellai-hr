@@ -14,6 +14,11 @@ import {
   api,
   isApiError,
 } from "./api";
+import {
+  LandingPage,
+  ROOT_WORKSPACE_BASE_PATH,
+  ROOT_WORKSPACE_ORIGIN,
+} from "./landing";
 import type {
   AiExtractionStatus,
   CandidateSearchItem,
@@ -51,6 +56,10 @@ type SchoolFilter = "any" | "yes" | "no";
 type MatchMode = "all" | "any";
 type ToastKind = "success" | "error";
 type JobWorkspaceMode = "create" | "view";
+type AppSurface =
+  | { kind: "landing" }
+  | { kind: "redirect"; href: string }
+  | { kind: "workspace"; isLoginRoute: boolean };
 
 interface FilterDraft {
   school: SchoolFilter;
@@ -539,7 +548,69 @@ function searchRequestToDraft(request: CandidateSearchRequest): FilterDraft {
   };
 }
 
+function isLocalDevelopmentHost(hostname: string) {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
+function workspaceHref(path = "") {
+  const normalizedPath = path && !path.startsWith("/") ? `/${path}` : path;
+  const destination = `${ROOT_WORKSPACE_BASE_PATH}${normalizedPath}`;
+  return isLocalDevelopmentHost(window.location.hostname)
+    ? destination
+    : `${ROOT_WORKSPACE_ORIGIN}${destination}`;
+}
+
+function resolveAppSurface(): AppSurface {
+  const { hostname, pathname } = window.location;
+  const isWorkspacePath =
+    pathname === ROOT_WORKSPACE_BASE_PATH ||
+    pathname.startsWith(`${ROOT_WORKSPACE_BASE_PATH}/`);
+
+  if (isWorkspacePath) {
+    const nestedPath = pathname.slice(ROOT_WORKSPACE_BASE_PATH.length).replace(/\/+$/, "") || "/";
+    return { kind: "workspace", isLoginRoute: nestedPath === "/login" };
+  }
+
+  if (hostname === "hr.greatsellai.net" && pathname === "/login") {
+    return { kind: "redirect", href: workspaceHref("/login") };
+  }
+
+  return { kind: "landing" };
+}
+
+function ExternalRedirect({ href }: { href: string }) {
+  useEffect(() => {
+    window.location.replace(href);
+  }, [href]);
+
+  return (
+    <main className="login-page" aria-live="polite">
+      <div className="login-panel login-redirect-panel">
+        <i className="spinner" /> 正在前往登录系统…
+      </div>
+    </main>
+  );
+}
+
 function App() {
+  const [surface, setSurface] = useState<AppSurface>(resolveAppSurface);
+
+  useEffect(() => {
+    const syncSurface = () => setSurface(resolveAppSurface());
+    window.addEventListener("popstate", syncSurface);
+    return () => window.removeEventListener("popstate", syncSurface);
+  }, []);
+
+  if (surface.kind === "landing") {
+    return <LandingPage loginHref={workspaceHref("/login")} />;
+  }
+
+  if (surface.kind === "redirect") return <ExternalRedirect href={surface.href} />;
+
+  return <WorkspaceApp isLoginRoute={surface.isLoginRoute} />;
+}
+
+function WorkspaceApp({ isLoginRoute }: { isLoginRoute: boolean }) {
   const [view, setView] = useState<View>("library");
   const [filterDraft, setFilterDraft] =
     useState<FilterDraft>(freshDefaultFilter);
@@ -572,6 +643,12 @@ function App() {
   const summaryRequestRef = useRef(0);
 
   const selectedResumeId = selectedResume?.resumeId ?? null;
+
+  useEffect(() => {
+    document.title = isLoginRoute
+      ? "登录系统｜大卖数智 GreatSell AI"
+      : "招聘工作台｜大卖数智 GreatSell AI";
+  }, [isLoginRoute]);
 
   const notify = useCallback((kind: ToastKind, message: string) => {
     const id = Date.now() + Math.round(Math.random() * 1000);
@@ -674,10 +751,16 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (authState !== "authenticated") return;
+    if (authState !== "authenticated" || isLoginRoute) return;
     void runSearch(defaultFilterDraft);
     void refreshSavedFilters();
-  }, [authState, refreshSavedFilters, runSearch]);
+  }, [authState, isLoginRoute, refreshSavedFilters, runSearch]);
+
+  useEffect(() => {
+    if (authState === "authenticated" && isLoginRoute) {
+      window.location.replace(workspaceHref());
+    }
+  }, [authState, isLoginRoute]);
 
   useEffect(() => {
     if (
@@ -978,6 +1061,7 @@ function App() {
     try {
       const session = await api.login(password);
       setAuthState(session.authenticated ? "authenticated" : "unauthenticated");
+      if (session.authenticated) window.location.assign(workspaceHref());
     } catch (error) {
       setLoginError(humanizeError(error));
     } finally {
@@ -990,13 +1074,28 @@ function App() {
     setSelectedResume(null);
     setDrawerOpen(false);
     setAuthState("unauthenticated");
+    window.location.assign(workspaceHref("/login"));
   };
+
+  if (authState === "checking") {
+    return (
+      <main className="login-page" aria-live="polite">
+        <div className="login-panel login-redirect-panel">
+          <i className="spinner" /> 正在验证登录状态…
+        </div>
+      </main>
+    );
+  }
+
+  if (authState !== "authenticated" && !isLoginRoute) {
+    return <ExternalRedirect href={workspaceHref("/login")} />;
+  }
 
   if (authState !== "authenticated") {
     return (
       <LoginPage
         error={loginError}
-        loading={loginLoading || authState === "checking"}
+        loading={loginLoading}
         onLogin={login}
       />
     );

@@ -15,7 +15,7 @@ RUN npm run build
 
 # Caddy owns the public ports: it terminates HTTPS, serves the SPA bundle, and
 # is the only service allowed to proxy requests to the API.
-FROM caddy:2.8-alpine
+FROM caddy:2.10-alpine
 
 COPY deploy/Caddyfile /etc/caddy/Caddyfile
 COPY --from=web-build /web/dist /srv

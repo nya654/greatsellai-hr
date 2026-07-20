@@ -6,6 +6,7 @@
 - [全项目实施计划](docs/IMPLEMENTATION_PLAN.md)
 - [AI 提取后台任务](docs/AI_EXTRACTION_WORKER.md)
 - [条件筛选 V2 规则与接口](docs/FILTER_V2.md)
+- [团队共建工作流](docs/TEAM_WORKFLOW.md)
 
 当前版本已覆盖：重新上传 PDF → 解析质量校验 → AI 从原文识别候选人姓名（不可靠则留空）并提取教育/经历/技能 → 字段级原文证据校验并自动启用 → 简历库汇总（AI 总结预览、最新 AI 评分、原 PDF）→ 条件筛选 → AI 评分、总结与 JD 匹配；React/Vite 工作台通过同域名 Caddy 静态部署，浏览器只请求同源的 `/v1/*` API。
 
@@ -33,6 +34,22 @@ npm run dev
 云服务器部署说明见 [DEPLOYMENT.md](docs/DEPLOYMENT.md)。生产环境必须先跑 Alembic 迁移和显式院校名单初始化，不能依赖 Web 启动建表；Caddy 是唯一暴露公网端口的服务，同时负责 HTTPS、静态前端和 `/v1/*` API 反代。
 
 ## 团队协作、发布与回滚
+
+仓库根目录的 [AGENTS.md](AGENTS.md) 是所有 Codex 和自动化代理的强制项目规则。
+每次新任务或新会话开始时，都必须主动检查 GitHub，不需要用户再次提醒。最低开工检查为：
+
+```bash
+git status -sb
+git fetch origin --prune --tags
+git rev-list --left-right --count HEAD...origin/main
+git log --oneline HEAD..origin/main
+gh pr status
+```
+
+只有在本地是干净 `main` 且仅落后远端时，才执行
+`git pull --ff-only origin main`。存在未提交修改、分叉分支或重叠 PR 时，先保护现有
+改动并使用独立分支/worktree，不得强行拉取、覆盖或把同事修改混入自己的提交。完整异常
+处理和交接格式见 [团队共建工作流](docs/TEAM_WORKFLOW.md)。
 
 GitHub 的 `main` 是唯一的团队代码基线；本地开发通过功能分支和 PR 合并到
 `main`，生产服务器只部署已经合并并打了 `prod-*` 标签的提交。服务器绝不是

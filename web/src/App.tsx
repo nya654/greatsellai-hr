@@ -839,6 +839,8 @@ function isRootMarketingHost(hostname: string) {
   return hostname === "greatsellai.net";
 }
 
+const HR_WORKSPACE_BASE_PATH = "/workspace";
+
 function workspaceHref(path = "") {
   const normalizedPath = path && !path.startsWith("/") ? `/${path}` : path;
   const { hostname, pathname } = window.location;
@@ -853,6 +855,13 @@ function workspaceHref(path = "") {
   // The public root site is intentionally a separate marketing surface. Its
   // calls to action always cross to the dedicated HR application origin, so
   // the root domain never needs to expose the authenticated HR API.
+  if (window.location.hostname === "hr.greatsellai.net") {
+    if (["/login", "/register", "/forgot-password"].includes(normalizedPath)) {
+      return normalizedPath;
+    }
+    return `${HR_WORKSPACE_BASE_PATH}${normalizedPath}` || HR_WORKSPACE_BASE_PATH;
+  }
+
   if (isRootMarketingHost(hostname)) {
     return `https://hr.greatsellai.net${normalizedPath || "/"}`;
   }
@@ -879,10 +888,15 @@ function resolveAppSurface(): AppSurface {
     return { kind: "workspace", authRoute: authRouteFromPath(nestedPath) };
   }
 
-  // The primary HR host is self-contained: its root is the authenticated
-  // workspace and its direct auth routes use the same-origin API. This keeps
-  // login working when the root site lives on a different server.
-  if (hostname === "hr.greatsellai.net" || isLocalDevelopmentHost(hostname)) {
+  if (hostname === "hr.greatsellai.net") {
+    if (pathname === "/" || pathname === "") return { kind: "landing" };
+    const nestedPath = pathname.startsWith(HR_WORKSPACE_BASE_PATH)
+      ? pathname.slice(HR_WORKSPACE_BASE_PATH.length)
+      : pathname;
+    return { kind: "workspace", authRoute: authRouteFromPath(nestedPath) };
+  }
+
+  if (isLocalDevelopmentHost(hostname)) {
     return { kind: "workspace", authRoute: authRouteFromPath(pathname) };
   }
 

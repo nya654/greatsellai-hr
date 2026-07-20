@@ -17,6 +17,7 @@ import {
 import {
   LandingPage,
   ROOT_WORKSPACE_BASE_PATH,
+  ROOT_WORKSPACE_LOGIN_URL,
   ROOT_WORKSPACE_ORIGIN,
 } from "./landing";
 import type {
@@ -869,7 +870,7 @@ function App() {
   }, []);
 
   if (surface.kind === "landing") {
-    return <LandingPage loginHref={workspaceHref("/login")} />;
+    return <LandingPage loginHref={ROOT_WORKSPACE_LOGIN_URL} />;
   }
 
   if (surface.kind === "redirect") return <ExternalRedirect href={surface.href} />;

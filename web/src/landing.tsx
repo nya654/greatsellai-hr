@@ -4,7 +4,10 @@ import "./landing.css";
 
 export const ROOT_WORKSPACE_BASE_PATH = "/greatsellhr";
 export const ROOT_WORKSPACE_ORIGIN = "https://greatsellai.net";
-export const ROOT_WORKSPACE_LOGIN_URL = `${ROOT_WORKSPACE_ORIGIN}${ROOT_WORKSPACE_BASE_PATH}/login`;
+// The marketing site lives on the HR subdomain; keep its primary CTA on the
+// public, memorable login URL even though the authenticated workspace is
+// currently served from the root site's path-mounted application.
+export const ROOT_WORKSPACE_LOGIN_URL = "https://hr.greatsellai.net/login";
 
 const productCapabilities: Array<{
   icon: IconName;

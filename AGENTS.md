@@ -1,70 +1,74 @@
-# GreatSell AI HR Agent Working Rules
+# GreatSell HR 项目级共建规则
 
-## GitHub sync comes first
+本文件适用于整个仓库。任何 Codex、自动化代理或同事在调查、回答项目现状、实现、
+评审、测试或发布前都必须遵守；不需要用户再次提醒“先读 GitHub”。
 
-Before **every** investigation, implementation, review, test, or deployment-related task, check the GitHub baseline before touching source files:
+## 一、每次开工必须先与 GitHub 对齐
 
-```bash
-git fetch --prune --tags origin
-git status --short
-git rev-parse HEAD
-git rev-parse origin/main
-git log --oneline --decorate HEAD..origin/main
-```
+每个与本仓库有关的新用户任务开始时，在给出项目结论、修改文件、运行迁移或接触服务器
+之前，都必须完成以下只读检查。同一项持续任务不必在每条消息重复，但在创建 PR、合并
+或发布前必须再次 fetch 并确认远端没有变化。
 
-State whether the current checkout is already based on the latest `origin/main`.
+1. 运行 `git status -sb`，识别当前分支、未提交修改和未跟踪文件。现有修改默认属于
+   用户或其他同事，不得覆盖、丢弃、暂存到自己的提交或擅自 stash。
+2. 确认 `origin` 指向 `greatsellai/greatsellai-hr`，然后运行
+   `git fetch origin --prune --tags`。
+3. 比较本地提交与 `origin/main`，至少检查：
+   `git rev-parse HEAD`、`git rev-parse origin/main`、
+   `git rev-list --left-right --count HEAD...origin/main` 和
+   `git log --oneline HEAD..origin/main`。
+4. 使用 `gh pr status` 或等价 GitHub 查询检查当前分支 PR、开放 PR、检查结果和是否有
+   重叠开发。任务涉及已有 PR 时，还要读取其差异、评论、审核和合并状态。
+5. 若本地处于干净的 `main` 且仅落后远端，运行
+   `git pull --ff-only origin main`。禁止用普通 merge pull 制造无意义合并提交。
+6. 若工作区有修改、分支已分叉或同事正在改相同文件，不得强行 pull、rebase、checkout
+   或覆盖。先说明冲突，再使用独立 worktree 或基于 `origin/main` 的新分支隔离工作。
 
-- For a new task, create a fresh branch from the updated baseline:
+若 fetch 或 GitHub 查询失败，不得声称“已经对齐 GitHub”，也不得基于可能过期的本地状态
+做会写入共享代码的决定。可以继续本地只读排查，同时明确报告未验证项并重试连接。
 
-  ```bash
-  git switch main
-  git pull --ff-only origin main
-  git fetch --tags origin
-  git switch -c <type>/<short-task-name>
-  ```
+完成检查后，应向用户简短报告：`origin/main` 基线提交、本地领先/落后数量、工作区是否
+干净、是否有重叠 PR，以及本次采用的分支或 worktree。发现远端新提交时，必须先阅读
+其影响范围再继续实施，不能只完成 fetch 就沿用旧结论。
 
-- For an existing feature branch, inspect its working tree and compare it with
-  `origin/main` before continuing. Do not blindly reset, force-push, or rebase
-  a dirty branch. Rebase or merge only after checking the diff and resolving
-  conflicts deliberately.
-- If GitHub has newer commits that materially affect the task, update the
-  branch before implementation and mention the new baseline in the progress
-  update.
+## 二、代码基线和分支规则
 
-`origin/main` is the only code baseline. A server is a deployment target, not
-a source of truth.
+- GitHub `main` 是唯一团队代码基线；服务器目录只是部署目标，不是开发源，也不得反向
+  覆盖 GitHub。
+- 新任务从最新 `origin/main` 建立独立 worktree 和 `agent/<简短任务名>` 或团队约定的
+  功能分支；不得在另一位贡献者的工作目录中直接开发。
+- 不直接推送 `main`。每完成一个可独立验证的步骤，就检查 diff、运行对应测试、提交并
+  推送当前分支，避免成果只停留在某一台电脑或服务器。
+- 继续既有分支前先 fetch；需要重放到新 `main` 时，必须保护同事修改、解决冲突并重新
+  验证。重写已推送分支只能使用 `--force-with-lease`，禁止裸 `--force`。
+- 共享内容以 GitHub 分支、提交、PR 和合并记录为准。聊天总结、服务器文件和本地未提交
+  状态都不能替代 GitHub 记录。
 
-## Delivery workflow
+## 三、阅读、数据和权限边界
 
-1. Read the applicable product and implementation documents before making a
-   material design decision.
-2. Work in an independent feature branch and worktree. Do not edit another
-   contributor's working directory.
-3. After each verifiable milestone, run `git diff --check`, inspect the diff,
-   commit, and push the feature branch.
-4. Before opening a pull request, run the relevant backend tests and
-   `npm run build` for the web application.
-5. Open a PR to `main`; do not push directly to `main`.
-6. Report the PR link, branch, commit, tests, migration implications, and any
-   remaining production configuration steps.
+- 首次接手或进行架构级改动时，完整阅读 `README.md`、产品 PRD、
+  `docs/IMPLEMENTATION_PLAN.md`、`compose.yml`、Dockerfile、`app/` 和 `web/src/`。
+- 每次普通任务至少重新阅读本规则、README 中的协作说明、与任务有关的 PRD/设计文档、
+  最近远端提交和受影响代码；不得仅依赖旧会话记忆。
+- 不推倒重写，不删除现有数据库、候选人 PDF、Docker 卷、环境文件或用户/同事修改。
+- 未经用户对当前任务明确授权，不得改动 DNS、Caddy、Compose、部署脚本或生产环境文件，
+  也不得直接修改服务器业务代码。
+- 不在聊天、日志、提交、PR、前端或源码中暴露 API Key、邮箱密码、数据库密码、SSH
+  私钥、管理口令、候选人隐私、生产数据库导出或部署产物。
+- 候选人数据必须按已认证 workspace 隔离；API、worker、邮箱入库、AI 操作和原文件访问
+  都必须携带并校验 workspace 上下文，不能只按资源 ID 查询。
+- AI 输出只能来自已提取且带证据的简历事实或面试记录，保持建议性质；不得编造，也不得
+  自动拒绝或录用候选人。
 
-## Production and privacy guardrails
+## 四、测试、PR、发布和回滚
 
-- Do not edit business code directly on a server.
-- Do not change DNS, Caddy, Compose, deployment scripts, or production
-  environment files unless the user explicitly authorizes that operation.
-- Never commit environment files, database dumps, uploads, PDFs, candidate
-  data, API keys, passwords, tokens, SSH keys, or deployment artifacts.
-- Treat candidate data as workspace-scoped. Every API, worker task, mailbox
-  import, AI operation, and original-file access must use the authenticated
-  workspace context.
-- AI output must remain evidence-grounded and advisory. It must not
-  automatically reject or hire a candidate.
+- 功能完成后运行完整后端测试和前端生产构建；包含迁移时还要验证安全升级路径。
+- 创建 PR 前确认分支只包含本任务修改，并在 PR 中写明范围、影响、安全边界、迁移影响和
+  验证结果。
+- PR 审核并合并后才能创建 `prod-YYYYMMDD-<提交短码>` 标签；生产只从该标签部署。
+- 部署前说明范围；包含迁移时按发布脚本创建数据库备份。部署后不能只验证 happy path，
+  应按改动范围覆盖注册/登录、workspace 隔离、上传/提取、筛选、评分、JD 匹配、邮箱、
+  原 PDF、失败/重试、HTTPS、健康检查和关键 `/v1` 接口。
+- 回滚只使用已有生产标签；默认只回滚应用代码，不自动降级数据库，不删除数据或卷。
 
-## Release checks
-
-Before declaring a release ready, verify the relevant paths rather than only
-the happy path: registration/login, workspace isolation, upload/extraction,
-filtering, scoring, JD matching, original-file access, mailbox behavior, and
-failure/retry handling. Include rollback and migration notes whenever a
-database or durable upload volume is affected.
+完整命令、异常分支和同事交接格式见 `docs/TEAM_WORKFLOW.md`。

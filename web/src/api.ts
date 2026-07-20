@@ -1,4 +1,7 @@
 import type {
+  AuthLoginInput,
+  AuthRegistrationInput,
+  AuthSession,
   CandidateCreateInput,
   CandidateCreated,
   CandidateSearchRequest,
@@ -18,6 +21,8 @@ import type {
   MailboxImportHistory,
   MailboxSync,
   OriginalJobPublishInput,
+  PasswordResetRequestResult,
+  RegistrationOffer,
   ResumeActivateRequest,
   ResumeDetail,
   ResumeFactsSaveRequest,
@@ -41,7 +46,7 @@ import type {
 export * from "./types";
 
 export interface ApiClientOptions {
-  /** Defaults to the same-origin FastAPI prefix, /v1. */
+  /** Defaults to the current entry's same-origin API prefix. */
   baseUrl?: string;
 }
 
@@ -61,8 +66,17 @@ export function isApiError(error: unknown): error is ApiError {
   return error instanceof ApiError;
 }
 
+function defaultApiBaseUrl(): string {
+  if (typeof window === "undefined") return "/v1";
+  const compatibilityBase = "/greatsellhr";
+  const { pathname } = window.location;
+  return pathname === compatibilityBase || pathname.startsWith(`${compatibilityBase}/`)
+    ? `${compatibilityBase}/v1`
+    : "/v1";
+}
+
 function normalizeBaseUrl(baseUrl: string | undefined): string {
-  const normalized = (baseUrl?.trim() || "/v1").replace(/\/+$/, "");
+  const normalized = (baseUrl?.trim() || defaultApiBaseUrl()).replace(/\/+$/, "");
   return normalized || "/v1";
 }
 
@@ -112,11 +126,6 @@ interface JsonRequestOptions extends Omit<RequestInit, "body"> {
 export interface ResumePdfObjectUrl {
   url: string;
   revoke: () => void;
-}
-
-export interface AuthSession {
-  authenticated: boolean;
-  login_required: boolean;
 }
 
 /** A typed same-origin client authenticated exclusively by the session cookie. */
@@ -195,10 +204,27 @@ export function createApiClient(options: ApiClientOptions = {}) {
       return request<AuthSession>("/auth/session");
     },
 
-    login(password: string): Promise<AuthSession> {
+    login(input: AuthLoginInput | string): Promise<AuthSession> {
       return request<AuthSession>("/auth/login", {
         method: "POST",
-        body: { password },
+        // Keep the legacy password-only call shape available until the
+        // server-side legacy workspace migration is complete.
+        body: typeof input === "string" ? { password: input } : input,
+      });
+    },
+
+    register(input: AuthRegistrationInput): Promise<AuthSession> {
+      return request<AuthSession>("/auth/register", { method: "POST", body: input });
+    },
+
+    getRegistrationOffer(): Promise<RegistrationOffer> {
+      return request<RegistrationOffer>("/auth/registration-offer");
+    },
+
+    requestPasswordReset(email: string): Promise<PasswordResetRequestResult> {
+      return request<PasswordResetRequestResult>("/auth/password-reset/request", {
+        method: "POST",
+        body: { email },
       });
     },
 
@@ -491,7 +517,7 @@ export function createApiClient(options: ApiClientOptions = {}) {
   };
 }
 
-/** The application singleton. It defaults to same-origin `/v1`. */
+/** The application singleton chooses `/v1` or `/greatsellhr/v1` by entry path. */
 export const api = createApiClient();
 
 /**

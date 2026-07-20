@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import logging
 import re
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Iterator
 
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
@@ -12,6 +14,7 @@ from app.config import AppSettings
 from app.database import Database
 from app.models import Candidate, Resume, ResumeAiExtractionJob, ResumeSourceBlock
 from app.schemas import ResumeFactsSaveRequest, ResumeFactsSubmission
+from app.tenant_scope import clear_organization_context, set_organization_context
 from app.services.deepseek_provider import (
     DeepSeekProviderError,
     EvidenceBlock,
@@ -59,6 +62,7 @@ class AiExtractionJobError(RuntimeError):
 @dataclass(frozen=True)
 class ClaimedAiExtractionJob:
     job_id: str
+    organization_id: str
     resume_id: str
     input_facts_version: int
     job_kind: str
@@ -67,6 +71,23 @@ class ClaimedAiExtractionJob:
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+@contextmanager
+def _organization_session(session: Session, organization_id: str) -> Iterator[None]:
+    """Bind a worker-owned session to exactly one workspace.
+
+    Queue discovery is deliberately global so one worker can serve every
+    customer.  Nothing after that discovery is global: every source read,
+    model-result write, and failure update executes with the claimed
+    workspace installed on the SQLAlchemy session.
+    """
+
+    set_organization_context(session, organization_id)
+    try:
+        yield
+    finally:
+        clear_organization_context(session)
 
 
 def ai_extraction_state(
@@ -104,6 +125,7 @@ def enqueue_uploaded_resume_ai_extraction(
         return existing
     now = utcnow()
     job = ResumeAiExtractionJob(
+        organization_id=resume.organization_id,
         resume_id=resume.id,
         job_kind="initial",
         status=(
@@ -187,7 +209,11 @@ def request_resume_filter_v2_enrichment(
         raise AiExtractionJobError("resume_has_no_native_text_for_ai_extraction")
     job = resume.ai_extraction_job
     if job is None:
-        job = ResumeAiExtractionJob(resume_id=resume.id, status=AI_EXTRACTION_QUEUED)
+        job = ResumeAiExtractionJob(
+            organization_id=resume.organization_id,
+            resume_id=resume.id,
+            status=AI_EXTRACTION_QUEUED,
+        )
         session.add(job)
         resume.ai_extraction_job = job
     elif job.status in {AI_EXTRACTION_QUEUED, AI_EXTRACTION_RUNNING}:
@@ -231,37 +257,45 @@ def backfill_unnamed_candidate_names(
         raise AiExtractionJobError(_NO_KEY_ERROR)
 
     with database.session_factory() as session:
-        resume_ids = session.scalars(
-            select(Resume.id)
+        resume_rows = session.execute(
+            select(Resume.id, Resume.organization_id)
             .join(Candidate, Candidate.id == Resume.candidate_id)
             .where(
                 or_(Candidate.display_name.is_(None), Candidate.display_name == ""),
             )
             .order_by(Resume.created_at.asc(), Resume.id.asc())
             .limit(limit)
+            # This is a platform repair scan.  It deliberately discovers
+            # independent work items globally, but every individual item is
+            # re-opened below under its own organization context.
+            .execution_options(skip_organization_scope=True)
         ).all()
 
     updated = 0
     skipped = 0
-    for resume_id in resume_ids:
+    for resume_id, organization_id in resume_rows:
+        if not organization_id:
+            skipped += 1
+            continue
         with database.session_factory() as session:
-            resume = session.get(Resume, resume_id)
-            if resume is None:
-                continue
-            source_blocks = session.scalars(
-                select(ResumeSourceBlock)
-                .where(ResumeSourceBlock.resume_id == resume.id)
-                .order_by(ResumeSourceBlock.page_no, ResumeSourceBlock.block_id)
-            ).all()
-            blocks = [
-                EvidenceBlock(
-                    block_id=block.block_id,
-                    page_no=block.page_no,
-                    block_type=block.block_type,
-                    text=block.text,
-                )
-                for block in source_blocks
-            ]
+            with _organization_session(session, organization_id):
+                resume = session.get(Resume, resume_id)
+                if resume is None or resume.organization_id != organization_id:
+                    continue
+                source_blocks = session.scalars(
+                    select(ResumeSourceBlock)
+                    .where(ResumeSourceBlock.resume_id == resume.id)
+                    .order_by(ResumeSourceBlock.page_no, ResumeSourceBlock.block_id)
+                ).all()
+                blocks = [
+                    EvidenceBlock(
+                        block_id=block.block_id,
+                        page_no=block.page_no,
+                        block_type=block.block_type,
+                        text=block.text,
+                    )
+                    for block in source_blocks
+                ]
         if not blocks:
             skipped += 1
             continue
@@ -280,40 +314,41 @@ def backfill_unnamed_candidate_names(
             continue
 
         with database.session_factory() as session:
-            resume = session.scalar(
-                select(Resume).where(Resume.id == resume_id).with_for_update()
-            )
-            if resume is None:
-                continue
-            candidate = session.scalar(
-                select(Candidate)
-                .where(Candidate.id == resume.candidate_id)
-                .with_for_update()
-            )
-            if candidate is None:
-                session.rollback()
-                continue
-            if candidate.display_name and candidate.display_name.strip():
-                session.rollback()
-                continue
-            try:
-                evidence_text = _source_text_by_ids(
-                    session,
-                    resume_id=resume.id,
-                    block_ids=draft.evidence_block_ids,
+            with _organization_session(session, organization_id):
+                resume = session.scalar(
+                    select(Resume).where(Resume.id == resume_id).with_for_update()
                 )
-                _assert_raw_value_grounded(
-                    value=draft.value,
-                    source_text=evidence_text,
-                    label="candidate_name_raw",
+                if resume is None or resume.organization_id != organization_id:
+                    continue
+                candidate = session.scalar(
+                    select(Candidate)
+                    .where(Candidate.id == resume.candidate_id)
+                    .with_for_update()
                 )
-            except FactValidationError:
-                session.rollback()
-                skipped += 1
-                continue
-            candidate.display_name = draft.value
-            session.commit()
-            updated += 1
+                if candidate is None or candidate.organization_id != organization_id:
+                    session.rollback()
+                    continue
+                if candidate.display_name and candidate.display_name.strip():
+                    session.rollback()
+                    continue
+                try:
+                    evidence_text = _source_text_by_ids(
+                        session,
+                        resume_id=resume.id,
+                        block_ids=draft.evidence_block_ids,
+                    )
+                    _assert_raw_value_grounded(
+                        value=draft.value,
+                        source_text=evidence_text,
+                        label="candidate_name_raw",
+                    )
+                except FactValidationError:
+                    session.rollback()
+                    skipped += 1
+                    continue
+                candidate.display_name = draft.value
+                session.commit()
+                updated += 1
     return updated, skipped
 
 
@@ -364,6 +399,7 @@ def _claim_next_job(
                 lease_owner=None,
                 lease_expires_at=None,
             )
+            .execution_options(skip_organization_scope=True)
         )
         _recover_expired_leases(session, now=now)
 
@@ -376,7 +412,14 @@ def _claim_next_job(
             ),
         )
         candidate = session.execute(
-            select(ResumeAiExtractionJob.id, ResumeAiExtractionJob.last_error)
+            select(
+                ResumeAiExtractionJob.id,
+                ResumeAiExtractionJob.organization_id,
+                ResumeAiExtractionJob.resume_id,
+                ResumeAiExtractionJob.input_facts_version,
+                ResumeAiExtractionJob.job_kind,
+                ResumeAiExtractionJob.last_error,
+            )
             .where(eligible)
             .order_by(
                 ResumeAiExtractionJob.next_attempt_at.asc(),
@@ -384,19 +427,49 @@ def _claim_next_job(
                 ResumeAiExtractionJob.id.asc(),
             )
             .limit(1)
+            .execution_options(skip_organization_scope=True)
         ).one_or_none()
         if candidate is None:
             session.commit()
             return None
-        candidate_id = candidate[0]
-        previous_error = candidate[1]
+        (
+            candidate_id,
+            organization_id,
+            resume_id,
+            input_facts_version,
+            job_kind,
+            previous_error,
+        ) = candidate
+        if not organization_id:
+            # A row without a workspace must never be handed to a model call.
+            # Mark it terminally from the global claim path and leave all
+            # workspace-bound reads/writes untouched.
+            session.execute(
+                update(ResumeAiExtractionJob)
+                .where(ResumeAiExtractionJob.id == candidate_id)
+                .values(
+                    status=AI_EXTRACTION_NEEDS_ATTENTION,
+                    next_attempt_at=None,
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    last_error="ai_extraction_workspace_missing",
+                    completed_at=now,
+                )
+                .execution_options(skip_organization_scope=True)
+            )
+            session.commit()
+            return None
 
         lease_expires_at = now + timedelta(
             seconds=settings.ai_extraction_job_lease_seconds
         )
         claim = session.execute(
             update(ResumeAiExtractionJob)
-            .where(ResumeAiExtractionJob.id == candidate_id, eligible)
+            .where(
+                ResumeAiExtractionJob.id == candidate_id,
+                ResumeAiExtractionJob.organization_id == organization_id,
+                eligible,
+            )
             .values(
                 status=AI_EXTRACTION_RUNNING,
                 attempt_count=ResumeAiExtractionJob.attempt_count + 1,
@@ -406,17 +479,17 @@ def _claim_next_job(
                 next_attempt_at=None,
                 last_error=None,
             )
+            .execution_options(skip_organization_scope=True)
         )
         if claim.rowcount != 1:
             session.rollback()
             return None
-        job = session.get(ResumeAiExtractionJob, candidate_id)
-        assert job is not None
         claimed = ClaimedAiExtractionJob(
-            job_id=job.id,
-            resume_id=job.resume_id,
-            input_facts_version=job.input_facts_version,
-            job_kind=job.job_kind,
+            job_id=candidate_id,
+            organization_id=organization_id,
+            resume_id=resume_id,
+            input_facts_version=input_facts_version,
+            job_kind=job_kind,
             previous_error=previous_error,
         )
         session.commit()
@@ -435,6 +508,7 @@ def _mark_jobs_unavailable_without_key(session: Session, *, now: datetime) -> No
             last_error=_NO_KEY_ERROR,
             completed_at=now,
         )
+        .execution_options(skip_organization_scope=True)
     )
     session.execute(
         update(ResumeAiExtractionJob)
@@ -451,6 +525,7 @@ def _mark_jobs_unavailable_without_key(session: Session, *, now: datetime) -> No
             last_error=_NO_KEY_ERROR,
             completed_at=now,
         )
+        .execution_options(skip_organization_scope=True)
     )
 
 
@@ -471,6 +546,7 @@ def _recover_expired_leases(session: Session, *, now: datetime) -> None:
             last_error="ai_extraction_worker_lease_expired",
             completed_at=now,
         )
+        .execution_options(skip_organization_scope=True)
     )
     session.execute(
         update(ResumeAiExtractionJob)
@@ -482,6 +558,7 @@ def _recover_expired_leases(session: Session, *, now: datetime) -> None:
             next_attempt_at=now,
             last_error="ai_extraction_worker_lease_expired",
         )
+        .execution_options(skip_organization_scope=True)
     )
 
 
@@ -503,6 +580,7 @@ def _process_claimed_job(
             database,
             worker_id=worker_id,
             job_id=claimed.job_id,
+            organization_id=claimed.organization_id,
             error=str(exc),
             retryable=False,
         )
@@ -533,6 +611,7 @@ def _process_claimed_job(
             database,
             worker_id=worker_id,
             job_id=claimed.job_id,
+            organization_id=claimed.organization_id,
             error=error,
             retryable=_is_retryable_deepseek_error(error),
         )
@@ -543,6 +622,7 @@ def _process_claimed_job(
             database,
             worker_id=worker_id,
             job_id=claimed.job_id,
+            organization_id=claimed.organization_id,
             error="ai_extraction_worker_error",
             retryable=True,
         )
@@ -562,6 +642,7 @@ def _process_claimed_job(
             database,
             worker_id=worker_id,
             job_id=claimed.job_id,
+            organization_id=claimed.organization_id,
             error=str(exc),
             retryable=False,
         )
@@ -570,6 +651,7 @@ def _process_claimed_job(
             database,
             worker_id=worker_id,
             job_id=claimed.job_id,
+            organization_id=claimed.organization_id,
             error=str(exc),
             retryable=False,
         )
@@ -579,6 +661,7 @@ def _process_claimed_job(
             database,
             worker_id=worker_id,
             job_id=claimed.job_id,
+            organization_id=claimed.organization_id,
             error="ai_extraction_persist_failed",
             retryable=True,
         )
@@ -591,32 +674,42 @@ def _load_claimed_source_blocks(
     claimed: ClaimedAiExtractionJob,
 ) -> list[EvidenceBlock]:
     with database.session_factory() as session:
-        job = _owned_running_job(session, job_id=claimed.job_id, worker_id=worker_id)
-        if job is None:
-            raise AiExtractionJobError("ai_extraction_job_lease_lost")
-        resume = session.get(Resume, claimed.resume_id)
-        if resume is None:
-            raise AiExtractionJobError("resume_not_found")
-        _assert_resume_unchanged_for_job(resume, job=job)
-        source_blocks = session.scalars(
-            select(ResumeSourceBlock)
-            .where(ResumeSourceBlock.resume_id == resume.id)
-            .order_by(ResumeSourceBlock.page_no, ResumeSourceBlock.block_id)
-        ).all()
-        if not source_blocks:
-            raise AiExtractionJobError("resume_has_no_native_text_for_ai_extraction")
-        blocks = [
-            EvidenceBlock(
-                block_id=block.block_id,
-                page_no=block.page_no,
-                block_type=block.block_type,
-                text=block.text,
+        with _organization_session(session, claimed.organization_id):
+            job = _owned_running_job(
+                session,
+                job_id=claimed.job_id,
+                worker_id=worker_id,
+                organization_id=claimed.organization_id,
             )
-            for block in source_blocks
-        ]
-        # No transaction is held while the external provider call is in flight.
-        session.rollback()
-        return blocks
+            if job is None:
+                raise AiExtractionJobError("ai_extraction_job_lease_lost")
+            if job.organization_id != claimed.organization_id or job.resume_id != claimed.resume_id:
+                raise AiExtractionJobError("ai_extraction_workspace_mismatch")
+            resume = session.get(Resume, claimed.resume_id)
+            if resume is None:
+                raise AiExtractionJobError("resume_not_found")
+            if resume.organization_id != claimed.organization_id:
+                raise AiExtractionJobError("ai_extraction_workspace_mismatch")
+            _assert_resume_unchanged_for_job(resume, job=job)
+            source_blocks = session.scalars(
+                select(ResumeSourceBlock)
+                .where(ResumeSourceBlock.resume_id == resume.id)
+                .order_by(ResumeSourceBlock.page_no, ResumeSourceBlock.block_id)
+            ).all()
+            if not source_blocks:
+                raise AiExtractionJobError("resume_has_no_native_text_for_ai_extraction")
+            blocks = [
+                EvidenceBlock(
+                    block_id=block.block_id,
+                    page_no=block.page_no,
+                    block_type=block.block_type,
+                    text=block.text,
+                )
+                for block in source_blocks
+            ]
+            # No transaction is held while the external provider call is in flight.
+            session.rollback()
+            return blocks
 
 
 def _save_completed_ai_facts(
@@ -629,94 +722,104 @@ def _save_completed_ai_facts(
     core_fallback: bool = False,
 ) -> None:
     with database.session_factory() as session:
-        # Lock the job and resume only for the short persistence transaction.
-        # The external AI request has already completed, so this does not hold
-        # a database lock during network I/O.  It closes the race where a human
-        # completes review between the version check and the AI result save.
-        job = _owned_running_job(
-            session,
-            job_id=claimed.job_id,
-            worker_id=worker_id,
-            for_update=True,
-        )
-        if job is None:
-            session.rollback()
-            raise AiExtractionJobError("ai_extraction_job_lease_lost")
-        resume = session.scalar(
-            select(Resume)
-            .where(Resume.id == claimed.resume_id)
-            .with_for_update()
-        )
-        if resume is None:
-            session.rollback()
-            raise AiExtractionJobError("resume_not_found")
-        _assert_resume_unchanged_for_job(resume, job=job)
-        try:
-            prepared_facts, is_partial_draft = prepare_ai_draft_facts(
+        with _organization_session(session, claimed.organization_id):
+            # Lock the job and resume only for the short persistence transaction.
+            # The external AI request has already completed, so this does not hold
+            # a database lock during network I/O.  It closes the race where a human
+            # completes review between the version check and the AI result save.
+            job = _owned_running_job(
                 session,
-                resume_id=resume.id,
-                facts=facts,
+                job_id=claimed.job_id,
+                worker_id=worker_id,
+                organization_id=claimed.organization_id,
+                for_update=True,
             )
-            auto_activate = reparse_clone_auto_activation_allowed(
-                session,
-                resume=resume,
+            if job is None:
+                session.rollback()
+                raise AiExtractionJobError("ai_extraction_job_lease_lost")
+            if job.organization_id != claimed.organization_id or job.resume_id != claimed.resume_id:
+                session.rollback()
+                raise AiExtractionJobError("ai_extraction_workspace_mismatch")
+            resume = session.scalar(
+                select(Resume)
+                .where(Resume.id == claimed.resume_id)
+                .with_for_update()
             )
-            facts_to_save = (
-                merge_filter_v2_enrichment(
+            if resume is None:
+                session.rollback()
+                raise AiExtractionJobError("resume_not_found")
+            if resume.organization_id != claimed.organization_id:
+                session.rollback()
+                raise AiExtractionJobError("ai_extraction_workspace_mismatch")
+            _assert_resume_unchanged_for_job(resume, job=job)
+            try:
+                prepared_facts, is_partial_draft = prepare_ai_draft_facts(
                     session,
                     resume_id=resume.id,
-                    enrichment=prepared_facts,
+                    facts=facts,
                 )
-                if claimed.job_kind == "filter_v2_enrichment"
-                else prepared_facts
-            )
-            saved_resume = save_facts(
-                session,
-                resume_id=resume.id,
-                request=ResumeFactsSaveRequest(facts=facts_to_save),
-                created_by=f"ai:{model}",
-                force_pending_review=True,
-                auto_activate=auto_activate,
-            )
-            quality_flags = set(saved_resume.quality_flags or [])
-            if is_partial_draft:
-                quality_flags.add("ai_draft_partial_source_grounding")
-            else:
-                quality_flags.discard("ai_draft_partial_source_grounding")
-            if core_fallback:
-                quality_flags.add("ai_draft_details_pending")
-            else:
-                quality_flags.discard("ai_draft_details_pending")
-            if claimed.job_kind == "filter_v2_enrichment":
-                quality_flags.add("filter_v2_enriched")
-            if auto_activate:
-                quality_flags.discard("reparse_source_superseded_before_completion")
-            else:
-                # The original candidate version changed while the new source
-                # text was being analyzed.  Preserve both records and require
-                # an explicit fresh reparse instead of allowing a stale job to
-                # replace newer screening data.
-                quality_flags.add("reparse_source_superseded_before_completion")
-            saved_resume.quality_flags = sorted(quality_flags)
-            # Ordinary uploads auto-activate as before. Parser-repair clones
-            # only do so when their source version still owns the candidate's
-            # screening slot; otherwise their grounded facts stay as an
-            # inactive reviewable version.
-            if auto_activate:
-                if saved_resume.extraction_status != "ready" or not saved_resume.is_active:
-                    raise AiExtractionJobError("ai_extraction_must_auto_activate")
-            elif saved_resume.extraction_status != "needs_review" or saved_resume.is_active:
-                raise AiExtractionJobError("stale_reparse_must_remain_inactive")
-            job.status = AI_EXTRACTION_COMPLETED
-            job.lease_owner = None
-            job.lease_expires_at = None
-            job.next_attempt_at = None
-            job.last_error = None
-            job.completed_at = utcnow()
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
+                auto_activate = reparse_clone_auto_activation_allowed(
+                    session,
+                    resume=resume,
+                )
+                facts_to_save = (
+                    merge_filter_v2_enrichment(
+                        session,
+                        resume_id=resume.id,
+                        enrichment=prepared_facts,
+                    )
+                    if claimed.job_kind == "filter_v2_enrichment"
+                    else prepared_facts
+                )
+                saved_resume = save_facts(
+                    session,
+                    resume_id=resume.id,
+                    request=ResumeFactsSaveRequest(facts=facts_to_save),
+                    created_by=f"ai:{model}",
+                    force_pending_review=True,
+                    auto_activate=auto_activate,
+                )
+                if saved_resume.organization_id != claimed.organization_id:
+                    raise AiExtractionJobError("ai_extraction_workspace_mismatch")
+                quality_flags = set(saved_resume.quality_flags or [])
+                if is_partial_draft:
+                    quality_flags.add("ai_draft_partial_source_grounding")
+                else:
+                    quality_flags.discard("ai_draft_partial_source_grounding")
+                if core_fallback:
+                    quality_flags.add("ai_draft_details_pending")
+                else:
+                    quality_flags.discard("ai_draft_details_pending")
+                if claimed.job_kind == "filter_v2_enrichment":
+                    quality_flags.add("filter_v2_enriched")
+                if auto_activate:
+                    quality_flags.discard("reparse_source_superseded_before_completion")
+                else:
+                    # The original candidate version changed while the new source
+                    # text was being analyzed.  Preserve both records and require
+                    # an explicit fresh reparse instead of allowing a stale job to
+                    # replace newer screening data.
+                    quality_flags.add("reparse_source_superseded_before_completion")
+                saved_resume.quality_flags = sorted(quality_flags)
+                # Ordinary uploads auto-activate as before. Parser-repair clones
+                # only do so when their source version still owns the candidate's
+                # screening slot; otherwise their grounded facts stay as an
+                # inactive reviewable version.
+                if auto_activate:
+                    if saved_resume.extraction_status != "ready" or not saved_resume.is_active:
+                        raise AiExtractionJobError("ai_extraction_must_auto_activate")
+                elif saved_resume.extraction_status != "needs_review" or saved_resume.is_active:
+                    raise AiExtractionJobError("stale_reparse_must_remain_inactive")
+                job.status = AI_EXTRACTION_COMPLETED
+                job.lease_owner = None
+                job.lease_expires_at = None
+                job.next_attempt_at = None
+                job.last_error = None
+                job.completed_at = utcnow()
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
 
 
 def _finish_failure(
@@ -724,29 +827,36 @@ def _finish_failure(
     *,
     worker_id: str,
     job_id: str,
+    organization_id: str,
     error: str,
     retryable: bool,
 ) -> None:
     now = utcnow()
     with database.session_factory() as session:
-        job = _owned_running_job(session, job_id=job_id, worker_id=worker_id)
-        if job is None:
-            session.rollback()
-            return
-        retry = retryable and job.attempt_count < job.max_attempts
-        if retry:
-            delay_seconds = min(60, 2 ** max(job.attempt_count - 1, 0))
-            job.status = AI_EXTRACTION_QUEUED
-            job.next_attempt_at = now + timedelta(seconds=delay_seconds)
-            job.completed_at = None
-        else:
-            job.status = AI_EXTRACTION_NEEDS_ATTENTION
-            job.next_attempt_at = None
-            job.completed_at = now
-        job.lease_owner = None
-        job.lease_expires_at = None
-        job.last_error = error[:2000]
-        session.commit()
+        with _organization_session(session, organization_id):
+            job = _owned_running_job(
+                session,
+                job_id=job_id,
+                worker_id=worker_id,
+                organization_id=organization_id,
+            )
+            if job is None or job.organization_id != organization_id:
+                session.rollback()
+                return
+            retry = retryable and job.attempt_count < job.max_attempts
+            if retry:
+                delay_seconds = min(60, 2 ** max(job.attempt_count - 1, 0))
+                job.status = AI_EXTRACTION_QUEUED
+                job.next_attempt_at = now + timedelta(seconds=delay_seconds)
+                job.completed_at = None
+            else:
+                job.status = AI_EXTRACTION_NEEDS_ATTENTION
+                job.next_attempt_at = None
+                job.completed_at = now
+            job.lease_owner = None
+            job.lease_expires_at = None
+            job.last_error = error[:2000]
+            session.commit()
 
 
 def _owned_running_job(
@@ -754,6 +864,7 @@ def _owned_running_job(
     *,
     job_id: str,
     worker_id: str,
+    organization_id: str | None = None,
     for_update: bool = False,
 ) -> ResumeAiExtractionJob | None:
     statement = select(ResumeAiExtractionJob).where(
@@ -761,6 +872,8 @@ def _owned_running_job(
         ResumeAiExtractionJob.status == AI_EXTRACTION_RUNNING,
         ResumeAiExtractionJob.lease_owner == worker_id,
     )
+    if organization_id is not None:
+        statement = statement.where(ResumeAiExtractionJob.organization_id == organization_id)
     if for_update:
         statement = statement.with_for_update()
     return session.scalar(statement)

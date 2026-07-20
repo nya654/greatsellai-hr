@@ -30,8 +30,226 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-class Candidate(Base):
+class OrganizationScoped:
+    """Marker mixin for rows that must never cross a workspace boundary.
+
+    The request/session layer installs tenant criteria for this type.  Keeping
+    the foreign key on the directly queried roots (and worker queues) makes
+    the boundary explicit even when a query does not join through a parent
+    resume or job record.
+    """
+
+    __abstract__ = True
+
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("organizations.id"),
+        index=True,
+    )
+
+
+class ProductPlan(Base):
+    """A platform-managed, configurable product tier.
+
+    Prices and feature access intentionally live in data rather than frontend
+    constants so payment and platform-administration can be added later
+    without changing tenant records.
+    """
+
+    __tablename__ = "product_plans"
+    __table_args__ = (
+        Index("ix_product_plans_signup_order", "is_available_for_signup", "sort_order"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    monthly_price_cents: Mapped[int] = mapped_column(Integer, default=0)
+    currency: Mapped[str] = mapped_column(String(3), default="CNY")
+    trial_days: Mapped[int] = mapped_column(Integer, default=30)
+    feature_flags: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    is_available_for_signup: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_default_trial: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+    organizations: Mapped[list["Organization"]] = relationship(back_populates="plan")
+
+
+class Organization(Base):
+    """An isolated company workspace for recruiting data and jobs."""
+
+    __tablename__ = "organizations"
+    __table_args__ = (
+        Index("ix_organizations_plan_status_trial_ends", "plan_status", "trial_ends_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(200))
+    plan_id: Mapped[str | None] = mapped_column(
+        ForeignKey("product_plans.id"),
+        nullable=True,
+        index=True,
+    )
+    # Values are application-validated: trial, active, expired, suspended,
+    # and legacy.  A portable string is used instead of a database enum so the
+    # same migration runs on SQLite and PostgreSQL.
+    plan_status: Mapped[str] = mapped_column(String(32), default="trial", index=True)
+    trial_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    trial_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+    plan: Mapped[ProductPlan | None] = relationship(back_populates="organizations")
+    memberships: Mapped[list["OrganizationMembership"]] = relationship(
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
+    invitations: Mapped[list["OrganizationInvitation"]] = relationship(
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
+
+
+class UserAccount(Base):
+    """A password-authenticated user identity, independent of any workspace."""
+
+    __tablename__ = "user_accounts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    email: Mapped[str] = mapped_column(String(320))
+    # ``email_key`` is the lower-cased, trimmed comparison key.  The original
+    # address remains available for display and future verification mail.
+    email_key: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    full_name: Mapped[str] = mapped_column(String(200))
+    password_hash: Mapped[str] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    is_platform_admin: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+    memberships: Mapped[list["OrganizationMembership"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    accepted_invitations: Mapped[list["OrganizationInvitation"]] = relationship(
+        back_populates="accepted_by_user",
+        foreign_keys="OrganizationInvitation.accepted_by_user_id",
+    )
+    created_invitations: Mapped[list["OrganizationInvitation"]] = relationship(
+        back_populates="created_by_user",
+        foreign_keys="OrganizationInvitation.created_by_user_id",
+    )
+    password_reset_tokens: Mapped[list["PasswordResetToken"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+
+class OrganizationMembership(Base):
+    """A user's role in one recruiting workspace."""
+
+    __tablename__ = "organization_memberships"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "user_id", name="uq_organization_membership"),
+        Index("ix_organization_memberships_user_active", "user_id", "is_active"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("user_accounts.id"), index=True)
+    # Application-validated role values: admin or recruiter.
+    role: Mapped[str] = mapped_column(String(32), default="recruiter", index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+    organization: Mapped[Organization] = relationship(back_populates="memberships")
+    user: Mapped[UserAccount] = relationship(back_populates="memberships")
+
+
+class OrganizationInvitation(Base):
+    """A single-use digest-only invitation to join an existing workspace."""
+
+    __tablename__ = "organization_invitations"
+    __table_args__ = (
+        Index("ix_organization_invitations_org_expiry", "organization_id", "expires_at"),
+        Index("ix_organization_invitations_email_expiry", "email_key", "expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    email_key: Mapped[str | None] = mapped_column(String(320), index=True)
+    token_digest: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    role: Mapped[str] = mapped_column(String(32), default="recruiter")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    accepted_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("user_accounts.id"),
+        nullable=True,
+        index=True,
+    )
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("user_accounts.id"),
+        nullable=True,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    organization: Mapped[Organization] = relationship(back_populates="invitations")
+    accepted_by_user: Mapped[UserAccount | None] = relationship(
+        back_populates="accepted_invitations",
+        foreign_keys=[accepted_by_user_id],
+    )
+    created_by_user: Mapped[UserAccount | None] = relationship(
+        back_populates="created_invitations",
+        foreign_keys=[created_by_user_id],
+    )
+
+
+class PasswordResetToken(Base):
+    """A one-time, digest-only password reset token."""
+
+    __tablename__ = "password_reset_tokens"
+    __table_args__ = (
+        Index("ix_password_reset_tokens_user_requested", "user_id", "requested_at"),
+        Index("ix_password_reset_tokens_expiry", "expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("user_accounts.id"), index=True)
+    token_digest: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    user: Mapped[UserAccount] = relationship(back_populates="password_reset_tokens")
+
+
+class Candidate(OrganizationScoped, Base):
     __tablename__ = "candidates"
+    __table_args__ = (
+        Index("ix_candidates_organization_created", "organization_id", "created_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     display_name: Mapped[str | None] = mapped_column(String(200))
@@ -43,7 +261,7 @@ class Candidate(Base):
     )
 
 
-class Resume(Base):
+class Resume(OrganizationScoped, Base):
     __tablename__ = "resumes"
     __table_args__ = (
         Index(
@@ -53,6 +271,8 @@ class Resume(Base):
             sqlite_where=text("is_active = 1"),
             postgresql_where=text("is_active = true"),
         ),
+        Index("ix_resumes_organization_created", "organization_id", "created_at"),
+        Index("ix_resumes_organization_candidate", "organization_id", "candidate_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -137,7 +357,7 @@ class Resume(Base):
     )
 
 
-class ResumeUploadIdempotencyKey(Base):
+class ResumeUploadIdempotencyKey(OrganizationScoped, Base):
     """Durable replay record for the convenience resume upload endpoint.
 
     The client supplied key is stored only as a SHA-256 digest.  This keeps the
@@ -146,7 +366,21 @@ class ResumeUploadIdempotencyKey(Base):
     """
 
     __tablename__ = "resume_upload_idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint("resume_id", name="uq_resume_upload_idempotency_resume"),
+        Index(
+            "ix_resume_upload_idempotency_keys_organization_created",
+            "organization_id",
+            "created_at",
+        ),
+    )
 
+    # A caller may legitimately reuse the same opaque idempotency key in two
+    # unrelated workspaces, so the workspace is part of the durable key.
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("organizations.id"),
+        primary_key=True,
+    )
     idempotency_key_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     content_sha256: Mapped[str] = mapped_column(String(64))
     resume_id: Mapped[str] = mapped_column(
@@ -158,10 +392,13 @@ class ResumeUploadIdempotencyKey(Base):
     resume: Mapped[Resume] = relationship(back_populates="upload_idempotency_keys")
 
 
-class MailboxConfig(Base):
+class MailboxConfig(OrganizationScoped, Base):
     """The single account's IMAP source. Its password is always encrypted."""
 
     __tablename__ = "mailbox_configs"
+    __table_args__ = (
+        Index("ix_mailbox_configs_organization_enabled", "organization_id", "enabled"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     imap_host: Mapped[str] = mapped_column(String(255))
@@ -188,7 +425,7 @@ class MailboxConfig(Base):
     )
 
 
-class EmailAttachmentImport(Base):
+class EmailAttachmentImport(OrganizationScoped, Base):
     """Idempotent audit record for every attachment considered by IMAP sync."""
 
     __tablename__ = "email_attachment_imports"
@@ -201,6 +438,7 @@ class EmailAttachmentImport(Base):
         ),
         Index("ix_email_attachment_imports_resume_id", "resume_id"),
         Index("ix_email_attachment_imports_config_created", "mailbox_config_id", "created_at"),
+        Index("ix_email_attachment_imports_organization_created", "organization_id", "created_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -218,7 +456,7 @@ class EmailAttachmentImport(Base):
     mailbox_config: Mapped[MailboxConfig] = relationship(back_populates="imports")
 
 
-class ResumeAiExtractionJob(Base):
+class ResumeAiExtractionJob(OrganizationScoped, Base):
     """Durable, lease-based AI structured-facts extraction work for one resume.
 
     There is intentionally one mutable job per resume.  Re-running extraction
@@ -238,6 +476,12 @@ class ResumeAiExtractionJob(Base):
             "ix_resume_ai_extraction_job_lease",
             "status",
             "lease_expires_at",
+        ),
+        Index(
+            "ix_resume_ai_extraction_job_organization_claim",
+            "organization_id",
+            "status",
+            "next_attempt_at",
         ),
     )
 
@@ -401,13 +645,14 @@ class ResumeReviewAction(Base):
     resume: Mapped[Resume] = relationship(back_populates="review_actions")
 
 
-class ResumeFactSnapshot(Base):
+class ResumeFactSnapshot(OrganizationScoped, Base):
     """Append-only, reproducible representation of one saved facts revision."""
 
     __tablename__ = "resume_fact_snapshots"
     __table_args__ = (
         UniqueConstraint("resume_id", "facts_version", name="uq_resume_fact_snapshot_version"),
         Index("ix_resume_fact_snapshot_sha256", "facts_sha256"),
+        Index("ix_resume_fact_snapshot_organization_created", "organization_id", "created_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -450,11 +695,14 @@ class InstitutionAlias(Base):
     institution: Mapped[Institution] = relationship(back_populates="aliases")
 
 
-class SavedFilter(Base):
+class SavedFilter(OrganizationScoped, Base):
     __tablename__ = "saved_filters"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "name", name="uq_saved_filter_organization_name"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    name: Mapped[str] = mapped_column(String(120), unique=True)
+    name: Mapped[str] = mapped_column(String(120))
     filters: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -464,11 +712,15 @@ class SavedFilter(Base):
     )
 
 
-class ScoreTemplate(Base):
+class ScoreTemplate(OrganizationScoped, Base):
     __tablename__ = "score_templates"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "name", name="uq_score_template_organization_name"),
+        Index("ix_score_templates_organization_archived", "organization_id", "is_archived"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    name: Mapped[str] = mapped_column(String(120), unique=True)
+    name: Mapped[str] = mapped_column(String(120))
     description: Mapped[str | None] = mapped_column(Text)
     version: Mapped[int] = mapped_column(Integer, default=1)
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -508,7 +760,7 @@ class ScoreTemplateDimension(Base):
     template: Mapped[ScoreTemplate] = relationship(back_populates="dimensions")
 
 
-class ResumeScore(Base):
+class ResumeScore(OrganizationScoped, Base):
     __tablename__ = "resume_scores"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -534,7 +786,7 @@ class ResumeScore(Base):
     template: Mapped[ScoreTemplate] = relationship(back_populates="scores")
 
 
-class ResumeSummary(Base):
+class ResumeSummary(OrganizationScoped, Base):
     __tablename__ = "resume_summaries"
     __table_args__ = (
         Index(
@@ -544,6 +796,7 @@ class ResumeSummary(Base):
             sqlite_where=text("is_current = 1"),
             postgresql_where=text("is_current = true"),
         ),
+        Index("ix_resume_summaries_organization_created", "organization_id", "created_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -578,10 +831,13 @@ class ResumeSummary(Base):
     fact_snapshot: Mapped[ResumeFactSnapshot | None] = relationship()
 
 
-class Job(Base):
+class Job(OrganizationScoped, Base):
     """Current-version cache; immutable JD evidence lives in ``JobVersion``."""
 
     __tablename__ = "jobs"
+    __table_args__ = (
+        Index("ix_jobs_organization_updated", "organization_id", "updated_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     title: Mapped[str] = mapped_column(String(200))
@@ -605,10 +861,11 @@ class Job(Base):
     )
 
 
-class JobVersion(Base):
+class JobVersion(OrganizationScoped, Base):
     __tablename__ = "job_versions"
     __table_args__ = (
         UniqueConstraint("job_id", "version", name="uq_job_version"),
+        Index("ix_job_versions_organization_status", "organization_id", "status"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -671,8 +928,12 @@ class JobRequirement(Base):
     )
 
 
-class JobMatch(Base):
+class JobMatch(OrganizationScoped, Base):
     __tablename__ = "job_matches"
+    __table_args__ = (
+        Index("ix_job_matches_organization_created", "organization_id", "created_at"),
+        Index("ix_job_matches_organization_job", "organization_id", "job_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id"), index=True)
@@ -727,10 +988,18 @@ class JobMatchRequirementResult(Base):
     requirement: Mapped[JobRequirement] = relationship(back_populates="match_results")
 
 
-class JobMatchBatch(Base):
+class JobMatchBatch(OrganizationScoped, Base):
     """A durable, JD-version-scoped batch of AI resume matches."""
 
     __tablename__ = "job_match_batches"
+    __table_args__ = (
+        Index(
+            "ix_job_match_batches_organization_claim",
+            "organization_id",
+            "status",
+            "lease_expires_at",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     job_version_id: Mapped[str] = mapped_column(ForeignKey("job_versions.id"), index=True)
@@ -756,11 +1025,17 @@ class JobMatchBatch(Base):
     )
 
 
-class JobMatchBatchItem(Base):
+class JobMatchBatchItem(OrganizationScoped, Base):
     __tablename__ = "job_match_batch_items"
     __table_args__ = (
         UniqueConstraint("batch_id", "resume_id", name="uq_job_match_batch_item_resume"),
         Index("ix_job_match_batch_item_claim", "status", "next_attempt_at"),
+        Index(
+            "ix_job_match_batch_item_organization_claim",
+            "organization_id",
+            "status",
+            "next_attempt_at",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -784,3 +1059,11 @@ class JobMatchBatchItem(Base):
     resume: Mapped[Resume] = relationship()
     fact_snapshot: Mapped[ResumeFactSnapshot] = relationship()
     job_match: Mapped[JobMatch | None] = relationship()
+
+
+# Register the session-level tenant criteria only after every mapped business
+# root above exists.  The helper imports this module lazily to avoid a model
+# import cycle.
+from app.tenant_scope import install_tenant_scope
+
+install_tenant_scope()

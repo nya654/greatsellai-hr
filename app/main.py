@@ -31,7 +31,19 @@ from app.filter_options import filter_options_payload
 from app.models import Candidate, Resume
 from app.schemas import (
     AuthLogin,
+    AuthRegistration,
     AuthSession,
+    OrganizationInvitationAccept,
+    OrganizationInvitationCreate,
+    OrganizationInvitationResponse,
+    OrganizationPlanAssign,
+    OrganizationPlanResponse,
+    PasswordResetComplete,
+    PasswordResetRequest,
+    PasswordResetRequestResult,
+    ProductPlanResponse,
+    ProductPlanUpdate,
+    RegistrationOfferResponse,
     MailboxConfigResponse,
     MailboxConfigUpdate,
     MailboxImportHistoryResponse,
@@ -78,6 +90,30 @@ from app.schemas import (
     ScoreTemplateCreate,
     ScoreTemplateResponse,
 )
+from app.services.identity_service import (
+    AuthPrincipal,
+    IdentityServiceError,
+    accept_invitation,
+    assign_organization_plan,
+    auth_session_response,
+    authenticate_email_password,
+    clear_session,
+    complete_password_reset,
+    create_invitation,
+    create_registration,
+    current_plan_response,
+    ensure_identity_bootstrap,
+    establish_session,
+    issue_password_reset,
+    legacy_principal,
+    list_product_plans,
+    principal_from_session,
+    registration_offer,
+    require_feature,
+    trial_access,
+    update_product_plan,
+)
+from app.tenant_scope import organization_context_id, set_organization_context
 from app.services.institution_service import (
     is_institution_registry_seeded,
     seed_institution_registry,
@@ -104,6 +140,7 @@ from app.services.resume_service import (
     reparse_active_resume_as_new_version,
     reconcile_legacy_completed_ai_resumes,
     register_upload_idempotency_key,
+    resolve_uploaded_resume_path,
     save_facts,
     save_pdf_resume,
     validate_pdf_resume_upload,
@@ -230,24 +267,24 @@ _SUPPORTED_RESUME_MEDIA_TYPES = frozenset(
 )
 
 
-def _resume_original_file_path(*, settings: AppSettings, storage_key: str) -> Path:
-    """Resolve an uploaded original only when it remains inside the upload root."""
-
+def _resume_original_file_path(
+    *,
+    settings: AppSettings,
+    storage_key: str,
+    organization_id: str,
+) -> Path:
+    """Resolve an original strictly inside its owning workspace directory."""
     try:
-        upload_root = settings.upload_dir.resolve()
-        source_path = (upload_root / storage_key).resolve()
-    except (OSError, RuntimeError, ValueError) as exc:
+        return resolve_uploaded_resume_path(
+            settings,
+            storage_key=storage_key,
+            organization_id=organization_id,
+        )
+    except ResumeServiceError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="resume_original_file_not_found",
         ) from exc
-
-    if source_path.parent != upload_root or not source_path.is_file():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="resume_original_file_not_found",
-        )
-    return source_path
 
 
 def _commit_or_raise(session: Session) -> None:
@@ -394,26 +431,71 @@ def _resume_review_detail(resume: object) -> ResumeReviewDetail:
 
 async def require_single_admin(
     request: Request,
+    session: Session = Depends(get_session),
     x_admin_token: Annotated[str | None, Header()] = None,
-) -> None:
+) -> AuthPrincipal:
+    """Resolve one server-verified member and bind its workspace to Session.
+
+    The historical name remains on existing route declarations while the
+    behavior is now a member-level workspace guard.  The legacy admin token
+    is intentionally mapped only to the legacy workspace; it is never a
+    global cross-tenant bypass.
+    """
+
     settings: AppSettings = request.app.state.settings
+    principal: AuthPrincipal | None = None
     if settings.allow_unauthenticated:
-        return
-    if request.session.get("resume_v3_authenticated") is True:
-        return
-    if not settings.admin_token:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="server_missing_admin_token",
-        )
-    if x_admin_token is None or not hmac.compare_digest(
-        x_admin_token,
-        settings.admin_token,
-    ):
+        principal = legacy_principal(session)
+    else:
+        principal = principal_from_session(session, request.session)
+        # Existing signed browser sessions and the optional header remain a
+        # migration bridge into *only* the legacy workspace.
+        if principal is None and request.session.get("resume_v3_authenticated") is True:
+            principal = legacy_principal(session)
+        if (
+            principal is None
+            and settings.admin_token
+            and x_admin_token
+            and hmac.compare_digest(x_admin_token, settings.admin_token)
+        ):
+            principal = legacy_principal(session)
+    if principal is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="invalid_admin_token",
+            detail=("invalid_admin_token" if settings.admin_token else "authentication_required"),
         )
+
+    set_organization_context(session, principal.organization_id)
+    if not trial_access(principal).access_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="trial_expired",
+        )
+    return principal
+
+
+async def require_organization_admin(
+    principal: AuthPrincipal = Depends(require_single_admin),
+) -> AuthPrincipal:
+    if principal.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="organization_admin_required")
+    return principal
+
+
+async def require_mailbox_feature(
+    principal: AuthPrincipal = Depends(require_organization_admin),
+) -> AuthPrincipal:
+    if not require_feature(principal, "mailbox_import"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="feature_not_available")
+    return principal
+
+
+async def require_ai_jd_feature(
+    principal: AuthPrincipal = Depends(require_single_admin),
+) -> AuthPrincipal:
+    if not require_feature(principal, "ai_jd_generation"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="feature_not_available")
+    return principal
 
 
 def create_app(settings_override: AppSettings | None = None) -> FastAPI:
@@ -431,6 +513,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         if settings.auto_create_schema:
             database.create_all()
         with database.session_factory() as session:
+            ensure_identity_bootstrap(session)
             if settings.seed_registry_on_startup:
                 seed_institution_registry(session)
             elif not is_institution_registry_seeded(session):
@@ -465,42 +548,226 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/v1/auth/session", response_model=AuthSession)
-    async def get_auth_session(request: Request) -> AuthSession:
-        return AuthSession(
-            authenticated=(
-                settings.allow_unauthenticated
-                or request.session.get("resume_v3_authenticated") is True
-            ),
-            login_required=not settings.allow_unauthenticated,
+    async def get_auth_session(
+        request: Request,
+        session: Session = Depends(get_session),
+    ) -> AuthSession:
+        principal = (
+            legacy_principal(session)
+            if settings.allow_unauthenticated
+            else principal_from_session(session, request.session)
         )
+        # Preserve an existing migration session only as a legacy identity.
+        if principal is None and request.session.get("resume_v3_authenticated") is True:
+            principal = legacy_principal(session)
+        if principal is not None:
+            set_organization_context(session, principal.organization_id)
+        return auth_session_response(principal, login_required=not settings.allow_unauthenticated)
 
     @app.post("/v1/auth/login", response_model=AuthSession)
-    async def post_auth_login(payload: AuthLogin, request: Request) -> AuthSession:
-        if settings.allow_unauthenticated:
-            request.session["resume_v3_authenticated"] = True
-            return AuthSession(authenticated=True, login_required=False)
-        if not settings.admin_token:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="server_missing_admin_token",
-            )
-        if not hmac.compare_digest(payload.password, settings.admin_token):
+    async def post_auth_login(
+        payload: AuthLogin,
+        request: Request,
+        session: Session = Depends(get_session),
+    ) -> AuthSession:
+        try:
+            if payload.email:
+                principal = authenticate_email_password(
+                    session,
+                    email_value=payload.email,
+                    password=payload.password,
+                )
+            elif (
+                settings.admin_token
+                and hmac.compare_digest(payload.password, settings.admin_token)
+            ):
+                principal = legacy_principal(session)
+            elif settings.allow_unauthenticated:
+                principal = legacy_principal(session)
+            else:
+                raise IdentityServiceError("invalid_login_credentials")
+        except IdentityServiceError as exc:
+            session.rollback()
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="invalid_login_credentials",
+            ) from exc
+        _commit_or_raise(session)
+        establish_session(request.session, principal)
+        set_organization_context(session, principal.organization_id)
+        return auth_session_response(principal, login_required=not settings.allow_unauthenticated)
+
+    @app.get("/v1/auth/registration-offer", response_model=RegistrationOfferResponse)
+    async def get_registration_offer(
+        session: Session = Depends(get_session),
+    ) -> RegistrationOfferResponse:
+        try:
+            return registration_offer(session)
+        except IdentityServiceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
+
+    @app.post("/v1/auth/register", response_model=AuthSession, status_code=status.HTTP_201_CREATED)
+    async def post_auth_register(
+        payload: AuthRegistration,
+        request: Request,
+        session: Session = Depends(get_session),
+    ) -> AuthSession:
+        try:
+            principal = create_registration(session, payload)
+            _commit_or_raise(session)
+        except IdentityServiceError as exc:
+            session.rollback()
+            code = str(exc)
+            response_status = (
+                status.HTTP_409_CONFLICT
+                if code == "email_already_registered"
+                else status.HTTP_422_UNPROCESSABLE_CONTENT
             )
-        request.session.clear()
-        request.session["resume_v3_authenticated"] = True
-        return AuthSession(authenticated=True, login_required=True)
+            raise HTTPException(status_code=response_status, detail=code) from exc
+        establish_session(request.session, principal)
+        set_organization_context(session, principal.organization_id)
+        return auth_session_response(principal, login_required=not settings.allow_unauthenticated)
+
+    @app.post("/v1/auth/password-reset/request", response_model=PasswordResetRequestResult)
+    async def post_password_reset_request(
+        payload: PasswordResetRequest,
+        session: Session = Depends(get_session),
+    ) -> PasswordResetRequestResult:
+        # The token is digest-only in the database and never appears in the
+        # response.  A mail-delivery adapter can be connected later without
+        # changing this enumeration-safe public contract.
+        issue_password_reset(session, email_value=payload.email)
+        _commit_or_raise(session)
+        return PasswordResetRequestResult(accepted=True, delivery_available=False)
+
+    @app.post("/v1/auth/password-reset/complete", status_code=status.HTTP_204_NO_CONTENT)
+    async def post_password_reset_complete(
+        payload: PasswordResetComplete,
+        session: Session = Depends(get_session),
+    ) -> None:
+        try:
+            complete_password_reset(session, token=payload.token, password=payload.password)
+            _commit_or_raise(session)
+        except IdentityServiceError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
 
     @app.post("/v1/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
     async def post_auth_logout(request: Request) -> None:
-        request.session.clear()
+        clear_session(request.session)
+
+    @app.get(
+        "/v1/organization/plan",
+        response_model=OrganizationPlanResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def get_current_organization_plan(
+        principal: AuthPrincipal = Depends(require_single_admin),
+    ) -> OrganizationPlanResponse:
+        return current_plan_response(principal)
+
+    @app.post(
+        "/v1/organization/invitations",
+        response_model=OrganizationInvitationResponse,
+        status_code=status.HTTP_201_CREATED,
+        dependencies=[Depends(require_organization_admin)],
+    )
+    def post_organization_invitation(
+        payload: OrganizationInvitationCreate,
+        principal: AuthPrincipal = Depends(require_organization_admin),
+        session: Session = Depends(get_session),
+    ) -> OrganizationInvitationResponse:
+        try:
+            response = create_invitation(session, principal=principal, payload=payload)
+            _commit_or_raise(session)
+            return response
+        except IdentityServiceError as exc:
+            session.rollback()
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+    @app.post("/v1/auth/invitations/accept", response_model=AuthSession)
+    async def post_accept_organization_invitation(
+        payload: OrganizationInvitationAccept,
+        request: Request,
+        session: Session = Depends(get_session),
+    ) -> AuthSession:
+        try:
+            principal = accept_invitation(session, payload=payload)
+            _commit_or_raise(session)
+        except IdentityServiceError as exc:
+            session.rollback()
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        establish_session(request.session, principal)
+        set_organization_context(session, principal.organization_id)
+        return auth_session_response(principal, login_required=True)
+
+    @app.get("/v1/platform/plans", response_model=list[ProductPlanResponse])
+    def get_platform_plans(
+        principal: AuthPrincipal = Depends(require_single_admin),
+        session: Session = Depends(get_session),
+    ) -> list[ProductPlanResponse]:
+        if not principal.is_platform_admin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="platform_admin_required")
+        return list_product_plans(session)
+
+    @app.put("/v1/platform/plans/{plan_code}", response_model=ProductPlanResponse)
+    def put_platform_plan(
+        plan_code: str,
+        payload: ProductPlanUpdate,
+        principal: AuthPrincipal = Depends(require_single_admin),
+        session: Session = Depends(get_session),
+    ) -> ProductPlanResponse:
+        if not principal.is_platform_admin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="platform_admin_required")
+        try:
+            response = update_product_plan(session, code=plan_code, payload=payload)
+            _commit_or_raise(session)
+            return response
+        except IdentityServiceError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=(
+                    status.HTTP_404_NOT_FOUND
+                    if str(exc) == "product_plan_not_found"
+                    else status.HTTP_422_UNPROCESSABLE_CONTENT
+                ),
+                detail=str(exc),
+            ) from exc
+
+    @app.put(
+        "/v1/platform/organizations/{organization_id}/plan",
+        response_model=OrganizationPlanResponse,
+    )
+    def put_platform_organization_plan(
+        organization_id: str,
+        payload: OrganizationPlanAssign,
+        principal: AuthPrincipal = Depends(require_single_admin),
+        session: Session = Depends(get_session),
+    ) -> OrganizationPlanResponse:
+        if not principal.is_platform_admin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="platform_admin_required")
+        try:
+            response = assign_organization_plan(
+                session,
+                organization_id=organization_id,
+                payload=payload,
+            )
+            _commit_or_raise(session)
+            return response
+        except IdentityServiceError as exc:
+            session.rollback()
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     @app.get(
         "/v1/mailbox/config",
         response_model=MailboxConfigResponse,
-        dependencies=[Depends(require_single_admin)],
+        dependencies=[Depends(require_mailbox_feature)],
     )
     def get_mailbox_configuration(
         session: Session = Depends(get_session),
@@ -510,7 +777,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
     @app.put(
         "/v1/mailbox/config",
         response_model=MailboxConfigResponse,
-        dependencies=[Depends(require_single_admin)],
+        dependencies=[Depends(require_mailbox_feature)],
     )
     def put_mailbox_configuration(
         payload: MailboxConfigUpdate,
@@ -528,7 +795,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
     @app.post(
         "/v1/mailbox/sync",
         response_model=MailboxSyncResponse,
-        dependencies=[Depends(require_single_admin)],
+        dependencies=[Depends(require_mailbox_feature)],
     )
     def post_mailbox_sync(
         session: Session = Depends(get_session),
@@ -554,7 +821,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
     @app.get(
         "/v1/mailbox/imports",
         response_model=MailboxImportHistoryResponse,
-        dependencies=[Depends(require_single_admin)],
+        dependencies=[Depends(require_mailbox_feature)],
     )
     def get_mailbox_import_history(
         limit: int = Query(default=40, ge=1, le=100),
@@ -647,11 +914,19 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
             _commit_or_raise(session)
         except NotFoundError as exc:
             session.rollback()
-            discard_uploaded_pdf(settings, storage_key=storage_key)
+            discard_uploaded_pdf(
+                settings,
+                storage_key=storage_key,
+                organization_id=organization_context_id(session),
+            )
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
         except UploadValidationError as exc:
             session.rollback()
-            discard_uploaded_pdf(settings, storage_key=storage_key)
+            discard_uploaded_pdf(
+                settings,
+                storage_key=storage_key,
+                organization_id=organization_context_id(session),
+            )
             response_status = (
                 status.HTTP_413_CONTENT_TOO_LARGE
                 if str(exc) == "file_too_large"
@@ -659,11 +934,19 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
             )
             raise HTTPException(status_code=response_status, detail=str(exc)) from exc
         except HTTPException:
-            discard_uploaded_pdf(settings, storage_key=storage_key)
+            discard_uploaded_pdf(
+                settings,
+                storage_key=storage_key,
+                organization_id=organization_context_id(session),
+            )
             raise
         except Exception:
             session.rollback()
-            discard_uploaded_pdf(settings, storage_key=storage_key)
+            discard_uploaded_pdf(
+                settings,
+                storage_key=storage_key,
+                organization_id=organization_context_id(session),
+            )
             raise
         return _resume_upload_response(resume)
 
@@ -758,7 +1041,11 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
             session.commit()
         except UploadValidationError as exc:
             session.rollback()
-            discard_uploaded_pdf(settings, storage_key=storage_key)
+            discard_uploaded_pdf(
+                settings,
+                storage_key=storage_key,
+                organization_id=organization_context_id(session),
+            )
             response_status = (
                 status.HTTP_413_CONTENT_TOO_LARGE
                 if str(exc) == "file_too_large"
@@ -767,7 +1054,11 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
             raise HTTPException(status_code=response_status, detail=str(exc)) from exc
         except IntegrityError as exc:
             session.rollback()
-            discard_uploaded_pdf(settings, storage_key=storage_key)
+            discard_uploaded_pdf(
+                settings,
+                storage_key=storage_key,
+                organization_id=organization_context_id(session),
+            )
             if normalized_idempotency_key is not None:
                 try:
                     replayed_resume = get_idempotent_upload_resume(
@@ -788,7 +1079,11 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
             ) from exc
         except Exception:
             session.rollback()
-            discard_uploaded_pdf(settings, storage_key=storage_key)
+            discard_uploaded_pdf(
+                settings,
+                storage_key=storage_key,
+                organization_id=organization_context_id(session),
+            )
             raise
         return _resume_upload_response(resume)
 
@@ -884,6 +1179,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         source_path = _resume_original_file_path(
             settings=settings,
             storage_key=resume.storage_key,
+            organization_id=organization_context_id(session),
         )
         return FileResponse(
             path=source_path,
@@ -992,11 +1288,19 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         except HTTPException:
             # A failed commit leaves no durable Resume row for this copied
             # original, so remove the just-created file as well.
-            discard_uploaded_pdf(settings, storage_key=replacement_storage_key)
+            discard_uploaded_pdf(
+                settings,
+                storage_key=replacement_storage_key,
+                organization_id=organization_context_id(session),
+            )
             raise
         except Exception:
             session.rollback()
-            discard_uploaded_pdf(settings, storage_key=replacement_storage_key)
+            discard_uploaded_pdf(
+                settings,
+                storage_key=replacement_storage_key,
+                organization_id=organization_context_id(session),
+            )
             raise
         return _resume_detail(replacement)
 
@@ -1342,7 +1646,17 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         resume_id: str,
         session: Session = Depends(get_session),
     ) -> list[ResumeSummaryResponse]:
-        return list_resume_summaries(session, resume_id=resume_id)
+        try:
+            return list_resume_summaries(session, resume_id=resume_id)
+        except SummaryServiceError as exc:
+            raise HTTPException(
+                status_code=(
+                    status.HTTP_404_NOT_FOUND
+                    if str(exc) == "resume_not_found"
+                    else status.HTTP_409_CONFLICT
+                ),
+                detail=str(exc),
+            ) from exc
 
     @app.post(
         "/v1/resume-summaries/{summary_id}/manual-versions",
@@ -1377,7 +1691,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
     @app.post(
         "/v1/jobs/generate-jd",
         response_model=JobGenerationResponse,
-        dependencies=[Depends(require_single_admin)],
+        dependencies=[Depends(require_ai_jd_feature)],
     )
     def post_generate_job_description(
         payload: JobGenerationRequest,

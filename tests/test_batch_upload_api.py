@@ -60,7 +60,7 @@ def test_combined_upload_idempotency_replays_the_original_upload(client) -> None
             "created_at": queue.json()["items"][0]["created_at"],
         }
     ]
-    assert len(list(client.app.state.settings.upload_dir.glob("*.pdf"))) == 1
+    assert len(list(client.app.state.settings.upload_dir.rglob("*.pdf"))) == 1
 
 
 def test_combined_upload_idempotency_rejects_different_pdf_without_orphan(client) -> None:
@@ -81,7 +81,7 @@ def test_combined_upload_idempotency_rejects_different_pdf_without_orphan(client
     assert first.status_code == 200, first.text
     assert conflict.status_code == 409, conflict.text
     assert conflict.json()["detail"] == "idempotency_key_reused_with_different_pdf"
-    assert len(list(client.app.state.settings.upload_dir.glob("*.pdf"))) == 1
+    assert len(list(client.app.state.settings.upload_dir.rglob("*.pdf"))) == 1
     assert client.get("/v1/resumes/review-queue").json()["total"] == 1
 
 
@@ -103,8 +103,8 @@ def test_combined_upload_removes_pdf_when_transaction_commit_fails(
 
     assert response.status_code == 409, response.text
     assert response.json()["detail"] == "database_conflict"
-    assert list(client.app.state.settings.upload_dir.glob("*.pdf")) == []
-    assert list(client.app.state.settings.upload_dir.glob("*.uploading")) == []
+    assert list(client.app.state.settings.upload_dir.rglob("*.pdf")) == []
+    assert list(client.app.state.settings.upload_dir.rglob("*.uploading")) == []
 
 
 def test_review_queue_requires_auth_and_paginates_non_active_uploads(

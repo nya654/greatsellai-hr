@@ -89,12 +89,135 @@ class ApiModel(BaseModel):
 
 
 class AuthLogin(ApiModel):
+    # ``email`` is optional only for the temporary legacy-admin compatibility
+    # path. New accounts always authenticate with email + password.
+    email: str | None = Field(default=None, max_length=320)
     password: str = Field(min_length=1, max_length=512)
+
+
+class AuthUserResponse(ApiModel):
+    user_id: str
+    display_name: str
+    email: str
+
+
+class AuthOrganizationResponse(ApiModel):
+    organization_id: str
+    name: str
+
+
+class AuthPlanResponse(ApiModel):
+    code: str
+    name: str
+    feature_flags: dict[str, bool] = Field(default_factory=dict)
+
+
+class TrialAccessResponse(ApiModel):
+    plan_status: Literal["trial", "active", "expired", "suspended"]
+    trial_started_at: datetime | None = None
+    trial_ends_at: datetime | None = None
+    trial_days_remaining: int | None = None
+    access_enabled: bool
 
 
 class AuthSession(ApiModel):
     authenticated: bool
     login_required: bool
+    user: AuthUserResponse | None = None
+    organization: AuthOrganizationResponse | None = None
+    role: Literal["admin", "recruiter"] | None = None
+    plan: AuthPlanResponse | None = None
+    trial: TrialAccessResponse | None = None
+
+
+class AuthRegistration(ApiModel):
+    organization_name: str = Field(min_length=2, max_length=200)
+    full_name: str = Field(min_length=1, max_length=120)
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=8, max_length=512)
+
+
+class RegistrationOfferResponse(ApiModel):
+    """The current server-owned self-service registration offer."""
+
+    plan_code: str
+    plan_name: str
+    trial_days: int = Field(ge=0)
+
+
+class PasswordResetRequest(ApiModel):
+    email: str = Field(min_length=3, max_length=320)
+
+
+class PasswordResetRequestResult(ApiModel):
+    accepted: bool = True
+    delivery_available: bool = False
+
+
+class PasswordResetComplete(ApiModel):
+    token: str = Field(min_length=20, max_length=512)
+    password: str = Field(min_length=8, max_length=512)
+
+
+class OrganizationInvitationCreate(ApiModel):
+    role: Literal["admin", "recruiter"] = "recruiter"
+    email: str | None = Field(default=None, max_length=320)
+    expires_in_days: int = Field(default=7, ge=1, le=30)
+
+
+class OrganizationInvitationResponse(ApiModel):
+    invitation_id: str
+    role: Literal["admin", "recruiter"]
+    email: str | None = None
+    expires_at: datetime
+    invitation_token: str | None = None
+
+
+class OrganizationInvitationAccept(ApiModel):
+    invitation_token: str = Field(min_length=20, max_length=512)
+    full_name: str = Field(min_length=1, max_length=120)
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=8, max_length=512)
+
+
+class OrganizationPlanResponse(ApiModel):
+    organization_id: str
+    plan_code: str
+    plan_name: str
+    monthly_price_cents: int
+    plan_status: Literal["trial", "active", "expired", "suspended"]
+    trial_started_at: datetime | None = None
+    trial_ends_at: datetime | None = None
+    feature_flags: dict[str, bool] = Field(default_factory=dict)
+
+
+class ProductPlanResponse(ApiModel):
+    plan_id: str
+    code: str
+    name: str
+    monthly_price_cents: int
+    trial_days: int
+    feature_flags: dict[str, bool] = Field(default_factory=dict)
+    is_active: bool
+    is_available_for_signup: bool
+    is_default_trial: bool
+    sort_order: int
+
+
+class ProductPlanUpdate(ApiModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    monthly_price_cents: int | None = Field(default=None, ge=0, le=10_000_000)
+    trial_days: int | None = Field(default=None, ge=0, le=365)
+    feature_flags: dict[str, bool] | None = None
+    is_active: bool | None = None
+    is_available_for_signup: bool | None = None
+    is_default_trial: bool | None = None
+    sort_order: int | None = Field(default=None, ge=0, le=1000)
+
+
+class OrganizationPlanAssign(ApiModel):
+    plan_code: str = Field(min_length=1, max_length=64)
+    plan_status: Literal["trial", "active", "expired", "suspended"] | None = None
 
 
 class MailboxConfigUpdate(ApiModel):

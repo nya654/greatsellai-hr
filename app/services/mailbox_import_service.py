@@ -4,12 +4,14 @@ import base64
 import hashlib
 import imaplib
 import re
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from email import policy
 from email.header import decode_header, make_header
 from email.message import Message
 from email.parser import BytesParser
 from email.utils import parsedate_to_datetime
+from typing import Iterator
 
 from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import desc, func, select
@@ -25,6 +27,7 @@ from app.schemas import (
     MailboxImportResponse,
     MailboxSyncResponse,
 )
+from app.tenant_scope import clear_organization_context, set_organization_context
 from app.services.ai_extraction_job_service import enqueue_uploaded_resume_ai_extraction
 from app.services.document_text_extraction import SUPPORTED_DOCUMENT_EXTENSIONS
 from app.services.resume_service import (
@@ -40,6 +43,17 @@ class MailboxImportError(RuntimeError):
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+@contextmanager
+def _organization_session(session: Session, organization_id: str) -> Iterator[None]:
+    """Scope a worker-owned IMAP run to the mailbox workspace."""
+
+    set_organization_context(session, organization_id)
+    try:
+        yield
+    finally:
+        clear_organization_context(session)
 
 
 def _fernet(settings: AppSettings) -> Fernet:
@@ -319,6 +333,7 @@ def _record(
 ) -> None:
     session.add(
         EmailAttachmentImport(
+            organization_id=config.organization_id,
             mailbox_config_id=config.id,
             message_uid=uid,
             message_id=message_id[:998] if message_id else None,
@@ -333,11 +348,19 @@ def _record(
     session.commit()
 
 
-def _already_imported(session: Session, *, config_id: str, uid: str, digest: str) -> bool:
+def _already_imported(
+    session: Session,
+    *,
+    config_id: str,
+    organization_id: str,
+    uid: str,
+    digest: str,
+) -> bool:
     return (
         session.scalar(
             select(EmailAttachmentImport.id).where(
                 EmailAttachmentImport.mailbox_config_id == config_id,
+                EmailAttachmentImport.organization_id == organization_id,
                 EmailAttachmentImport.message_uid == uid,
                 EmailAttachmentImport.attachment_sha256 == digest,
             )
@@ -346,13 +369,19 @@ def _already_imported(session: Session, *, config_id: str, uid: str, digest: str
     )
 
 
-def _known_message_uids(session: Session, *, config_id: str) -> set[str]:
+def _known_message_uids(
+    session: Session,
+    *,
+    config_id: str,
+    organization_id: str,
+) -> set[str]:
     """Return message UIDs already handled by an earlier incremental run."""
 
     return set(
         session.scalars(
             select(EmailAttachmentImport.message_uid).where(
-                EmailAttachmentImport.mailbox_config_id == config_id
+                EmailAttachmentImport.mailbox_config_id == config_id,
+                EmailAttachmentImport.organization_id == organization_id,
             )
         ).all()
     )
@@ -383,6 +412,11 @@ def sync_mailbox(
     config = session.scalar(config_query)
     if config is None:
         return MailboxSyncResponse(configured=False)
+    organization_id = config.organization_id
+    if not organization_id:
+        # A configuration without a workspace is never allowed to read mail
+        # or create a candidate.  Keep the failure generic and non-sensitive.
+        raise MailboxImportError("mailbox_workspace_missing")
     if not config.enabled:
         return MailboxSyncResponse(
             configured=True,
@@ -444,7 +478,11 @@ def sync_mailbox(
         status, data = client.uid("search", None, f"UID {config.import_start_uid}:*")
         if status != "OK":
             raise MailboxImportError("mailbox_search_failed")
-        known_uids = _known_message_uids(session, config_id=config.id)
+        known_uids = _known_message_uids(
+            session,
+            config_id=config.id,
+            organization_id=organization_id,
+        )
         selected_uids: list[bytes] = []
         # Work newest-first so freshly received resumes arrive immediately.
         # The server has already limited this search to UIDs at or after the
@@ -487,7 +525,13 @@ def sync_mailbox(
                 continue
             for filename, content in attachments:
                 digest = hashlib.sha256(content).hexdigest()
-                if _already_imported(session, config_id=config.id, uid=uid, digest=digest):
+                if _already_imported(
+                    session,
+                    config_id=config.id,
+                    organization_id=organization_id,
+                    uid=uid,
+                    digest=digest,
+                ):
                     duplicates += 1
                     continue
                 if not any(filename.lower().endswith(ext) for ext in SUPPORTED_DOCUMENT_EXTENSIONS):
@@ -496,6 +540,8 @@ def sync_mailbox(
                     continue
                 try:
                     candidate = create_candidate(session, display_name=None)
+                    if candidate.organization_id != organization_id:
+                        raise MailboxImportError("mailbox_workspace_mismatch")
                     resume = save_pdf_resume(
                         session,
                         candidate_id=candidate.id,
@@ -503,18 +549,20 @@ def sync_mailbox(
                         content=content,
                         settings=settings,
                     )
+                    if resume.organization_id != organization_id:
+                        raise MailboxImportError("mailbox_workspace_mismatch")
                     enqueue_uploaded_resume_ai_extraction(session, resume=resume, settings=settings)
                     _record(session, config=config, uid=uid, message_id=message_id, filename=filename, attachment_sha256=digest, status="imported", error=None, resume_id=resume.id, received_at=received_at)
                     imported += 1
                 except (UploadValidationError, RuntimeError, SQLAlchemyError):
                     session.rollback()
                     config = session.get(MailboxConfig, mailbox_config_id)
-                    if config is None:
+                    if config is None or config.organization_id != organization_id:
                         raise MailboxImportError("mailbox_config_not_found")
                     _record(session, config=config, uid=uid, message_id=message_id, filename=filename, attachment_sha256=digest, status="failed", error="attachment_import_failed", resume_id=None, received_at=received_at)
                     failed += 1
         config = session.get(MailboxConfig, mailbox_config_id)
-        if config is None:
+        if config is None or config.organization_id != organization_id:
             raise MailboxImportError("mailbox_config_not_found")
         config.last_synced_at = _utcnow()
         config.last_sync_error = None
@@ -522,7 +570,7 @@ def sync_mailbox(
     except (imaplib.IMAP4.error, OSError, MailboxImportError, SQLAlchemyError) as exc:
         session.rollback()
         config = session.get(MailboxConfig, mailbox_config_id)
-        if config is not None:
+        if config is not None and config.organization_id == organization_id:
             config.last_sync_error = (
                 str(exc)
                 if str(exc).startswith("mailbox_")
@@ -556,8 +604,8 @@ def sync_mailbox(
 def sync_due_mailboxes(*, database, settings: AppSettings) -> bool:
     cutoff = _utcnow() - timedelta(seconds=settings.mailbox_sync_interval_seconds)
     with database.session_factory() as session:
-        config = session.scalar(
-            select(MailboxConfig)
+        claimed = session.execute(
+            select(MailboxConfig.id, MailboxConfig.organization_id)
             .where(MailboxConfig.enabled.is_(True))
             .where(
                 (MailboxConfig.import_start_uid.is_(None))
@@ -566,11 +614,26 @@ def sync_due_mailboxes(*, database, settings: AppSettings) -> bool:
                 | (MailboxConfig.last_synced_at <= cutoff)
             )
             .order_by(MailboxConfig.last_synced_at)
-        )
-        if config is None:
+            # One scheduler serves all tenants, so discovery is global.  The
+            # actual IMAP connection and every following write are scoped
+            # immediately below before the config is re-read.
+            .execution_options(skip_organization_scope=True)
+        ).first()
+        if claimed is None:
             return False
+        config_id, organization_id = claimed
+        if not organization_id:
+            session.execute(
+                MailboxConfig.__table__.update()
+                .where(MailboxConfig.id == config_id)
+                .values(last_sync_error="mailbox_workspace_missing")
+                .execution_options(skip_organization_scope=True)
+            )
+            session.commit()
+            return True
         try:
-            sync_mailbox(session, settings=settings, config_id=config.id)
+            with _organization_session(session, organization_id):
+                sync_mailbox(session, settings=settings, config_id=config_id)
         except MailboxImportError:
             return True
         return True

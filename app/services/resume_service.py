@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
 from sqlalchemy import delete, select, update
@@ -53,6 +53,7 @@ from app.services.document_text_extraction import (
 )
 from app.services.text_extraction import PdfExtractionError, extract_pdf_text
 from app.services.tencent_ocr_provider import TencentOcrConfig
+from app.tenant_scope import LEGACY_ORGANIZATION_ID, organization_context_id
 
 
 WORK_CONTEXT_MARKERS = (
@@ -139,6 +140,134 @@ def _idempotency_key_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _validated_organization_id(organization_id: str) -> str:
+    """Reject a malformed workspace identifier before it reaches the filesystem."""
+
+    normalized = organization_id.strip()
+    if (
+        not normalized
+        or normalized in {".", ".."}
+        or "/" in normalized
+        or "\\" in normalized
+    ):
+        raise ResumeServiceError("invalid_organization_storage_namespace")
+    return normalized
+
+
+def _storage_key_parts(storage_key: str) -> tuple[str, ...]:
+    """Return a strictly relative, POSIX-style storage key.
+
+    Database rows are not trusted as filesystem paths.  In particular, a
+    backslash is rejected rather than treated as a harmless character because
+    it is a directory separator on Windows development machines.
+    """
+
+    if not storage_key or "\\" in storage_key:
+        raise ResumeServiceError("resume_original_file_not_found")
+    path = PurePosixPath(storage_key)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise ResumeServiceError("resume_original_file_not_found")
+    return path.parts
+
+
+def build_resume_storage_key(*, organization_id: str, suffix: str) -> str:
+    """Create the durable key for a newly uploaded original.
+
+    New files are always direct children of their owning workspace directory.
+    Old flat keys are read-only compatibility data for the legacy workspace;
+    this function never creates another flat key.
+    """
+
+    namespace = _validated_organization_id(organization_id)
+    normalized_suffix = suffix.lower()
+    if normalized_suffix not in SUPPORTED_DOCUMENT_EXTENSIONS:
+        raise ResumeServiceError("unsupported_document_type")
+    return f"{namespace}/{uuid4().hex}{normalized_suffix}"
+
+
+def resolve_uploaded_resume_path(
+    settings: AppSettings,
+    *,
+    storage_key: str,
+    organization_id: str,
+    require_file: bool = True,
+) -> Path:
+    """Resolve one original only inside its current workspace namespace.
+
+    A flat historical key is valid only for the deterministic legacy
+    workspace.  Every new key has exactly two components:
+    ``<organization_id>/<filename>``.  This guards downloads, reparses and
+    rollback cleanup against path traversal and cross-workspace file access.
+    """
+
+    namespace = _validated_organization_id(organization_id)
+    parts = _storage_key_parts(storage_key)
+    legacy_flat_key = len(parts) == 1
+    workspace_key = len(parts) == 2 and parts[0] == namespace
+    if not (workspace_key or (legacy_flat_key and namespace == LEGACY_ORGANIZATION_ID)):
+        raise ResumeServiceError("resume_original_file_not_found")
+
+    try:
+        upload_root = settings.upload_dir.resolve()
+        raw_path = upload_root.joinpath(*parts)
+        workspace_directory = upload_root / namespace
+        # A directory symlink could make a syntactically valid key for A read
+        # files physically stored under B.  Originals are regular files in
+        # direct workspace directories, so reject symlinks rather than trying
+        # to reason about their targets.
+        if raw_path.is_symlink() or (
+            not legacy_flat_key and workspace_directory.is_symlink()
+        ):
+            raise ResumeServiceError("resume_original_file_not_found")
+        source_path = raw_path.resolve()
+        expected_parent = (
+            upload_root
+            if legacy_flat_key
+            else workspace_directory.resolve()
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ResumeServiceError("resume_original_file_not_found") from exc
+
+    # ``resolve`` follows symlinks.  Comparing the resolved parent therefore
+    # also rejects a malicious symlink that points outside the assigned
+    # workspace directory.
+    if source_path.parent != expected_parent:
+        raise ResumeServiceError("resume_original_file_not_found")
+    try:
+        source_path.relative_to(upload_root)
+    except ValueError as exc:
+        raise ResumeServiceError("resume_original_file_not_found") from exc
+    if require_file and not source_path.is_file():
+        raise ResumeServiceError("resume_original_file_not_found")
+    return source_path
+
+
+def _prepare_new_upload_path(
+    settings: AppSettings,
+    *,
+    storage_key: str,
+    organization_id: str,
+) -> Path:
+    """Create and verify the workspace directory before atomically writing."""
+
+    namespace = _validated_organization_id(organization_id)
+    settings.ensure_directories()
+    upload_root = settings.upload_dir.resolve()
+    workspace_directory = upload_root / namespace
+    try:
+        workspace_directory.mkdir(parents=True, exist_ok=True)
+        if workspace_directory.resolve() != workspace_directory:
+            raise ResumeServiceError("resume_original_file_not_found")
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ResumeServiceError("resume_original_file_not_found") from exc
+    return resolve_uploaded_resume_path(
+        settings,
+        storage_key=storage_key,
+        organization_id=namespace,
+        require_file=False,
+    )
+
+
 def get_idempotent_upload_resume(
     session: Session,
     *,
@@ -147,15 +276,19 @@ def get_idempotent_upload_resume(
 ) -> Resume | None:
     """Return an earlier upload for a retry, or reject key reuse with new bytes."""
 
-    record = session.get(
-        ResumeUploadIdempotencyKey,
-        _idempotency_key_hash(idempotency_key),
+    organization_id = organization_context_id(session)
+    record = session.scalar(
+        select(ResumeUploadIdempotencyKey).where(
+            ResumeUploadIdempotencyKey.organization_id == organization_id,
+            ResumeUploadIdempotencyKey.idempotency_key_hash
+            == _idempotency_key_hash(idempotency_key),
+        )
     )
     if record is None:
         return None
     if record.content_sha256 != content_sha256:
         raise IdempotencyConflictError("idempotency_key_reused_with_different_pdf")
-    resume = session.get(Resume, record.resume_id)
+    resume = session.scalar(select(Resume).where(Resume.id == record.resume_id))
     if resume is None:  # Defensive guard for a manually damaged database.
         raise ResumeServiceError("idempotency_record_resume_not_found")
     return resume
@@ -170,6 +303,7 @@ def register_upload_idempotency_key(
 ) -> None:
     session.add(
         ResumeUploadIdempotencyKey(
+            organization_id=organization_context_id(session),
             idempotency_key_hash=_idempotency_key_hash(idempotency_key),
             content_sha256=content_sha256,
             resume_id=resume_id,
@@ -177,17 +311,25 @@ def register_upload_idempotency_key(
     )
 
 
-def discard_uploaded_pdf(settings: AppSettings, *, storage_key: str | None) -> None:
+def discard_uploaded_pdf(
+    settings: AppSettings,
+    *,
+    storage_key: str | None,
+    organization_id: str = LEGACY_ORGANIZATION_ID,
+) -> None:
     """Best-effort cleanup for an upload whose database transaction failed."""
 
     if not storage_key:
         return
     try:
-        upload_root = settings.upload_dir.resolve()
-        storage_path = (upload_root / storage_key).resolve()
-        if storage_path.parent == upload_root:
-            storage_path.unlink(missing_ok=True)
-    except (OSError, RuntimeError, ValueError):
+        storage_path = resolve_uploaded_resume_path(
+            settings,
+            storage_key=storage_key,
+            organization_id=organization_id,
+            require_file=False,
+        )
+        storage_path.unlink(missing_ok=True)
+    except (OSError, RuntimeError, ValueError, ResumeServiceError):
         # The request is already failing.  Avoid replacing its database error
         # with a cleanup error; normal operation still removes the file.
         return
@@ -223,7 +365,7 @@ def create_candidate(session: Session, *, display_name: str | None) -> Candidate
 
 
 def get_resume(session: Session, resume_id: str) -> Resume:
-    resume = session.get(Resume, resume_id)
+    resume = session.scalar(select(Resume).where(Resume.id == resume_id))
     if resume is None:
         raise NotFoundError("resume_not_found")
     return resume
@@ -237,8 +379,13 @@ def save_pdf_resume(
     content: bytes,
     settings: AppSettings,
 ) -> Resume:
-    candidate = session.get(Candidate, candidate_id)
+    organization_id = organization_context_id(session)
+    candidate = session.scalar(select(Candidate).where(Candidate.id == candidate_id))
     if candidate is None:
+        raise NotFoundError("candidate_not_found")
+    if candidate.organization_id != organization_id:
+        # This is normally enforced by the session criteria. Keep the service
+        # boundary explicit in case it is ever called from a bypassed worker.
         raise NotFoundError("candidate_not_found")
     submitted_name = validate_pdf_resume_upload(
         original_filename=original_filename,
@@ -246,9 +393,15 @@ def save_pdf_resume(
         settings=settings,
     )
 
-    settings.ensure_directories()
-    storage_key = f"{uuid4().hex}{Path(submitted_name).suffix.lower()}"
-    storage_path = settings.upload_dir / storage_key
+    storage_key = build_resume_storage_key(
+        organization_id=organization_id,
+        suffix=Path(submitted_name).suffix,
+    )
+    storage_path = _prepare_new_upload_path(
+        settings,
+        storage_key=storage_key,
+        organization_id=organization_id,
+    )
     try:
         _write_upload_atomically(storage_path=storage_path, content=content)
         sha256 = hashlib.sha256(content).hexdigest()
@@ -318,7 +471,11 @@ def save_pdf_resume(
         session.flush()
         return resume
     except Exception:
-        discard_uploaded_pdf(settings, storage_key=storage_key)
+        discard_uploaded_pdf(
+            settings,
+            storage_key=storage_key,
+            organization_id=organization_id,
+        )
         raise
 
 
@@ -343,10 +500,11 @@ def reparse_inactive_resume_source_text(
     if job is not None and job.status in {"queued", "running"}:
         raise ResumeServiceError("resume_ai_extraction_already_running")
 
-    upload_root = settings.upload_dir.resolve()
-    storage_path = (upload_root / resume.storage_key).resolve()
-    if storage_path.parent != upload_root or not storage_path.is_file():
-        raise ResumeServiceError("resume_original_file_not_found")
+    storage_path = resolve_uploaded_resume_path(
+        settings,
+        storage_key=resume.storage_key,
+        organization_id=organization_context_id(session),
+    )
 
     old_snapshot = _fact_snapshot(resume)
     try:
@@ -472,13 +630,14 @@ def reparse_active_resume_as_new_version(
         source_job.completed_at = utcnow()
     _assert_no_pending_source_reparse(session, source_resume=source_resume)
 
-    upload_root = settings.upload_dir.resolve()
     try:
-        source_path = (upload_root / source_resume.storage_key).resolve()
-    except (OSError, RuntimeError, ValueError) as exc:
+        source_path = resolve_uploaded_resume_path(
+            settings,
+            storage_key=source_resume.storage_key,
+            organization_id=organization_context_id(session),
+        )
+    except ResumeServiceError as exc:
         raise ResumeServiceError("resume_original_file_not_found") from exc
-    if source_path.parent != upload_root or not source_path.is_file():
-        raise ResumeServiceError("resume_original_file_not_found")
 
     suffix = source_path.suffix.lower()
     if suffix not in SUPPORTED_DOCUMENT_EXTENSIONS:
@@ -502,9 +661,16 @@ def reparse_active_resume_as_new_version(
     )
     source_resume.quality_flags = source_new_quality_flags
 
-    settings.ensure_directories()
-    storage_key = f"{uuid4().hex}{suffix}"
-    storage_path = settings.upload_dir / storage_key
+    organization_id = organization_context_id(session)
+    storage_key = build_resume_storage_key(
+        organization_id=organization_id,
+        suffix=suffix,
+    )
+    storage_path = _prepare_new_upload_path(
+        settings,
+        storage_key=storage_key,
+        organization_id=organization_id,
+    )
     try:
         _write_upload_atomically(storage_path=storage_path, content=content)
         try:
@@ -616,7 +782,11 @@ def reparse_active_resume_as_new_version(
         session.flush()
         return replacement
     except Exception:
-        discard_uploaded_pdf(settings, storage_key=storage_key)
+        discard_uploaded_pdf(
+            settings,
+            storage_key=storage_key,
+            organization_id=organization_id,
+        )
         raise
 
 
@@ -690,7 +860,7 @@ def _assert_no_pending_source_reparse(
         )
         if not isinstance(replacement_id, str) or not replacement_id:
             continue
-        replacement = session.get(Resume, replacement_id)
+        replacement = session.scalar(select(Resume).where(Resume.id == replacement_id))
         if replacement is None or replacement.candidate_id != source_resume.candidate_id:
             continue
         job = replacement.ai_extraction_job
@@ -1674,7 +1844,11 @@ def _replace_facts(
     if new_is_active:
         session.execute(
             update(Resume)
-            .where(Resume.candidate_id == resume.candidate_id, Resume.id != resume.id)
+            .where(
+                Resume.candidate_id == resume.candidate_id,
+                Resume.organization_id == resume.organization_id,
+                Resume.id != resume.id,
+            )
             .values(is_active=False)
         )
     resume.extraction_status = new_status
@@ -1690,6 +1864,7 @@ def _replace_facts(
         update(ResumeSummary)
         .where(
             ResumeSummary.resume_id == resume.id,
+            ResumeSummary.organization_id == resume.organization_id,
             ResumeSummary.is_current.is_(True),
         )
         .values(is_current=False, status="stale")
@@ -1940,12 +2115,16 @@ def activate_ready_resume(
     old_active_resume_id = session.scalar(
         select(Resume.id).where(
             Resume.candidate_id == resume.candidate_id,
+            Resume.organization_id == resume.organization_id,
             Resume.is_active.is_(True),
         )
     )
     session.execute(
         update(Resume)
-        .where(Resume.candidate_id == resume.candidate_id)
+        .where(
+            Resume.candidate_id == resume.candidate_id,
+            Resume.organization_id == resume.organization_id,
+        )
         .values(is_active=False)
     )
     resume.is_active = True
@@ -1988,6 +2167,7 @@ def reconcile_legacy_completed_ai_resumes(session: Session) -> int:
         snapshot_exists = session.scalar(
             select(ResumeFactSnapshot.id).where(
                 ResumeFactSnapshot.resume_id == resume.id,
+                ResumeFactSnapshot.organization_id == resume.organization_id,
                 ResumeFactSnapshot.facts_version == resume.facts_version,
             )
         )
@@ -2006,6 +2186,7 @@ def reconcile_legacy_completed_ai_resumes(session: Session) -> int:
         active_resume_id = session.scalar(
             select(Resume.id).where(
                 Resume.candidate_id == resume.candidate_id,
+                Resume.organization_id == resume.organization_id,
                 Resume.is_active.is_(True),
             )
         )
@@ -2013,7 +2194,10 @@ def reconcile_legacy_completed_ai_resumes(session: Session) -> int:
         if active_resume_id is None:
             session.execute(
                 update(Resume)
-                .where(Resume.candidate_id == resume.candidate_id)
+                .where(
+                    Resume.candidate_id == resume.candidate_id,
+                    Resume.organization_id == resume.organization_id,
+                )
                 .values(is_active=False)
             )
             resume.is_active = True

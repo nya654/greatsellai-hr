@@ -7,6 +7,7 @@ import {
   type ChangeEvent,
   type DragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
 } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -22,6 +23,9 @@ import {
 } from "./landing";
 import type {
   AiExtractionStatus,
+  AuthLoginInput,
+  AuthRegistrationInput,
+  AuthSession,
   CandidateSearchItem,
   CandidateSearchRequest,
   CandidateSearchResponse,
@@ -48,6 +52,7 @@ import type {
   ResumeScore,
   ResumeSummary,
   ResumeUploadResponse,
+  RegistrationOffer,
   RecruitingAgentAction,
   RecruitingAgentCandidate,
   RecruitingAgentTurn,
@@ -55,6 +60,7 @@ import type {
   SavedFilter,
   ScoreDimensionInput,
   ScoreTemplate,
+  TrialAccess,
 } from "./types";
 import { Icon, type IconName } from "./icons";
 
@@ -65,10 +71,11 @@ type MatchMode = "all" | "any";
 type KeywordMode = "broad" | "precise";
 type ToastKind = "success" | "error";
 type JobWorkspaceMode = "create" | "view";
+type AuthRoute = "login" | "register" | "forgot-password";
 type AppSurface =
   | { kind: "landing" }
   | { kind: "redirect"; href: string }
-  | { kind: "workspace"; isLoginRoute: boolean };
+  | { kind: "workspace"; authRoute: AuthRoute | null };
 
 interface FilterDraft {
   school: SchoolFilter;
@@ -141,6 +148,12 @@ const emptySearch: CandidateSearchResponse = {
   items: [],
   next_cursor: null,
   needs_review_count: 0,
+};
+
+const fallbackRegistrationOffer: RegistrationOffer = {
+  plan_code: "advanced",
+  plan_name: "进阶版",
+  trial_days: 30,
 };
 
 const defaultFilterDraft: FilterDraft = {
@@ -440,7 +453,12 @@ function freshDefaultFilter(): FilterDraft {
 function humanizeError(error: unknown): string {
   if (isApiError(error)) {
     const messages: Record<string, string> = {
-      invalid_login_credentials: "管理口令不正确，请重试。",
+      invalid_login_credentials: "邮箱或密码不正确，请重试。",
+      email_already_registered: "该邮箱已注册，请直接登录或找回密码。",
+      invalid_registration_input: "请检查企业名称、姓名、邮箱和密码后重试。",
+      password_too_short: "密码至少需要 8 个字符。",
+      trial_expired: "试用期已结束。数据已保留，请联系 GreatSell AI 团队继续使用。",
+      organization_access_suspended: "当前工作区暂不可用，请联系 GreatSell AI 团队。",
       invalid_admin_token: "管理口令无效。请在右上角连接配置中更新后重试。",
       server_missing_admin_token: "服务器尚未配置管理口令，暂时无法访问。",
       deepseek_api_key_not_configured:
@@ -828,6 +846,14 @@ function workspaceHref(path = "") {
     : `${ROOT_WORKSPACE_ORIGIN}${destination}`;
 }
 
+function authRouteFromPath(pathname: string): AuthRoute | null {
+  const normalized = pathname.replace(/\/+$/, "") || "/";
+  if (normalized === "/login") return "login";
+  if (normalized === "/register") return "register";
+  if (normalized === "/forgot-password") return "forgot-password";
+  return null;
+}
+
 function resolveAppSurface(): AppSurface {
   const { hostname, pathname } = window.location;
   const isWorkspacePath =
@@ -836,11 +862,14 @@ function resolveAppSurface(): AppSurface {
 
   if (isWorkspacePath) {
     const nestedPath = pathname.slice(ROOT_WORKSPACE_BASE_PATH.length).replace(/\/+$/, "") || "/";
-    return { kind: "workspace", isLoginRoute: nestedPath === "/login" };
+    return { kind: "workspace", authRoute: authRouteFromPath(nestedPath) };
   }
 
-  if (hostname === "hr.greatsellai.net" && pathname === "/login") {
-    return { kind: "redirect", href: workspaceHref("/login") };
+  if (hostname === "hr.greatsellai.net") {
+    const authRoute = authRouteFromPath(pathname);
+    if (authRoute) {
+      return { kind: "redirect", href: workspaceHref(`/${authRoute}`) };
+    }
   }
 
   return { kind: "landing" };
@@ -875,10 +904,10 @@ function App() {
 
   if (surface.kind === "redirect") return <ExternalRedirect href={surface.href} />;
 
-  return <WorkspaceApp isLoginRoute={surface.isLoginRoute} />;
+  return <WorkspaceApp authRoute={surface.authRoute} />;
 }
 
-function WorkspaceApp({ isLoginRoute }: { isLoginRoute: boolean }) {
+function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
   const [view, setView] = useState<View>("library");
   const [filterDraft, setFilterDraft] =
     useState<FilterDraft>(freshDefaultFilter);
@@ -909,18 +938,22 @@ function WorkspaceApp({ isLoginRoute }: { isLoginRoute: boolean }) {
   const [authState, setAuthState] = useState<
     "checking" | "authenticated" | "unauthenticated"
   >("checking");
-  const [loginError, setLoginError] = useState<string | null>(null);
-  const [loginLoading, setLoginLoading] = useState(false);
+  const [authSession, setAuthSession] = useState<AuthSession | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authLoading, setAuthLoading] = useState(false);
   const reviewRequestRef = useRef(0);
   const summaryRequestRef = useRef(0);
 
   const selectedResumeId = selectedResume?.resumeId ?? null;
 
   useEffect(() => {
-    document.title = isLoginRoute
-      ? "登录系统｜大卖数智 GreatSell AI"
-      : "招聘工作台｜大卖数智 GreatSell AI";
-  }, [isLoginRoute]);
+    const titles: Record<AuthRoute, string> = {
+      login: "登录｜GreatSell AI 招聘工具",
+      register: "免费试用｜GreatSell AI 招聘工具",
+      "forgot-password": "找回密码｜GreatSell AI 招聘工具",
+    };
+    document.title = authRoute ? titles[authRoute] : "招聘工作台｜GreatSell AI";
+  }, [authRoute]);
 
   const notify = useCallback((kind: ToastKind, message: string) => {
     const id = Date.now() + Math.round(Math.random() * 1000);
@@ -1016,26 +1049,30 @@ function WorkspaceApp({ isLoginRoute }: { isLoginRoute: boolean }) {
   useEffect(() => {
     void api
       .getAuthSession()
-      .then((session) =>
-        setAuthState(session.authenticated ? "authenticated" : "unauthenticated"),
-      )
-      .catch(() => setAuthState("unauthenticated"));
+      .then((session) => {
+        setAuthSession(session);
+        setAuthState(session.authenticated ? "authenticated" : "unauthenticated");
+      })
+      .catch(() => {
+        setAuthSession(null);
+        setAuthState("unauthenticated");
+      });
   }, []);
 
   useEffect(() => {
-    if (authState !== "authenticated" || isLoginRoute) return;
+    if (authState !== "authenticated" || authRoute) return;
     void runSearch(defaultFilterDraft);
     void refreshSavedFilters();
     void api.getFilterOptions().then(setFilterOptions).catch(() => {
       setFilterOptions(fallbackFilterOptions);
     });
-  }, [authState, isLoginRoute, refreshSavedFilters, runSearch]);
+  }, [authRoute, authState, refreshSavedFilters, runSearch]);
 
   useEffect(() => {
-    if (authState === "authenticated" && isLoginRoute) {
+    if (authState === "authenticated" && authRoute) {
       window.location.replace(workspaceHref());
     }
-  }, [authState, isLoginRoute]);
+  }, [authRoute, authState]);
 
   useEffect(() => {
     if (
@@ -1344,17 +1381,49 @@ function WorkspaceApp({ isLoginRoute }: { isLoginRoute: boolean }) {
     void runSearch(next);
   };
 
-  const login = async (password: string) => {
-    setLoginError(null);
-    setLoginLoading(true);
+  const establishSession = (session: AuthSession) => {
+    setAuthSession(session);
+    setAuthState(session.authenticated ? "authenticated" : "unauthenticated");
+    if (session.authenticated) window.location.assign(workspaceHref());
+    return session;
+  };
+
+  const login = async (input: AuthLoginInput | string) => {
+    setAuthError(null);
+    setAuthLoading(true);
     try {
-      const session = await api.login(password);
-      setAuthState(session.authenticated ? "authenticated" : "unauthenticated");
-      if (session.authenticated) window.location.assign(workspaceHref());
+      return establishSession(await api.login(input));
     } catch (error) {
-      setLoginError(humanizeError(error));
+      setAuthError(humanizeError(error));
+      return null;
     } finally {
-      setLoginLoading(false);
+      setAuthLoading(false);
+    }
+  };
+
+  const register = async (input: AuthRegistrationInput) => {
+    setAuthError(null);
+    setAuthLoading(true);
+    try {
+      return establishSession(await api.register(input));
+    } catch (error) {
+      setAuthError(humanizeError(error));
+      return null;
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const requestPasswordReset = async (email: string) => {
+    setAuthError(null);
+    setAuthLoading(true);
+    try {
+      return await api.requestPasswordReset(email);
+    } catch (error) {
+      setAuthError(humanizeError(error));
+      return null;
+    } finally {
+      setAuthLoading(false);
     }
   };
 
@@ -1362,6 +1431,7 @@ function WorkspaceApp({ isLoginRoute }: { isLoginRoute: boolean }) {
     await api.logout();
     setSelectedResume(null);
     setDrawerOpen(false);
+    setAuthSession(null);
     setAuthState("unauthenticated");
     window.location.assign(workspaceHref("/login"));
   };
@@ -1376,15 +1446,21 @@ function WorkspaceApp({ isLoginRoute }: { isLoginRoute: boolean }) {
     );
   }
 
-  if (authState !== "authenticated" && !isLoginRoute) {
+  if (authState !== "authenticated" && !authRoute) {
     return <ExternalRedirect href={workspaceHref("/login")} />;
   }
 
   if (authState !== "authenticated") {
+    if (authRoute === "register") {
+      return <RegistrationPage error={authError} loading={authLoading} onRegister={register} />;
+    }
+    if (authRoute === "forgot-password") {
+      return <ForgotPasswordPage error={authError} loading={authLoading} onRequest={requestPasswordReset} />;
+    }
     return (
       <LoginPage
-        error={loginError}
-        loading={loginLoading}
+        error={authError}
+        loading={authLoading}
         onLogin={login}
       />
     );
@@ -1404,7 +1480,12 @@ function WorkspaceApp({ isLoginRoute }: { isLoginRoute: boolean }) {
           }}
           onLogout={() => void logout()}
           onNewUpload={() => setView("upload")}
+          organizationName={authSession?.organization?.name ?? null}
+          planName={authSession?.plan?.name ?? null}
+          role={authSession?.role ?? null}
+          trial={authSession?.trial ?? null}
         />
+        <TrialStatusBanner planName={authSession?.plan?.name ?? null} trial={authSession?.trial ?? null} />
         <main className="main-content" id="main-content">
           {view === "library" && (
             <ResumeLibraryPage
@@ -1520,48 +1601,310 @@ function LoginPage({
 }: {
   error: string | null;
   loading: boolean;
-  onLogin: (password: string) => Promise<void>;
+  onLogin: (input: AuthLoginInput | string) => Promise<AuthSession | null>;
 }) {
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [legacyMode, setLegacyMode] = useState(false);
+  const canSubmit = legacyMode ? Boolean(password) : Boolean(email.trim() && password);
   return (
-    <main className="login-page">
+    <AuthPageLayout
+      description="进入只属于你所在团队的招聘工作区。候选人、岗位、评分和原始文件按工作区分别管理。"
+      eyebrow="GREATSELL AI · 招聘工具"
+      title="登录招聘工作台"
+    >
       <form
-        className="login-panel"
+        className="auth-form"
         onSubmit={(event) => {
           event.preventDefault();
-          if (password.trim()) void onLogin(password);
+          if (legacyMode && password) {
+            void onLogin(password);
+          } else if (email.trim() && password) {
+            void onLogin({ email: email.trim(), password });
+          }
         }}
       >
-        <div className="login-mark" aria-hidden="true" />
-        <p className="login-kicker">GREATSELL AI</p>
-        <h1>简历筛选工作台</h1>
-        <p className="login-description">
-          此工作台包含候选人简历与评估结果，请使用管理口令登录。
-        </p>
+        {!legacyMode && (
+          <div className="field-stack">
+            <label className="field-label" htmlFor="login-email">
+              工作邮箱
+            </label>
+            <input
+              autoComplete="email"
+              className="field"
+              id="login-email"
+              inputMode="email"
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="name@company.com"
+              required
+              type="email"
+              value={email}
+            />
+          </div>
+        )}
         <div className="field-stack">
-          <label className="field-label" htmlFor="login-password">
-            管理口令
-          </label>
+          <div className="auth-field-heading">
+            <label className="field-label" htmlFor={legacyMode ? "legacy-login-password" : "login-password"}>
+              {legacyMode ? "旧管理口令" : "密码"}
+            </label>
+            {!legacyMode && <a className="auth-inline-link" href={workspaceHref("/forgot-password")}>忘记密码</a>}
+          </div>
           <input
             autoComplete="current-password"
             className="field"
-            id="login-password"
+            id={legacyMode ? "legacy-login-password" : "login-password"}
             onChange={(event) => setPassword(event.target.value)}
-            placeholder="输入管理口令"
+            placeholder={legacyMode ? "输入旧管理口令" : "输入密码"}
+            required
             type="password"
             value={password}
           />
         </div>
-        {error && <p className="login-error" role="alert">{error}</p>}
+        {error && <p className="auth-error" role="alert">{error}</p>}
         <button
-          className="button button-primary login-submit"
-          disabled={loading || !password.trim()}
+          className="button button-primary auth-submit"
+          disabled={loading || !canSubmit}
           type="submit"
         >
-          {loading ? <><i className="spinner" />正在验证</> : "登录工作台"}
+          {loading ? <><i className="spinner" />正在登录</> : legacyMode ? "使用口令登录" : "登录工作台"}
         </button>
+        <div className="auth-mode-row">
+          <span>{legacyMode ? "正在使用旧版工作区兼容登录" : "旧版工作区管理员？"}</span>
+          <button
+            aria-pressed={legacyMode}
+            className="auth-mode-switch"
+            onClick={() => setLegacyMode((current) => !current)}
+            type="button"
+          >
+            {legacyMode ? "改用邮箱登录" : "使用旧管理口令"}
+          </button>
+        </div>
+        <p className="auth-footer-copy">
+          还没有团队工作区？<a href={workspaceHref("/register")}>免费试用 30 天</a>
+        </p>
+        <p className="auth-legacy-note">
+          旧管理口令仅用于迁移中的原工作区，本次提交后不会写入浏览器本地存储。
+        </p>
       </form>
+    </AuthPageLayout>
+  );
+}
+
+function RegistrationPage({
+  error,
+  loading,
+  onRegister,
+}: {
+  error: string | null;
+  loading: boolean;
+  onRegister: (input: AuthRegistrationInput) => Promise<AuthSession | null>;
+}) {
+  const [organizationName, setOrganizationName] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
+  const [submitted, setSubmitted] = useState(false);
+  const [registrationOffer, setRegistrationOffer] = useState<RegistrationOffer>(
+    fallbackRegistrationOffer,
+  );
+  const [offerLoading, setOfferLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    void api
+      .getRegistrationOffer()
+      .then((offer) => {
+        if (active) setRegistrationOffer(offer);
+      })
+      // Public offer details are helpful, never a reason to block signup.
+      .catch(() => undefined)
+      .finally(() => {
+        if (active) setOfferLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const submit = async () => {
+    setFormError(null);
+    if (password !== confirmation) {
+      setFormError("两次输入的密码不一致，请重新确认。");
+      return;
+    }
+    const session = await onRegister({
+      organization_name: organizationName.trim(),
+      full_name: fullName.trim(),
+      email: email.trim(),
+      password,
+    });
+    if (session && !session.authenticated) setSubmitted(true);
+  };
+
+  return (
+    <AuthPageLayout
+      description="注册后即获得独立工作区。未来的候选人、原始文件和 AI 结论都只保留在你的团队范围内。"
+      eyebrow={offerLoading
+        ? "30 天进阶版试用"
+        : `${registrationOffer.trial_days} 天${registrationOffer.plan_name}试用`}
+      title="从第一份简历开始"
+    >
+      {submitted ? (
+        <div aria-live="polite" className="auth-success-state">
+          <span className="auth-success-icon"><Icon name="check" size={20} /></span>
+          <h2>注册信息已提交</h2>
+          <p>请使用刚才填写的邮箱登录。若团队启用了邮箱验证，请按收到的指引完成验证。</p>
+          <a className="button button-primary auth-submit" href={workspaceHref("/login")}>前往登录</a>
+        </div>
+      ) : (
+        <form
+          className="auth-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submit();
+          }}
+        >
+          <div className="auth-form-grid">
+            <div className="field-stack auth-form-span-2">
+              <label className="field-label" htmlFor="register-organization">企业或团队名称</label>
+              <input autoComplete="organization" className="field" id="register-organization" onChange={(event) => setOrganizationName(event.target.value)} placeholder="例如：GreatSell AI" required value={organizationName} />
+            </div>
+            <div className="field-stack">
+              <label className="field-label" htmlFor="register-name">你的姓名</label>
+              <input autoComplete="name" className="field" id="register-name" onChange={(event) => setFullName(event.target.value)} placeholder="如何称呼你" required value={fullName} />
+            </div>
+            <div className="field-stack">
+              <label className="field-label" htmlFor="register-email">工作邮箱</label>
+              <input autoComplete="email" className="field" id="register-email" inputMode="email" onChange={(event) => setEmail(event.target.value)} placeholder="name@company.com" required type="email" value={email} />
+            </div>
+            <div className="field-stack">
+              <label className="field-label" htmlFor="register-password">设置密码</label>
+              <input autoComplete="new-password" className="field" id="register-password" minLength={8} onChange={(event) => setPassword(event.target.value)} placeholder="至少 8 个字符" required type="password" value={password} />
+            </div>
+            <div className="field-stack">
+              <label className="field-label" htmlFor="register-password-confirmation">确认密码</label>
+              <input aria-describedby={formError ? "register-password-error" : undefined} aria-invalid={Boolean(formError)} autoComplete="new-password" className="field" id="register-password-confirmation" minLength={8} onChange={(event) => setConfirmation(event.target.value)} placeholder="再次输入密码" required type="password" value={confirmation} />
+            </div>
+          </div>
+          {(formError || error) && <p className="auth-error" id="register-password-error" role="alert">{formError || error}</p>}
+          <p className="auth-consent">注册即表示你代表所在团队创建工作区。系统会在服务端按工作区隔离业务数据。</p>
+          <button className="button button-primary auth-submit" disabled={loading || !organizationName.trim() || !fullName.trim() || !email.trim() || password.length < 8 || !confirmation} type="submit">
+            {loading ? <><i className="spinner" />正在创建工作区</> : `开始 ${registrationOffer.trial_days} 天免费试用`}
+          </button>
+          <p className="auth-footer-copy">已有账号？<a href={workspaceHref("/login")}>返回登录</a></p>
+        </form>
+      )}
+    </AuthPageLayout>
+  );
+}
+
+function ForgotPasswordPage({
+  error,
+  loading,
+  onRequest,
+}: {
+  error: string | null;
+  loading: boolean;
+  onRequest: (email: string) => Promise<{ accepted: boolean; delivery_available: boolean } | null>;
+}) {
+  const [email, setEmail] = useState("");
+  const [result, setResult] = useState<{ deliveryAvailable: boolean } | null>(null);
+
+  return (
+    <AuthPageLayout
+      description="我们不会在此页面显示邮箱是否已注册。重置链接仅发送给有效且可用的账号。"
+      eyebrow="账户协助"
+      title="找回登录密码"
+    >
+      {result ? (
+        <div aria-live="polite" className="auth-success-state">
+          <span className="auth-success-icon"><Icon name={result.deliveryAvailable ? "check" : "user"} size={20} /></span>
+          <h2>{result.deliveryAvailable ? "请查看邮箱" : "请联系管理员"}</h2>
+          <p>{result.deliveryAvailable ? "若该邮箱对应可用账号，我们已发送重置密码的后续指引。" : "当前团队暂未启用邮件重置，请联系管理员协助重置密码。"}</p>
+          <a className="button button-primary auth-submit" href={workspaceHref("/login")}>返回登录</a>
+        </div>
+      ) : (
+        <form
+          className="auth-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void onRequest(email.trim()).then((response) => {
+              if (response?.accepted) setResult({ deliveryAvailable: response.delivery_available });
+            });
+          }}
+        >
+          <div className="field-stack">
+            <label className="field-label" htmlFor="reset-email">工作邮箱</label>
+            <input autoComplete="email" className="field" id="reset-email" inputMode="email" onChange={(event) => setEmail(event.target.value)} placeholder="name@company.com" required type="email" value={email} />
+            <p className="field-help">为保护账户安全，提交后的提示不会披露该邮箱是否已注册。</p>
+          </div>
+          {error && <p className="auth-error" role="alert">{error}</p>}
+          <button className="button button-primary auth-submit" disabled={loading || !email.trim()} type="submit">
+            {loading ? <><i className="spinner" />正在提交</> : "获取重置指引"}
+          </button>
+          <p className="auth-footer-copy"><a href={workspaceHref("/login")}>返回登录</a></p>
+        </form>
+      )}
+    </AuthPageLayout>
+  );
+}
+
+function AuthPageLayout({
+  children,
+  description,
+  eyebrow,
+  title,
+}: {
+  children: ReactNode;
+  description: string;
+  eyebrow: string;
+  title: string;
+}) {
+  return (
+    <main className="auth-page">
+      <div className="auth-shell">
+        <section className="auth-introduction" aria-labelledby="auth-page-title">
+          <div aria-hidden="true" className="auth-mark" />
+          <p className="auth-kicker">{eyebrow}</p>
+          <h1 id="auth-page-title">{title}</h1>
+          <p>{description}</p>
+          <ul className="auth-assurance-list">
+            <li><Icon name="layers" size={17} /><span>独立工作区，候选人信息不与其他团队共享</span></li>
+            <li><Icon name="briefcase" size={17} /><span>注册后可体验已实现的筛选、评分、JD 与邮箱能力</span></li>
+            <li><Icon name="user" size={17} /><span>AI 只提供基于简历事实的辅助结论，最终判断由招聘人员完成</span></li>
+          </ul>
+        </section>
+        <section className="auth-panel" aria-label={title}>
+          {children}
+        </section>
+      </div>
     </main>
+  );
+}
+
+function TrialStatusBanner({
+  planName,
+  trial,
+}: {
+  planName: string | null;
+  trial: TrialAccess | null;
+}) {
+  if (!trial) return null;
+  const isExpired = trial.plan_status === "expired" || !trial.access_enabled;
+  const isTrial = trial.plan_status === "trial";
+  if (!isExpired && !isTrial) return null;
+  const days = trial.trial_days_remaining;
+  const remaining = typeof days === "number" ? Math.max(0, days) : null;
+  return (
+    <section className={`trial-banner${isExpired ? " is-expired" : ""}`} role={isExpired ? "alert" : "status"}>
+      <div>
+        <strong>{isExpired ? "试用期已结束" : `免费试用还剩 ${remaining ?? "—"} 天`}</strong>
+        <p>{isExpired ? "你的工作区数据已保留。续费入口开放前，请联系 GreatSell AI 团队继续使用。" : `${planName ?? "进阶版"}试用中，已实现功能可正常体验。`}</p>
+      </div>
+      <span>{isExpired ? "数据已保留" : "30 天试用"}</span>
+    </section>
   );
 }
 
@@ -1613,6 +1956,10 @@ function Topbar({
   onOpenAgent,
   onLogout,
   onNewUpload,
+  organizationName,
+  planName,
+  role,
+  trial,
 }: {
   globalQuery: string;
   onGlobalQueryChange: (value: string) => void;
@@ -1620,12 +1967,33 @@ function Topbar({
   onOpenAgent: () => void;
   onLogout: () => void;
   onNewUpload: () => void;
+  organizationName: string | null;
+  planName: string | null;
+  role: "admin" | "recruiter" | null;
+  trial: TrialAccess | null;
 }) {
+  const trialDays = trial?.trial_days_remaining;
+  const roleLabel = role === "admin" ? "管理员" : role === "recruiter" ? "招聘官" : null;
+  const trialLabel =
+    trial?.plan_status === "trial" && typeof trialDays === "number"
+      ? `试用 ${Math.max(0, trialDays)} 天`
+      : trial?.plan_status === "expired"
+        ? "试用已到期"
+        : null;
   return (
     <header className="topbar">
-      <p className="topbar-title">
-        AI 简历筛选 <span>/ 工作台</span>
-      </p>
+      <div className="topbar-title-wrap">
+        <p className="topbar-title">
+          AI 简历筛选 <span>/ 工作台</span>
+        </p>
+        {(organizationName || roleLabel || planName) && (
+          <p className="topbar-workspace" title={organizationName ?? undefined}>
+            <span>{organizationName || "我的工作区"}</span>
+            {roleLabel && <small>{roleLabel}</small>}
+            {planName && <small>{planName}</small>}
+          </p>
+        )}
+      </div>
       <label className="topbar-search">
         <Icon name="search" size={17} />
         <span className="sr-only">全局检索简历关键词</span>
@@ -1637,6 +2005,7 @@ function Topbar({
         />
       </label>
       <div className="topbar-actions">
+        {trialLabel && <span className={`topbar-trial${trial?.plan_status === "expired" ? " is-expired" : ""}`}>{trialLabel}</span>}
         <button
           className="button button-agent"
           onClick={onOpenAgent}

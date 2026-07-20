@@ -52,6 +52,72 @@ export type AiExtractionStatus =
 
 export type JsonObject = Record<string, unknown>;
 
+/** Identity attached to the current server-side workspace session. */
+export interface AuthUser {
+  user_id: string;
+  display_name: string;
+  email: string;
+}
+
+export interface AuthOrganization {
+  organization_id: string;
+  name: string;
+}
+
+export type MembershipRole = "admin" | "recruiter";
+
+export type PlanStatus = "trial" | "active" | "expired" | "suspended";
+
+export interface OrganizationPlan {
+  code: "basic" | "advanced" | "professional" | string;
+  name: string;
+  feature_flags: Record<string, boolean>;
+}
+
+export interface TrialAccess {
+  plan_status: PlanStatus;
+  trial_started_at: string | null;
+  trial_ends_at: string | null;
+  /** Server-calculated whole calendar days, never computed from browser time. */
+  trial_days_remaining: number | null;
+  access_enabled: boolean;
+}
+
+export interface AuthSession {
+  authenticated: boolean;
+  login_required: boolean;
+  user: AuthUser | null;
+  organization: AuthOrganization | null;
+  role: MembershipRole | null;
+  plan: OrganizationPlan | null;
+  trial: TrialAccess | null;
+}
+
+export interface AuthLoginInput {
+  email: string;
+  password: string;
+}
+
+export interface AuthRegistrationInput {
+  organization_name: string;
+  full_name: string;
+  email: string;
+  password: string;
+}
+
+/** Public, display-only onboarding offer. The server remains authoritative. */
+export interface RegistrationOffer {
+  plan_code: string;
+  plan_name: string;
+  trial_days: number;
+}
+
+/** Deliberately contains no account-existence or reset-token information. */
+export interface PasswordResetRequestResult {
+  accepted: boolean;
+  delivery_available: boolean;
+}
+
 export interface CandidateCreateInput {
   display_name?: string | null;
 }

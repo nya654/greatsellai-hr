@@ -56,7 +56,10 @@ def _ready_resume_snapshot(
         raise SummaryServiceError("resume_source_text_unreliable")
     snapshot = session.scalar(
         select(ResumeFactSnapshot)
-        .where(ResumeFactSnapshot.resume_id == resume.id)
+        .where(
+            ResumeFactSnapshot.resume_id == resume.id,
+            ResumeFactSnapshot.organization_id == resume.organization_id,
+        )
         .order_by(ResumeFactSnapshot.facts_version.desc())
     )
     if snapshot is None or snapshot.facts_version != resume.facts_version:
@@ -74,10 +77,15 @@ def _set_current(
     session: Session,
     *,
     resume_id: str,
+    organization_id: str,
 ) -> None:
     session.execute(
         update(ResumeSummary)
-        .where(ResumeSummary.resume_id == resume_id, ResumeSummary.is_current.is_(True))
+        .where(
+            ResumeSummary.resume_id == resume_id,
+            ResumeSummary.organization_id == organization_id,
+            ResumeSummary.is_current.is_(True),
+        )
         .values(is_current=False)
     )
 
@@ -97,7 +105,11 @@ def generate_resume_summary(
         timeout_seconds=settings.deepseek_timeout_seconds,
         fact_snapshot=fact_snapshot,
     )
-    _set_current(session, resume_id=resume.id)
+    _set_current(
+        session,
+        resume_id=resume.id,
+        organization_id=resume.organization_id,
+    )
     summary = ResumeSummary(
         resume_id=resume.id,
         fact_snapshot_id=snapshot.id,
@@ -125,6 +137,11 @@ def list_resume_summaries(
     *,
     resume_id: str,
 ) -> list[ResumeSummaryResponse]:
+    # Checking the scoped parent first keeps a foreign resume ID
+    # indistinguishable from a nonexistent one rather than returning an empty
+    # collection that can be used as an authorization oracle.
+    if session.get(Resume, resume_id) is None:
+        raise SummaryServiceError("resume_not_found")
     summaries = session.scalars(
         select(ResumeSummary)
         .where(ResumeSummary.resume_id == resume_id)
@@ -151,7 +168,11 @@ def create_manual_summary_version(
         or prior_summary.facts_version != current_snapshot.facts_version
     ):
         raise SummaryServiceError("resume_summary_not_current_facts")
-    _set_current(session, resume_id=prior_summary.resume_id)
+    _set_current(
+        session,
+        resume_id=prior_summary.resume_id,
+        organization_id=prior_summary.organization_id,
+    )
     summary = ResumeSummary(
         resume_id=prior_summary.resume_id,
         fact_snapshot_id=prior_summary.fact_snapshot_id,

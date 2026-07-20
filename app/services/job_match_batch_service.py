@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterator
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.config import AppSettings
@@ -13,6 +13,12 @@ from app.database import Database
 from app.models import JobMatch, JobMatchBatch, JobMatchBatchItem, JobVersion, Resume, ResumeFactSnapshot
 from app.schemas import JobMatchBatchItemResponse, JobMatchBatchResponse, JobMatchCreate
 from app.tenant_scope import clear_organization_context, set_organization_context
+from app.services.ai_gateway_service import (
+    AiGatewayError,
+    ai_gateway_credentials_configured,
+    resolve_active_route_policy_version_id,
+)
+from app.services.ai_retry_policy import is_retryable_ai_transport_error
 from app.services.deepseek_provider import DeepSeekProviderError
 from app.services.job_service import (
     JobServiceError,
@@ -40,6 +46,7 @@ class ClaimedJobMatchBatchItem:
     batch_id: str
     resume_id: str
     job_version_id: str
+    ai_route_policy_version_id: str | None
 
 
 def _utcnow() -> datetime:
@@ -72,6 +79,68 @@ def _batch_response(batch: JobMatchBatch) -> JobMatchBatchResponse:
     )
 
 
+def _require_ai_gateway_credentials(settings: AppSettings) -> None:
+    """Retain the established no-key error while accepting credential refs.
+
+    The selected route validates its own credential reference at execution
+    time.  This preflight only decides whether a batch may be queued at all,
+    and preserves the HTTP-compatible legacy error when the process has no
+    provider credential source whatsoever.
+    """
+
+    if not ai_gateway_credentials_configured(settings):
+        raise JobServiceError("deepseek_api_key_not_configured")
+
+
+def _route_pin_for_new_batch(
+    session: Session,
+    *,
+    settings: AppSettings,
+) -> str:
+    _require_ai_gateway_credentials(settings)
+    try:
+        return resolve_active_route_policy_version_id(
+            session,
+            settings=settings,
+            feature="jd_match",
+        )
+    except AiGatewayError as exc:
+        raise JobServiceError(str(exc)) from exc
+
+
+def _persist_legacy_job_match_batch_route_pin(
+    session: Session,
+    *,
+    batch: JobMatchBatch,
+    settings: AppSettings,
+) -> str | None:
+    """Pin one route once for a pre-migration batch before its first call."""
+
+    if batch.ai_route_policy_version_id is not None:
+        return batch.ai_route_policy_version_id
+    try:
+        resolved_id = resolve_active_route_policy_version_id(
+            session,
+            settings=settings,
+            feature="jd_match",
+        )
+    except AiGatewayError:
+        return None
+    session.execute(
+        update(JobMatchBatch)
+        .where(
+            JobMatchBatch.id == batch.id,
+            JobMatchBatch.organization_id == batch.organization_id,
+            JobMatchBatch.ai_route_policy_version_id.is_(None),
+        )
+        .values(ai_route_policy_version_id=resolved_id)
+        .execution_options(synchronize_session=False)
+    )
+    session.flush()
+    session.expire(batch, ["ai_route_policy_version_id"])
+    return batch.ai_route_policy_version_id
+
+
 def enqueue_job_version_match_batch(
     session: Session,
     *,
@@ -80,8 +149,7 @@ def enqueue_job_version_match_batch(
 ) -> JobMatchBatchResponse:
     """Persist one full N×M side of the matrix without calling the model in HTTP."""
 
-    if not settings.deepseek_api_key:
-        raise JobServiceError("deepseek_api_key_not_configured")
+    _require_ai_gateway_credentials(settings)
     job_version = session.get(JobVersion, job_version_id)
     if job_version is None:
         raise JobVersionNotFoundError("job_version_not_found")
@@ -102,6 +170,12 @@ def enqueue_job_version_match_batch(
     )
     if existing is not None:
         return _batch_response(existing)
+
+    # A queued/retried batch must keep the same approved route even if the
+    # platform owner later switches the active JD-match model. The pin lives
+    # on the durable batch (not an individual in-memory worker claim), so a
+    # lease recovery or retry cannot silently move to a new model.
+    route_policy_version_id = _route_pin_for_new_batch(session, settings=settings)
 
     now = _utcnow()
     snapshot_rows = session.execute(
@@ -136,6 +210,7 @@ def enqueue_job_version_match_batch(
     batch = JobMatchBatch(
         organization_id=organization_id,
         job_version_id=job_version.id,
+        ai_route_policy_version_id=route_policy_version_id,
         status=BATCH_QUEUED if snapshots else BATCH_COMPLETED,
         total_count=len(snapshots),
         completed_count=0,
@@ -303,7 +378,7 @@ def _claim_next_item(
     now = _utcnow()
     with database.session_factory() as session:
         _recover_expired_items(session, now=now)
-        if not settings.deepseek_api_key:
+        if not ai_gateway_credentials_configured(settings):
             session.commit()
             return None
         row = session.execute(
@@ -346,6 +421,11 @@ def _claim_next_item(
             session.commit()
             return None
         with _organization_session(session, organization_id):
+            _persist_legacy_job_match_batch_route_pin(
+                session,
+                batch=batch,
+                settings=settings,
+            )
             item.status = ITEM_RUNNING
             item.attempt_count += 1
             item.next_attempt_at = None
@@ -363,6 +443,7 @@ def _claim_next_item(
                 batch_id=batch.id,
                 resume_id=item.resume_id,
                 job_version_id=batch.job_version_id,
+                ai_route_policy_version_id=batch.ai_route_policy_version_id,
             )
 
 
@@ -392,6 +473,8 @@ def _process_claimed_item(
                     or batch.organization_id != claimed.organization_id
                     or batch.id != claimed.batch_id
                     or batch.job_version_id != claimed.job_version_id
+                    or batch.ai_route_policy_version_id
+                    != claimed.ai_route_policy_version_id
                 ):
                     raise JobServiceError("job_match_workspace_mismatch")
                 job_version = session.get(JobVersion, claimed.job_version_id)
@@ -439,6 +522,9 @@ def _process_claimed_item(
                         resume_id=item.resume_id,
                         payload=JobMatchCreate(job_version_id=claimed.job_version_id),
                         settings=settings,
+                        pinned_route_policy_version_id=claimed.ai_route_policy_version_id,
+                        ai_run_business_ref_type="job_match_batch_item",
+                        ai_run_business_ref_id=item.id,
                     )
                     match_id = matched.match_id
                     persisted_match = session.get(JobMatch, match_id)
@@ -450,13 +536,14 @@ def _process_claimed_item(
                 _finish_item_success(session, item=item, worker_id=worker_id, match_id=match_id)
                 session.commit()
     except DeepSeekProviderError as exc:
+        error = str(exc)
         _finish_item_failure(
             database,
             item_id=claimed.item_id,
             worker_id=worker_id,
             organization_id=claimed.organization_id,
-            error=str(exc),
-            retryable=True,
+            error=error,
+            retryable=is_retryable_ai_transport_error(error),
         )
     except JobServiceError as exc:
         _finish_item_failure(

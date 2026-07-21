@@ -184,6 +184,14 @@ class UserAccount(Base):
     email_key: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     full_name: Mapped[str] = mapped_column(String(200))
     password_hash: Mapped[str] = mapped_column(Text)
+    # Every signed browser session carries this version.  Security-sensitive
+    # account events such as password reset increment it to revoke all older
+    # cookies without retaining a server-side session table.
+    auth_session_version: Mapped[int] = mapped_column(
+        Integer,
+        default=1,
+        server_default=text("1"),
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     is_platform_admin: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -329,12 +337,24 @@ class OrganizationInvitation(Base):
 
 
 class PasswordResetToken(Base):
-    """A one-time, digest-only password reset token."""
+    """A one-time, digest-only password reset token.
+
+    Only one reset link may remain usable for an account at a time.  The
+    partial unique index is a database-level guard against concurrent requests
+    bypassing the service-level row lock.
+    """
 
     __tablename__ = "password_reset_tokens"
     __table_args__ = (
         Index("ix_password_reset_tokens_user_requested", "user_id", "requested_at"),
         Index("ix_password_reset_tokens_expiry", "expires_at"),
+        Index(
+            "uq_active_password_reset_per_user",
+            "user_id",
+            unique=True,
+            sqlite_where=text("used_at IS NULL AND invalidated_at IS NULL"),
+            postgresql_where=text("used_at IS NULL AND invalidated_at IS NULL"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -342,6 +362,7 @@ class PasswordResetToken(Base):
     token_digest: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    invalidated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     user: Mapped[UserAccount] = relationship(back_populates="password_reset_tokens")

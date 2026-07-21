@@ -355,18 +355,58 @@ def legacy_principal(session: Session) -> AuthPrincipal:
     )
 
 
+def legacy_principal_from_session(
+    session: Session,
+    values: dict[str, object],
+) -> AuthPrincipal | None:
+    """Resolve an old boolean-only legacy cookie with version revocation.
+
+    Before tenant identity existed, the legacy workspace wrote only an
+    authenticated flag.  Treat that historical shape as session version 1 so
+    it continues to work after rollout, but no longer bypasses account-wide
+    session revocation after a password reset.
+    """
+
+    if values.get("resume_v3_authenticated") is not True:
+        return None
+    raw_version = values.get("resume_v3_auth_session_version", 1)
+    if (
+        isinstance(raw_version, bool)
+        or not isinstance(raw_version, int)
+        or raw_version < 1
+    ):
+        return None
+    principal = legacy_principal(session)
+    if principal.user.auth_session_version != raw_version:
+        return None
+    return principal
+
+
 def principal_from_session(session: Session, values: dict[str, object]) -> AuthPrincipal | None:
     user_id = values.get("resume_v3_user_id")
     organization_id = values.get("resume_v3_organization_id")
     membership_id = values.get("resume_v3_membership_id")
     if not all(isinstance(value, str) and value for value in (user_id, organization_id, membership_id)):
         return None
-    return _membership_with_context(
+    # Sessions issued before auth-session versioning intentionally map to the
+    # initial version.  That keeps the legacy migration bridge working, while
+    # a password reset increments the account version and invalidates them.
+    raw_version = values.get("resume_v3_auth_session_version", 1)
+    if (
+        isinstance(raw_version, bool)
+        or not isinstance(raw_version, int)
+        or raw_version < 1
+    ):
+        return None
+    principal = _membership_with_context(
         session,
         membership_id=membership_id,
         user_id=user_id,
         organization_id=organization_id,
     )
+    if principal is None or principal.user.auth_session_version != raw_version:
+        return None
+    return principal
 
 
 def establish_session(values: dict[str, object], principal: AuthPrincipal) -> None:
@@ -374,6 +414,7 @@ def establish_session(values: dict[str, object], principal: AuthPrincipal) -> No
     values["resume_v3_user_id"] = principal.user.id
     values["resume_v3_organization_id"] = principal.organization.id
     values["resume_v3_membership_id"] = principal.membership.id
+    values["resume_v3_auth_session_version"] = principal.user.auth_session_version
     # The signed browser session already authenticates the caller; a fresh
     # nonce lets short-lived file/export grants additionally bind to this
     # particular login rather than every browser session of the same user.
@@ -750,22 +791,59 @@ def accept_invitation(
     )
 
 
-def issue_password_reset(session: Session, *, email_value: str) -> str | None:
-    """Issue a token for a mail adapter; callers must never return it to HTTP."""
+def issue_password_reset(
+    session: Session,
+    *,
+    email_value: str,
+    ttl_seconds: int = 60 * 60,
+) -> str | None:
+    """Issue exactly one usable reset token for an active account.
+
+    The raw value is returned only to the delivery adapter and must never be
+    serialized through the HTTP response.  A new request invalidates every
+    older unused link, including an expired-but-uncollected row, so the
+    partial unique index remains a durable concurrency safeguard.
+    """
 
     try:
         _, email_key = normalize_email(email_value)
     except IdentityServiceError:
         return None
-    user = session.scalar(select(UserAccount).where(UserAccount.email_key == email_key, UserAccount.is_active.is_(True)))
+    user = session.scalar(
+        select(UserAccount)
+        .where(
+            UserAccount.email_key == email_key,
+            UserAccount.is_active.is_(True),
+        )
+        .with_for_update()
+    )
     if user is None:
         return None
+
+    now = utcnow()
+    active_resets = session.scalars(
+        select(PasswordResetToken)
+        .where(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.used_at.is_(None),
+            PasswordResetToken.invalidated_at.is_(None),
+        )
+        .with_for_update()
+    ).all()
+    for active_reset in active_resets:
+        active_reset.invalidated_at = now
+    # Flush the invalidations before inserting the replacement.  PostgreSQL
+    # otherwise has to reconcile a partial unique index with both states in
+    # the same unit of work.
+    if active_resets:
+        session.flush()
+
     token = secrets.token_urlsafe(32)
     session.add(
         PasswordResetToken(
             user_id=user.id,
             token_digest=digest_token(token),
-            expires_at=utcnow() + timedelta(hours=1),
+            expires_at=now + timedelta(seconds=ttl_seconds),
         )
     )
     return token
@@ -776,12 +854,19 @@ def complete_password_reset(session: Session, *, token: str, password: str) -> N
         select(PasswordResetToken)
         .options(joinedload(PasswordResetToken.user))
         .where(PasswordResetToken.token_digest == digest_token(token))
+        .with_for_update()
     )
-    if reset is None or reset.used_at is not None or _aware(reset.expires_at) <= utcnow():
+    if (
+        reset is None
+        or reset.used_at is not None
+        or reset.invalidated_at is not None
+        or _aware(reset.expires_at) <= utcnow()
+    ):
         raise IdentityServiceError("password_reset_invalid_or_expired")
     if not reset.user.is_active:
         raise IdentityServiceError("password_reset_invalid_or_expired")
     reset.user.password_hash = hash_password(password)
+    reset.user.auth_session_version += 1
     reset.used_at = utcnow()
 
 

@@ -163,6 +163,7 @@ from app.services.identity_service import (
     issue_password_reset,
     issue_email_verification,
     legacy_principal,
+    legacy_principal_from_session,
     list_product_plans,
     normalize_email,
     principal_from_session,
@@ -173,14 +174,18 @@ from app.services.identity_service import (
     update_product_plan,
 )
 from app.services.transactional_email import (
+    PasswordResetDelivery,
     TransactionalEmailError,
     TransactionalEmailProvider,
     VerificationDelivery,
     build_transactional_email_provider,
     email_verification_url,
+    password_reset_url,
 )
 from app.services.registration_rate_limit import (
+    PasswordResetRateLimitError,
     RegistrationRateLimitError,
+    enforce_password_reset_rate_limit,
     enforce_registration_rate_limit,
 )
 from app.tenant_scope import organization_context_id, set_organization_context
@@ -570,6 +575,30 @@ def _private_file_response_headers() -> dict[str, str]:
     }
 
 
+_FORCE_DOWNLOAD_ORIGINAL_SUFFIXES = frozenset({".htm", ".html"})
+
+
+def _original_file_response_options(
+    *,
+    original_filename: str,
+    requested_purpose: Literal["view", "download"],
+) -> tuple[str, Literal["inline", "attachment"]]:
+    """Return a browser-safe response policy for an untrusted original.
+
+    HTML resumes are accepted only as source documents for text extraction.
+    They must never render in the authenticated HR origin: a same-origin
+    ``text/html`` response could execute candidate-controlled script with the
+    viewer's session.  All HTML originals therefore download as opaque bytes,
+    including the legacy compatibility endpoint that otherwise supports PDF
+    inline preview.
+    """
+
+    if Path(original_filename).suffix.casefold() in _FORCE_DOWNLOAD_ORIGINAL_SUFFIXES:
+        return "application/octet-stream", "attachment"
+    media_type = mimetypes.guess_type(original_filename)[0] or "application/octet-stream"
+    return media_type, "attachment" if requested_purpose == "download" else "inline"
+
+
 def _candidate_data_session_nonce(request: Request) -> str:
     """Get a per-login opaque nonce for server-side file grants.
 
@@ -658,8 +687,42 @@ def _deliver_email_verification(
     return True
 
 
+def _deliver_password_reset(
+    *,
+    settings: AppSettings,
+    provider: TransactionalEmailProvider,
+    recipient: str,
+    token: str,
+) -> None:
+    """Best-effort recovery delivery that never changes the public outcome.
+
+    The request endpoint intentionally returns the same accepted response for
+    registered and unknown addresses.  Provider failure must not become an
+    account-existence oracle, and raw reset links must never enter logs or
+    database delivery state.
+    """
+
+    try:
+        provider.send_password_reset(
+            PasswordResetDelivery(
+                recipient=recipient,
+                reset_url=password_reset_url(settings, token=token),
+                expires_minutes=max(1, settings.password_reset_ttl_seconds // 60),
+            )
+        )
+    except TransactionalEmailError:
+        logger.warning("password_reset_delivery_failed")
+    except Exception:
+        logger.warning("password_reset_delivery_failed")
+
+
 def _registration_client_identifier(request: Request, settings: AppSettings) -> str:
-    """Return a safe signup throttle key without trusting spoofable headers."""
+    """Return a safe public-auth throttle key without trusting spoofed headers.
+
+    Registration and password reset intentionally share this trusted-proxy
+    resolver.  It only accepts Caddy's appended final X-Forwarded-For value
+    when the direct ASGI peer is an explicitly configured proxy network.
+    """
 
     direct_peer = request.client.host if request.client is not None else "unknown"
     if not _is_trusted_proxy(direct_peer, settings.trusted_proxy_cidrs):
@@ -685,6 +748,23 @@ def _is_trusted_proxy(host: str, cidrs: tuple[str, ...]) -> bool:
     except ValueError:
         return False
     return any(address in ip_network(cidr, strict=False) for cidr in cidrs)
+
+
+def _password_reset_rate_limit_email_key(value: str) -> str:
+    """Return an opaque namespace value for the password-reset email bucket.
+
+    Valid addresses use the same normalized key as identity lookup. Invalid
+    address-shaped input still receives a deterministic HMAC-only bucket so
+    recovery requests retain their non-enumerating public behavior. The raw
+    value never reaches the database: the rate-limit service hashes it with a
+    server secret before persistence.
+    """
+
+    try:
+        _, email_key = normalize_email(value)
+    except IdentityServiceError:
+        return f"invalid:{value.strip().casefold()}"
+    return f"email:{email_key}"
 
 
 def _raise_job_service_error(exc: JobServiceError) -> None:
@@ -844,8 +924,8 @@ async def require_authenticated_member(
         principal = principal_from_session(session, request.session)
         # Existing signed browser sessions and the optional header remain a
         # migration bridge into *only* the legacy workspace.
-        if principal is None and request.session.get("resume_v3_authenticated") is True:
-            principal = legacy_principal(session)
+        if principal is None:
+            principal = legacy_principal_from_session(session, request.session)
         if (
             principal is None
             and settings.admin_token
@@ -988,8 +1068,8 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
             else principal_from_session(session, request.session)
         )
         # Preserve an existing migration session only as a legacy identity.
-        if principal is None and request.session.get("resume_v3_authenticated") is True:
-            principal = legacy_principal(session)
+        if principal is None:
+            principal = legacy_principal_from_session(session, request.session)
         if principal is not None:
             set_organization_context(session, principal.organization_id)
         return auth_session_response(principal, login_required=not settings.allow_unauthenticated)
@@ -1123,11 +1203,8 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         session: Session = Depends(get_session),
     ) -> AuthSession:
         existing_principal = principal_from_session(session, request.session)
-        if (
-            existing_principal is None
-            and request.session.get("resume_v3_authenticated") is True
-        ):
-            existing_principal = legacy_principal(session)
+        if existing_principal is None:
+            existing_principal = legacy_principal_from_session(session, request.session)
         try:
             principal = complete_email_verification(
                 session,
@@ -1208,14 +1285,60 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
     @app.post("/v1/auth/password-reset/request", response_model=PasswordResetRequestResult)
     async def post_password_reset_request(
         payload: PasswordResetRequest,
+        request: Request,
         session: Session = Depends(get_session),
     ) -> PasswordResetRequestResult:
-        # The token is digest-only in the database and never appears in the
-        # response.  A mail-delivery adapter can be connected later without
-        # changing this enumeration-safe public contract.
-        issue_password_reset(session, email_value=payload.email)
-        _commit_or_raise(session)
-        return PasswordResetRequestResult(accepted=True, delivery_available=False)
+        provider: TransactionalEmailProvider = request.app.state.transactional_email_provider
+        settings: AppSettings = request.app.state.settings
+        try:
+            # Persist abuse accounting before looking up the account or
+            # issuing a token.  In particular, a rejected request must never
+            # reach issue_password_reset(), because that method intentionally
+            # invalidates an older active recovery link when it replaces it.
+            enforce_password_reset_rate_limit(
+                session,
+                secret=(
+                    settings.session_secret
+                    or settings.admin_token
+                    or "resume-v3-development-password-reset-rate-limit"
+                ),
+                client_identifier=_registration_client_identifier(request, settings),
+                email_key=_password_reset_rate_limit_email_key(payload.email),
+                global_limit=settings.password_reset_rate_limit_global_limit,
+                global_window_seconds=settings.password_reset_rate_limit_global_window_seconds,
+                client_limit=settings.password_reset_rate_limit_client_limit,
+                client_window_seconds=settings.password_reset_rate_limit_client_window_seconds,
+                email_limit=settings.password_reset_rate_limit_email_limit,
+                email_window_seconds=settings.password_reset_rate_limit_email_window_seconds,
+            )
+            _commit_or_raise(session)
+        except PasswordResetRateLimitError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="password_reset_rate_limit_exceeded",
+            ) from exc
+        # Keep both the HTTP body and status identical for registered and
+        # unknown addresses.  The raw token exists only long enough to build
+        # the provider message, while its database row stores a digest.
+        if provider.password_reset_configured:
+            token = issue_password_reset(
+                session,
+                email_value=payload.email,
+                ttl_seconds=settings.password_reset_ttl_seconds,
+            )
+            _commit_or_raise(session)
+            if token is not None:
+                _deliver_password_reset(
+                    settings=settings,
+                    provider=provider,
+                    recipient=payload.email.strip(),
+                    token=token,
+                )
+        return PasswordResetRequestResult(
+            accepted=True,
+            delivery_available=provider.password_reset_configured,
+        )
 
     @app.post("/v1/auth/password-reset/complete", status_code=status.HTTP_204_NO_CONTENT)
     async def post_password_reset_complete(
@@ -2792,16 +2915,15 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
             )
         except CandidateDataLifecycleError as exc:
             raise _candidate_data_error_http_exception(exc) from exc
+        media_type, content_disposition_type = _original_file_response_options(
+            original_filename=access.original_filename,
+            requested_purpose=access.purpose,
+        )
         return FileResponse(
             path=access.path,
-            media_type=(
-                mimetypes.guess_type(access.original_filename)[0]
-                or "application/octet-stream"
-            ),
+            media_type=media_type,
             filename=access.original_filename,
-            content_disposition_type=(
-                "attachment" if access.purpose == "download" else "inline"
-            ),
+            content_disposition_type=content_disposition_type,
             headers=_private_file_response_headers(),
         )
 
@@ -2841,14 +2963,15 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         except CandidateDataLifecycleError as exc:
             session.rollback()
             raise _candidate_data_error_http_exception(exc) from exc
+        media_type, content_disposition_type = _original_file_response_options(
+            original_filename=access.original_filename,
+            requested_purpose="view",
+        )
         return FileResponse(
             path=access.path,
-            media_type=(
-                mimetypes.guess_type(access.original_filename)[0]
-                or "application/octet-stream"
-            ),
+            media_type=media_type,
             filename=access.original_filename,
-            content_disposition_type="inline",
+            content_disposition_type=content_disposition_type,
             headers=_private_file_response_headers(),
         )
 

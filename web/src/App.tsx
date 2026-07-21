@@ -26,6 +26,7 @@ import type {
   AuthLoginInput,
   AuthRegistrationInput,
   AuthSession,
+  CandidateSearchDisplayFieldKey,
   CandidateDataAuditEvent,
   CandidateDataDeletionBatch,
   CandidateDataDeletionReason,
@@ -42,6 +43,7 @@ import type {
   DegreeLevel,
   ExperienceType,
   FilterOptions,
+  InstitutionClassification,
   InstitutionTier,
   LanguageCredentialCode,
   LeadershipContext,
@@ -87,7 +89,6 @@ const AdminApp = lazy(() => import("./admin/AdminApp"));
 
 type View = "library" | "filter" | "upload" | "inbox" | "score" | "match" | "data";
 type DrawerTab = "original" | "summary" | "evidence";
-type SchoolFilter = "any" | "yes" | "no";
 type MatchMode = "all" | "any";
 type KeywordMode = "broad" | "precise";
 type ToastKind = "success" | "error";
@@ -99,11 +100,10 @@ type AppSurface =
   | { kind: "workspace"; authRoute: AuthRoute | null };
 
 interface FilterDraft {
-  school: SchoolFilter;
   minEmploymentMonths: number;
   minEmploymentOrInternshipMonths: number;
   degrees: DegreeLevel[];
-  institutionTiers: InstitutionTier[];
+  institutionClassifications: InstitutionClassification[];
   graduationStatus: "any" | "fresh" | "previous";
   freshGraduateStartMonth: string;
   freshGraduateEndMonth: string;
@@ -178,11 +178,10 @@ const fallbackRegistrationOffer: RegistrationOffer = {
 };
 
 const defaultFilterDraft: FilterDraft = {
-  school: "any",
   minEmploymentMonths: 0,
   minEmploymentOrInternshipMonths: 0,
   degrees: [],
-  institutionTiers: [],
+  institutionClassifications: [],
   graduationStatus: "any",
   freshGraduateStartMonth: `${new Date().getFullYear()}-01`,
   freshGraduateEndMonth: `${new Date().getFullYear() + 1}-12`,
@@ -340,21 +339,59 @@ const degreeLabels: Record<DegreeLevel, string> = {
   doctor: "博士",
 };
 
+const institutionClassificationOptions: Array<{
+  value: InstitutionClassification;
+  label: string;
+}> = [
+  { value: "985", label: "985" },
+  { value: "211", label: "211" },
+  { value: "undergraduate", label: "本科" },
+  { value: "associate", label: "大专" },
+  { value: "secondary_vocational", label: "中专" },
+  { value: "overseas", label: "海外院校" },
+];
+
+const institutionClassificationLabels: Record<InstitutionClassification, string> =
+  Object.fromEntries(
+    institutionClassificationOptions.map((option) => [option.value, option.label]),
+  ) as Record<InstitutionClassification, string>;
+
+const legacyInstitutionTierLabels: Record<InstitutionTier, string> = {
+  ...institutionClassificationLabels,
+  "211": "211",
+  "985": "985",
+  double_first_class: "双一流",
+  key_undergraduate: "重本",
+  first_tier: "一本",
+  second_tier: "二本",
+  regular_undergraduate: "普通本科",
+  private_undergraduate: "民办本科",
+  higher_vocational: "高职/高专",
+  overseas: "海外院校",
+};
+
+/**
+ * A small subset of historical tiers is semantically identical to a new
+ * classification. Everything else must be reselected rather than widened.
+ */
+const legacyTierClassificationMap: Partial<
+  Record<InstitutionTier, InstitutionClassification[]>
+> = {
+  "985": ["985"],
+  // The product now defines 211 as 211-only. A legacy saved "211" condition
+  // therefore adopts the explicit new meaning instead of silently widening
+  // back to 985 candidates.
+  "211": ["211"],
+  regular_undergraduate: ["undergraduate"],
+  higher_vocational: ["associate"],
+  overseas: ["overseas"],
+};
+
 const fallbackFilterOptions: FilterOptions = {
   schema_version: "filter-options.v2.fallback",
   degrees: degreeOptions,
-  institution_tiers: [
-    { value: "211", label: "211" },
-    { value: "985", label: "985" },
-    { value: "double_first_class", label: "双一流" },
-    { value: "key_undergraduate", label: "重本" },
-    { value: "first_tier", label: "一本" },
-    { value: "second_tier", label: "二本" },
-    { value: "regular_undergraduate", label: "普通本科" },
-    { value: "private_undergraduate", label: "民办本科" },
-    { value: "higher_vocational", label: "高职/高专" },
-    { value: "overseas", label: "海外院校" },
-  ],
+  institution_classifications: institutionClassificationOptions,
+  institution_tiers: [],
   experience_types: experienceTypeOptions,
   skill_categories: [
     { value: "software", label: "编程与开发" },
@@ -476,7 +513,7 @@ function freshDefaultFilter(): FilterDraft {
   return {
     ...defaultFilterDraft,
     degrees: [],
-    institutionTiers: [],
+    institutionClassifications: [],
     experienceTypes: [],
     experienceAwardLevels: [],
     skills: [],
@@ -487,6 +524,30 @@ function freshDefaultFilter(): FilterDraft {
     leadershipContexts: [],
     leadershipRoles: [],
     keywords: [],
+  };
+}
+
+/**
+ * The result table must describe the request that produced the rows, rather
+ * than the controls a recruiter may be editing for their next search.  Keep a
+ * shallow object copy plus copies of every mutable collection so the applied
+ * request remains stable while the left-hand form changes.
+ */
+function snapshotFilterDraft(draft: FilterDraft): FilterDraft {
+  return {
+    ...draft,
+    degrees: [...draft.degrees],
+    institutionClassifications: [...draft.institutionClassifications],
+    experienceTypes: [...draft.experienceTypes],
+    experienceAwardLevels: [...draft.experienceAwardLevels],
+    skills: [...draft.skills],
+    skillCategories: [...draft.skillCategories],
+    languageCredentials: [...draft.languageCredentials],
+    languageScores: { ...draft.languageScores },
+    scholarshipLevels: [...draft.scholarshipLevels],
+    leadershipContexts: [...draft.leadershipContexts],
+    leadershipRoles: [...draft.leadershipRoles],
+    keywords: [...draft.keywords],
   };
 }
 
@@ -836,6 +897,39 @@ function formatLibraryDate(value: string): string {
   });
 }
 
+function resolvedInstitutionClassificationOptions(
+  filterOptions: FilterOptions,
+): Array<{ value: InstitutionClassification; label: string }> {
+  const labels = new Map(
+    filterOptions.institution_classifications?.map((option) => [
+      option.value,
+      option.label,
+    ]),
+  );
+  return institutionClassificationOptions.map((option) => ({
+    ...option,
+    label: labels.get(option.value) || option.label,
+  }));
+}
+
+function institutionClassificationLabel(
+  classification: InstitutionClassification,
+): string {
+  return institutionClassificationLabels[classification];
+}
+
+function sortInstitutionClassifications(
+  classifications: readonly InstitutionClassification[] | null | undefined,
+): InstitutionClassification[] {
+  const order = new Map(
+    institutionClassificationOptions.map((option, index) => [option.value, index]),
+  );
+  return [...new Set(classifications ?? [])].sort(
+    (left, right) => (order.get(left) ?? Number.MAX_SAFE_INTEGER) -
+      (order.get(right) ?? Number.MAX_SAFE_INTEGER),
+  );
+}
+
 function draftToSearchRequest(
   draft: FilterDraft,
   cursor: string | null = null,
@@ -846,8 +940,6 @@ function draftToSearchRequest(
     cursor,
   };
 
-  if (draft.school === "yes") request.is_985_211 = true;
-  if (draft.school === "no") request.is_985_211 = false;
   if (draft.minEmploymentMonths > 0) {
     request.min_employment_months = draft.minEmploymentMonths;
   }
@@ -864,7 +956,7 @@ function draftToSearchRequest(
       draft.freshGraduateEndMonth || defaultFilterDraft.freshGraduateEndMonth;
   }
   if (
-    draft.institutionTiers.length ||
+    draft.institutionClassifications.length ||
     draft.schoolName.trim() ||
     draft.major.trim() ||
     draft.minAverageScore ||
@@ -878,7 +970,7 @@ function draftToSearchRequest(
           ? [draft.schoolName.trim()]
           : [],
         major_contains: draft.major.trim() ? [draft.major.trim()] : [],
-        institution_tiers_any_of: draft.institutionTiers,
+        institution_classifications_any_of: draft.institutionClassifications,
         min_average_score: draft.minAverageScore
           ? Number(draft.minAverageScore)
           : null,
@@ -975,66 +1067,144 @@ function draftToSearchRequest(
   return request;
 }
 
-function searchRequestToDraft(request: CandidateSearchRequest): FilterDraft {
+type SavedFilterDraftResult =
+  | { draft: FilterDraft; error: null }
+  | { draft: null; error: string };
+
+function savedInstitutionClassifications(
+  request: CandidateSearchRequest,
+): { classifications: InstitutionClassification[]; error: string | null } {
+  const education = request.education_any_of?.[0];
+  const currentClassifications =
+    education?.institution_classifications_any_of ?? [];
+  const legacyTiers = education?.institution_tiers_any_of ?? [];
+
+  if (request.is_985_211 === false) {
+    return {
+      classifications: [],
+      error: "该历史筛选含有已下线的“非 985/211”条件，无法无损迁移。请重新设置院校类型后保存。",
+    };
+  }
+
+  const unsupportedTiers = legacyTiers.filter(
+    (tier) => !legacyTierClassificationMap[tier],
+  );
+  if (unsupportedTiers.length) {
+    return {
+      classifications: [],
+      error: `该历史筛选包含已下线的院校层级（${unsupportedTiers
+        .map((tier) => legacyInstitutionTierLabels[tier])
+        .join("、")}），无法无损迁移。请重新设置院校类型后保存。`,
+    };
+  }
+
+  if (currentClassifications.length) {
+    if (legacyTiers.length) {
+      return {
+        classifications: [],
+        error: "该历史筛选同时包含新旧院校条件，无法无损迁移。请重新设置院校类型后保存。",
+      };
+    }
+    if (
+      request.is_985_211 === true &&
+      currentClassifications.some(
+        (classification) => classification !== "985" && classification !== "211",
+      )
+    ) {
+      return {
+        classifications: [],
+        error: "该历史筛选同时包含旧版 985/211 与其他院校条件，无法无损迁移。请重新设置院校类型后保存。",
+      };
+    }
+    return {
+      classifications: sortInstitutionClassifications(currentClassifications),
+      error: null,
+    };
+  }
+
+  if (request.is_985_211 === true && legacyTiers.some(
+    (tier) => tier !== "985" && tier !== "211",
+  )) {
+    return {
+      classifications: [],
+      error: "该历史筛选同时包含旧版 985/211 与其他院校条件，无法无损迁移。请重新设置院校类型后保存。",
+    };
+  }
+
+  // A saved tier and the old top-level flag were combined with AND. When a
+  // tier is present it is therefore more specific than the old aggregate flag.
+  const classifications = legacyTiers.length
+    ? legacyTiers.flatMap((tier) => legacyTierClassificationMap[tier] ?? [])
+    : request.is_985_211 === true
+      ? (["985", "211"] as InstitutionClassification[])
+      : [];
+  return {
+    classifications: sortInstitutionClassifications(classifications),
+    error: null,
+  };
+}
+
+function searchRequestToDraft(
+  request: CandidateSearchRequest,
+): SavedFilterDraftResult {
   const education = request.education_any_of?.[0];
   const experience = request.experience_any_of?.[0];
   const savedDegrees = request.highest_degree_in ?? education?.degree_in ?? [];
-  const savedInstitutionTiers = education?.institution_tiers_any_of ?? [];
+  const institutionMigration = savedInstitutionClassifications(request);
+  if (institutionMigration.error) {
+    return { draft: null, error: institutionMigration.error };
+  }
   return {
-    // V1's positive 985/211 switch maps visibly to 211 because every official
-    // 985 entry is also tagged 211. The removed negative/unknown controls must
-    // never survive as invisible conditions in the V2 editor.
-    school: "any",
-    minEmploymentMonths: request.min_employment_months ?? 0,
-    minEmploymentOrInternshipMonths:
-      request.min_employment_or_internship_months ?? 0,
-    degrees: savedDegrees.filter((degree) => degree !== "unknown"),
-    institutionTiers:
-      savedInstitutionTiers.length || request.is_985_211 !== true
-        ? savedInstitutionTiers
-        : ["211"],
-    graduationStatus: request.graduation_status ?? "any",
-    freshGraduateStartMonth:
-      request.fresh_graduate_start_month ?? defaultFilterDraft.freshGraduateStartMonth,
-    freshGraduateEndMonth:
-      request.fresh_graduate_end_month ?? defaultFilterDraft.freshGraduateEndMonth,
-    schoolName: education?.school_name_contains?.[0] ?? "",
-    major: education?.major_contains?.[0] ?? "",
-    minAverageScore: education?.min_average_score?.toString() ?? "",
-    minGpaPercent: education?.min_gpa_percent?.toString() ?? "",
-    maxRankPosition: education?.max_rank_position?.toString() ?? "",
-    maxRankPercent: education?.max_rank_percent?.toString() ?? "",
-    experienceTypes: experience?.experience_types ?? [],
-    experienceName: experience?.experience_name_contains?.[0] ?? "",
-    company: experience?.organization_name_contains?.[0] ?? "",
-    title: experience?.title_contains?.[0] ?? "",
-    experienceAwardLevels: experience?.award_levels_any_of ?? [],
-    experienceAwardResult: experience?.award_result_contains?.[0] ?? "",
-    skills: request.skills_all_of ?? request.skills_any_of ?? [],
-    skillCategories: request.skill_categories_any_of ?? [],
-    skillsMode: request.skills_any_of?.length ? "any" : "all",
-    languageCredentials:
-      request.language_credentials_any_of?.map((item) => item.credential_code) ?? [],
-    languageScores: Object.fromEntries(
-      (request.language_credentials_any_of ?? [])
-        .filter((item) => item.min_score != null)
-        .map((item) => [item.credential_code, String(item.min_score)]),
-    ),
-    customLanguageName:
-      request.language_credentials_any_of?.find(
-        (item) => item.credential_code === "custom",
-      )?.custom_name_contains ?? "",
-    scholarshipStatus: request.scholarship_status ?? "any",
-    scholarshipName: request.scholarship_name_contains?.[0] ?? "",
-    scholarshipLevels: request.scholarship_levels_any_of ?? [],
-    competitionStatus: request.competition_status ?? "any",
-    competitionAwardStatus: request.competition_award_status ?? "any",
-    leadershipContexts: request.leadership_any_of?.[0]?.contexts_any_of ?? [],
-    leadershipRoles: request.leadership_any_of?.[0]?.roles_any_of ?? [],
-    keywords: request.keywords ?? request.keywords_all_of ?? request.keywords_any_of ?? [],
-    keywordsMode:
-      request.keyword_match_mode ??
-      (request.keywords_all_of?.length ? "precise" : "broad"),
+    draft: {
+      minEmploymentMonths: request.min_employment_months ?? 0,
+      minEmploymentOrInternshipMonths:
+        request.min_employment_or_internship_months ?? 0,
+      degrees: savedDegrees.filter((degree) => degree !== "unknown"),
+      institutionClassifications: institutionMigration.classifications,
+      graduationStatus: request.graduation_status ?? "any",
+      freshGraduateStartMonth:
+        request.fresh_graduate_start_month ?? defaultFilterDraft.freshGraduateStartMonth,
+      freshGraduateEndMonth:
+        request.fresh_graduate_end_month ?? defaultFilterDraft.freshGraduateEndMonth,
+      schoolName: education?.school_name_contains?.[0] ?? "",
+      major: education?.major_contains?.[0] ?? "",
+      minAverageScore: education?.min_average_score?.toString() ?? "",
+      minGpaPercent: education?.min_gpa_percent?.toString() ?? "",
+      maxRankPosition: education?.max_rank_position?.toString() ?? "",
+      maxRankPercent: education?.max_rank_percent?.toString() ?? "",
+      experienceTypes: experience?.experience_types ?? [],
+      experienceName: experience?.experience_name_contains?.[0] ?? "",
+      company: experience?.organization_name_contains?.[0] ?? "",
+      title: experience?.title_contains?.[0] ?? "",
+      experienceAwardLevels: experience?.award_levels_any_of ?? [],
+      experienceAwardResult: experience?.award_result_contains?.[0] ?? "",
+      skills: request.skills_all_of ?? request.skills_any_of ?? [],
+      skillCategories: request.skill_categories_any_of ?? [],
+      skillsMode: request.skills_any_of?.length ? "any" : "all",
+      languageCredentials:
+        request.language_credentials_any_of?.map((item) => item.credential_code) ?? [],
+      languageScores: Object.fromEntries(
+        (request.language_credentials_any_of ?? [])
+          .filter((item) => item.min_score != null)
+          .map((item) => [item.credential_code, String(item.min_score)]),
+      ),
+      customLanguageName:
+        request.language_credentials_any_of?.find(
+          (item) => item.credential_code === "custom",
+        )?.custom_name_contains ?? "",
+      scholarshipStatus: request.scholarship_status ?? "any",
+      scholarshipName: request.scholarship_name_contains?.[0] ?? "",
+      scholarshipLevels: request.scholarship_levels_any_of ?? [],
+      competitionStatus: request.competition_status ?? "any",
+      competitionAwardStatus: request.competition_award_status ?? "any",
+      leadershipContexts: request.leadership_any_of?.[0]?.contexts_any_of ?? [],
+      leadershipRoles: request.leadership_any_of?.[0]?.roles_any_of ?? [],
+      keywords: request.keywords ?? request.keywords_all_of ?? request.keywords_any_of ?? [],
+      keywordsMode:
+        request.keyword_match_mode ??
+        (request.keywords_all_of?.length ? "precise" : "broad"),
+    },
+    error: null,
   };
 }
 
@@ -1189,6 +1359,8 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
   const [view, setView] = useState<View>("library");
   const [filterDraft, setFilterDraft] =
     useState<FilterDraft>(freshDefaultFilter);
+  const [appliedFilter, setAppliedFilter] =
+    useState<FilterDraft>(freshDefaultFilter);
   const [filterOptions, setFilterOptions] = useState<FilterOptions>(
     fallbackFilterOptions,
   );
@@ -1220,10 +1392,24 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
+  const filterDraftRef = useRef(filterDraft);
+  const appliedFilterRef = useRef(appliedFilter);
+  const searchRequestRef = useRef(0);
   const reviewRequestRef = useRef(0);
   const summaryRequestRef = useRef(0);
   const originalFileRequestRef = useRef(0);
   const originalFileRevokeRef = useRef<(() => void) | null>(null);
+
+  const replaceFilterDraft = useCallback((next: FilterDraft) => {
+    filterDraftRef.current = next;
+    setFilterDraft(next);
+  }, []);
+
+  const replaceAppliedFilter = useCallback((next: FilterDraft) => {
+    const snapshot = snapshotFilterDraft(next);
+    appliedFilterRef.current = snapshot;
+    setAppliedFilter(snapshot);
+  }, []);
 
   const selectedResumeId = selectedResume?.resumeId ?? null;
 
@@ -1272,24 +1458,29 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
       append = false,
       cursor: string | null = null,
     ) => {
+      const requestId = ++searchRequestRef.current;
       setSearching(true);
       try {
         const response = await api.searchCandidates(
           draftToSearchRequest(draft, cursor),
         );
+        if (requestId !== searchRequestRef.current) return;
         setSearch((current) => ({
           ...response,
           items: append
             ? [...current.items, ...response.items]
             : response.items,
         }));
+        if (!append) replaceAppliedFilter(draft);
       } catch (error) {
-        notify("error", humanizeError(error));
+        if (requestId === searchRequestRef.current) {
+          notify("error", humanizeError(error));
+        }
       } finally {
-        setSearching(false);
+        if (requestId === searchRequestRef.current) setSearching(false);
       }
     },
-    [notify],
+    [notify, replaceAppliedFilter],
   );
 
   const refreshReview = useCallback(
@@ -1363,7 +1554,16 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
       return;
     void runSearch(defaultFilterDraft);
     void refreshSavedFilters();
-    void api.getFilterOptions().then(setFilterOptions).catch(() => {
+    void api.getFilterOptions().then((options) => {
+      setFilterOptions({
+        ...fallbackFilterOptions,
+        ...options,
+        institution_classifications:
+          options.institution_classifications?.length
+            ? options.institution_classifications
+            : fallbackFilterOptions.institution_classifications,
+      });
+    }).catch(() => {
       setFilterOptions(fallbackFilterOptions);
     });
   }, [authRoute, authSession?.email_verification_required, authState, refreshSavedFilters, runSearch]);
@@ -1582,12 +1782,12 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
   }, []);
 
   const applyFilter = async () => {
-    await runSearch(filterDraft);
+    await runSearch(filterDraftRef.current);
   };
 
   const resetFilter = async () => {
     const clean = freshDefaultFilter();
-    setFilterDraft(clean);
+    replaceFilterDraft(clean);
     await runSearch(clean);
   };
 
@@ -1600,7 +1800,7 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     try {
       await api.createSavedFilter({
         name: normalized,
-        filters: draftToSearchRequest(filterDraft),
+        filters: draftToSearchRequest(filterDraftRef.current),
       });
       await refreshSavedFilters();
       notify("success", `已保存“${normalized}”。`);
@@ -1609,11 +1809,38 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     }
   };
 
-  const applySavedFilter = (filter: SavedFilter) => {
-    const next = searchRequestToDraft(filter.filters);
-    setFilterDraft(next);
-    void runSearch(next);
+  const applySavedFilter = (filter: SavedFilter): boolean => {
+    const result = searchRequestToDraft(filter.filters);
+    if (!result.draft) {
+      notify("error", result.error);
+      return false;
+    }
+    replaceFilterDraft(result.draft);
+    void runSearch(result.draft);
+    return true;
   };
+
+  const toggleInstitutionClassification = useCallback(
+    (classification: InstitutionClassification) => {
+      const current = filterDraftRef.current;
+      const selected = current.institutionClassifications.includes(classification);
+      const next: FilterDraft = {
+        ...current,
+        institutionClassifications: sortInstitutionClassifications(
+          selected
+            ? current.institutionClassifications.filter(
+                (value) => value !== classification,
+              )
+            : [...current.institutionClassifications, classification],
+        ),
+      };
+      // Keep the ref in sync before the request so quick successive clicks
+      // compose from the latest selection instead of a stale render.
+      replaceFilterDraft(next);
+      void runSearch(next);
+    },
+    [replaceFilterDraft, runSearch],
+  );
 
   const deleteSavedFilter = async (filter: SavedFilter) => {
     try {
@@ -1833,8 +2060,8 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
       .split(/[、,，\s]+/)
       .map((term) => term.trim())
       .filter(Boolean);
-    const next = { ...filterDraft, keywords: terms };
-    setFilterDraft(next);
+    const next = { ...filterDraftRef.current, keywords: terms };
+    replaceFilterDraft(next);
     setView("filter");
     void runSearch(next);
   };
@@ -2018,9 +2245,10 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
           )}
           {view === "filter" && (
             <FilterWorkspace
+              appliedDraft={appliedFilter}
               draft={filterDraft}
               filterOptions={filterOptions}
-              onDraftChange={setFilterDraft}
+              onDraftChange={replaceFilterDraft}
               savedFilters={savedFilters}
               search={search}
               searching={searching}
@@ -2031,8 +2259,9 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
               onApplySaved={applySavedFilter}
               onDeleteSaved={deleteSavedFilter}
               onOpenCandidate={openCandidate}
+              onToggleInstitutionClassification={toggleInstitutionClassification}
               onLoadMore={() =>
-                void runSearch(filterDraft, true, search.next_cursor)
+                void runSearch(appliedFilterRef.current, true, search.next_cursor)
               }
               onUpload={() => setView("upload")}
             />
@@ -2955,7 +3184,7 @@ function RecruitingAgentDrawer({
       <div className="agent-composer">
         <div className="agent-suggestions" aria-label="常用提问">
           {[
-            "找 985/211、3 年以上的候选人",
+            "找 985 或 211 院校、3 年以上的候选人",
             "为当前 JD 批量匹配",
             "查看当前 JD 排行榜",
             "解释当前候选人的分数",
@@ -2977,7 +3206,7 @@ function RecruitingAgentDrawer({
           <textarea
             id="agent-message"
             onChange={(event) => setInput(event.target.value)}
-            placeholder="例如：找 985/211、3 年以上 Python 的候选人"
+            placeholder="例如：找 985 或 211 院校、3 年以上 Python 的候选人"
             rows={2}
             value={input}
           />
@@ -2991,6 +3220,7 @@ function RecruitingAgentDrawer({
 }
 
 function FilterWorkspace({
+  appliedDraft,
   draft,
   filterOptions,
   onDraftChange,
@@ -3004,9 +3234,11 @@ function FilterWorkspace({
   onApplySaved,
   onDeleteSaved,
   onOpenCandidate,
+  onToggleInstitutionClassification,
   onLoadMore,
   onUpload,
 }: {
+  appliedDraft: FilterDraft;
   draft: FilterDraft;
   filterOptions: FilterOptions;
   onDraftChange: (draft: FilterDraft) => void;
@@ -3017,12 +3249,17 @@ function FilterWorkspace({
   onApply: () => void;
   onReset: () => void;
   onSave: (name: string) => Promise<void>;
-  onApplySaved: (filter: SavedFilter) => void;
+  onApplySaved: (filter: SavedFilter) => boolean;
   onDeleteSaved: (filter: SavedFilter) => Promise<void>;
   onOpenCandidate: (item: CandidateSearchItem, tab?: DrawerTab) => void;
+  onToggleInstitutionClassification: (
+    classification: InstitutionClassification,
+  ) => void;
   onLoadMore: () => void;
   onUpload: () => void;
 }) {
+  const classifications = resolvedInstitutionClassificationOptions(filterOptions);
+
   return (
     <div className="filter-workspace">
       <FilterPanel
@@ -3037,8 +3274,12 @@ function FilterWorkspace({
         savedFilters={savedFilters}
       />
       <ResultsPane
+        appliedDraft={appliedDraft}
+        institutionClassifications={draft.institutionClassifications}
+        institutionClassificationOptions={classifications}
         onLoadMore={onLoadMore}
         onOpenCandidate={onOpenCandidate}
+        onToggleInstitutionClassification={onToggleInstitutionClassification}
         onUpload={onUpload}
         search={search}
         searching={searching}
@@ -3066,7 +3307,7 @@ function FilterPanel({
   onApply: () => void;
   onReset: () => void;
   onSave: (name: string) => Promise<void>;
-  onApplySaved: (filter: SavedFilter) => void;
+  onApplySaved: (filter: SavedFilter) => boolean;
   onDeleteSaved: (filter: SavedFilter) => Promise<void>;
 }) {
   const [selectedSavedId, setSelectedSavedId] = useState("");
@@ -3078,7 +3319,7 @@ function FilterPanel({
   const applySaved = (id: string) => {
     setSelectedSavedId(id);
     const saved = savedFilters.find((item) => item.saved_filter_id === id);
-    if (saved) onApplySaved(saved);
+    if (saved && !onApplySaved(saved)) setSelectedSavedId("");
   };
 
   const save = async () => {
@@ -3190,25 +3431,6 @@ function FilterPanel({
                             (degree) => degree !== option.value,
                           )
                         : [...draft.degrees, option.value],
-                    })
-                  }
-                  type="checkbox"
-                />
-                {option.label}
-              </label>
-            ))}
-          </div>
-          <span className="field-label">院校层级</span>
-          <div className="choice-grid" aria-label="院校层级条件">
-            {filterOptions.institution_tiers.map((option) => (
-              <label className="choice-row" key={option.value}>
-                <input
-                  checked={draft.institutionTiers.includes(option.value)}
-                  onChange={() =>
-                    update({
-                      institutionTiers: draft.institutionTiers.includes(option.value)
-                        ? draft.institutionTiers.filter((value) => value !== option.value)
-                        : [...draft.institutionTiers, option.value],
                     })
                   }
                   type="checkbox"
@@ -3825,21 +4047,219 @@ function ChipInput({
   );
 }
 
+function InstitutionClassificationTags({
+  classifications,
+}: {
+  classifications: readonly InstitutionClassification[] | null | undefined;
+}) {
+  const orderedClassifications = sortInstitutionClassifications(classifications);
+  if (!orderedClassifications.length) {
+    return <span className="candidate-meta">未识别</span>;
+  }
+  return (
+    <div className="institution-classification-tags">
+      {orderedClassifications.map((classification) => (
+        <span className="tag" key={classification}>
+          {institutionClassificationLabel(classification)}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+interface ResultDisplayColumn {
+  key: CandidateSearchDisplayFieldKey;
+  label: string;
+}
+
+function activeResultDisplayColumns(draft: FilterDraft): ResultDisplayColumn[] {
+  const columns: ResultDisplayColumn[] = [];
+  const add = (key: CandidateSearchDisplayFieldKey, label: string) => {
+    if (!columns.some((column) => column.key === key)) {
+      columns.push({ key, label });
+    }
+  };
+
+  if (draft.graduationStatus !== "any") add("graduation", "毕业时间");
+  if (draft.minEmploymentOrInternshipMonths > 0) {
+    add("employment_or_internship_months", "工作 + 实习年限");
+  }
+
+  if (draft.schoolName.trim()) add("school", "学校");
+  if (draft.major.trim()) add("major", "专业");
+  if (
+    draft.minAverageScore ||
+    draft.minGpaPercent ||
+    draft.maxRankPosition ||
+    draft.maxRankPercent
+  ) {
+    add("academic_performance", "学业表现");
+  }
+
+  if (draft.experienceTypes.length) add("experience_type", "经历类型");
+  if (draft.experienceName.trim()) add("experience_name", "经历名称");
+  if (draft.company.trim()) add("organization", "公司 / 组织");
+  if (draft.title.trim()) add("title", "职位");
+  if (
+    draft.experienceAwardLevels.length ||
+    draft.experienceAwardResult.trim()
+  ) {
+    add("experience_award", "经历获奖");
+  }
+
+  if (draft.skills.length || draft.skillCategories.length) add("skills", "技能");
+  if (
+    draft.languageCredentials.some(
+      (credential) =>
+        credential !== "custom" || Boolean(draft.customLanguageName.trim()),
+    )
+  ) {
+    add("language", "语言证书");
+  }
+  if (
+    draft.scholarshipStatus !== "any" ||
+    draft.scholarshipName.trim() ||
+    draft.scholarshipLevels.length
+  ) {
+    add("scholarship", "奖学金");
+  }
+  if (
+    draft.competitionStatus !== "any" ||
+    draft.competitionAwardStatus !== "any"
+  ) {
+    add("competition", "竞赛");
+  }
+  if (draft.leadershipContexts.length || draft.leadershipRoles.length) {
+    add("leadership", "领导经历");
+  }
+  if (draft.keywords.length) add("keywords", "关键词命中");
+
+  return columns;
+}
+
+function resultDisplayValueLabel(
+  key: CandidateSearchDisplayFieldKey,
+  value: string,
+): string {
+  const normalized = value.trim();
+  if (!normalized) return "";
+
+  if (key === "institution_classifications") {
+    return (
+      institutionClassificationLabels[
+        normalized as InstitutionClassification
+      ] ?? normalized
+    );
+  }
+  if (key === "highest_degree" || key === "education_degree") {
+    return degreeLabels[normalized as DegreeLevel] ?? normalized;
+  }
+  if (key === "experience_type") {
+    return (
+      experienceTypeOptions.find((option) => option.value === normalized)
+        ?.label ?? normalized
+    );
+  }
+  if (
+    key === "employment_months" ||
+    key === "employment_or_internship_months"
+  ) {
+    const months = Number(normalized);
+    return Number.isFinite(months) ? formatMonths(months) : normalized;
+  }
+  return normalized;
+}
+
+function resultDisplayValues(
+  item: CandidateSearchItem,
+  key: CandidateSearchDisplayFieldKey,
+): string[] {
+  const values = (item.display_fields ?? [])
+    .filter((field) => field.key === key)
+    .flatMap((field) => field.values)
+    .map((value) => resultDisplayValueLabel(key, value))
+    .filter(Boolean);
+  return [...new Set(values)];
+}
+
+function ResultDisplayValues({
+  item,
+  fieldKey,
+  label,
+}: {
+  item: CandidateSearchItem;
+  fieldKey: CandidateSearchDisplayFieldKey;
+  label?: string;
+}) {
+  const values = resultDisplayValues(item, fieldKey);
+  if (!values.length) {
+    return <span className="candidate-meta result-display-empty">—</span>;
+  }
+
+  return (
+    <div
+      aria-label={`${label ?? "筛选字段"}：${values.join("；")}`}
+      className="result-display-values"
+      title={values.join("；")}
+    >
+      {values.slice(0, 2).map((value) => (
+        <span className="result-display-value" key={value}>
+          {value}
+        </span>
+      ))}
+      {values.length > 2 && (
+        <span className="result-display-more">+{values.length - 2} 项</span>
+      )}
+    </div>
+  );
+}
+
+function ResultColumnHeader({
+  children,
+  active = false,
+}: {
+  children: ReactNode;
+  active?: boolean;
+}) {
+  return (
+    <span className="result-column-heading">
+      {children}
+      {active && <span className="result-filter-indicator">已筛</span>}
+    </span>
+  );
+}
+
 function ResultsPane({
+  appliedDraft,
+  institutionClassifications,
+  institutionClassificationOptions,
   search,
   searching,
   selectedResumeId,
   onOpenCandidate,
+  onToggleInstitutionClassification,
   onLoadMore,
   onUpload,
 }: {
+  appliedDraft: FilterDraft;
+  institutionClassifications: InstitutionClassification[];
+  institutionClassificationOptions: Array<{
+    value: InstitutionClassification;
+    label: string;
+  }>;
   search: CandidateSearchResponse;
   searching: boolean;
   selectedResumeId: string | null;
   onOpenCandidate: (item: CandidateSearchItem, tab?: DrawerTab) => void;
+  onToggleInstitutionClassification: (
+    classification: InstitutionClassification,
+  ) => void;
   onLoadMore: () => void;
   onUpload: () => void;
 }) {
+  const displayColumns = activeResultDisplayColumns(appliedDraft);
+  const hasAppliedDisplayColumns = displayColumns.length > 0;
+
   return (
     <section className="results-pane" aria-label="候选人结果">
       <header className="results-header">
@@ -3862,21 +4282,73 @@ function ResultsPane({
             上传简历
           </button>
         </div>
+        <div
+          aria-label="院校类型快捷筛选"
+          className="institution-quick-filters"
+          role="group"
+        >
+          <span className="institution-quick-filters-label">院校类型</span>
+          <div className="institution-quick-filter-options">
+            {institutionClassificationOptions.map((option) => (
+              <label className="institution-quick-filter" key={option.value}>
+                <input
+                  checked={institutionClassifications.includes(option.value)}
+                  onChange={() => onToggleInstitutionClassification(option.value)}
+                  type="checkbox"
+                />
+                <span>{option.label}</span>
+              </label>
+            ))}
+          </div>
+          {searching && (
+            <span aria-live="polite" className="institution-quick-filter-status">
+              正在更新
+            </span>
+          )}
+        </div>
       </header>
-      <div className="table-scroll">
+      <div
+        aria-label="候选人结果，可横向滚动查看筛选字段"
+        className="table-scroll"
+        role="region"
+        tabIndex={0}
+      >
         {searching && !search.items.length ? (
           <TableSkeleton />
         ) : search.items.length ? (
-          <table className="candidate-table">
+          <table
+            className={`candidate-table${
+              hasAppliedDisplayColumns ? " has-active-filter-columns" : ""
+            }`}
+          >
             <thead>
               <tr>
                 <th scope="col">候选人</th>
-                <th scope="col">985 / 211</th>
-                <th scope="col">最高学历</th>
-                <th scope="col">正式工作年限</th>
-                <th scope="col">AI 总结</th>
+                <th scope="col">
+                  <ResultColumnHeader
+                    active={appliedDraft.institutionClassifications.length > 0}
+                  >
+                    院校类型
+                  </ResultColumnHeader>
+                </th>
+                <th scope="col">
+                  <ResultColumnHeader active={appliedDraft.degrees.length > 0}>
+                    最高学历
+                  </ResultColumnHeader>
+                </th>
+                <th scope="col">
+                  <ResultColumnHeader
+                    active={appliedDraft.minEmploymentMonths > 0}
+                  >
+                    正式工作年限
+                  </ResultColumnHeader>
+                </th>
+                {displayColumns.map((column) => (
+                  <th className="result-display-column" key={column.key} scope="col">
+                    <ResultColumnHeader active>{column.label}</ResultColumnHeader>
+                  </th>
+                ))}
                 <th scope="col">最近评分</th>
-                <th scope="col">命中证据</th>
                 <th scope="col">原件</th>
                 <th scope="col" aria-label="查看详情" />
               </tr>
@@ -3898,7 +4370,7 @@ function ResultsPane({
                   }}
                   tabIndex={0}
                 >
-                  <td>
+                  <td className="candidate-result-cell">
                     <div className="candidate-person">
                       <span className="candidate-name">
                         {item.display_name?.trim() || "未命名候选人"}
@@ -3909,12 +4381,16 @@ function ResultsPane({
                     </div>
                   </td>
                   <td>
-                    {item.is_985_211 ? (
-                      <span className="school-mark">
-                        <Icon name="check" size={13} />是
-                      </span>
+                    {appliedDraft.institutionClassifications.length ? (
+                      <ResultDisplayValues
+                        fieldKey="institution_classifications"
+                        item={item}
+                        label="院校类型"
+                      />
                     ) : (
-                      <span className="candidate-meta">否</span>
+                      <InstitutionClassificationTags
+                        classifications={item.institution_classifications}
+                      />
                     )}
                   </td>
                   <td>
@@ -3925,18 +4401,15 @@ function ResultsPane({
                     </span>
                   </td>
                   <td>{formatMonths(item.employment_months)}</td>
-                  <td className="library-summary-cell">
-                    {item.summary_preview ? (
-                      <p
-                        className="library-summary-preview"
-                        title={item.summary_preview}
-                      >
-                        {item.summary_preview}
-                      </p>
-                    ) : (
-                      <span className="library-empty-copy">尚未生成</span>
-                    )}
-                  </td>
+                  {displayColumns.map((column) => (
+                    <td className="result-display-cell" key={column.key}>
+                      <ResultDisplayValues
+                        fieldKey={column.key}
+                        item={item}
+                        label={column.label}
+                      />
+                    </td>
+                  ))}
                   <td>
                     {item.score_total !== null ? (
                       <div
@@ -3952,25 +4425,6 @@ function ResultsPane({
                     ) : (
                       <span className="library-empty-copy">尚未评分</span>
                     )}
-                  </td>
-                  <td>
-                    <div className="match-tags">
-                      {item.matched_evidence.length ? (
-                        item.matched_evidence
-                          .slice(0, 3)
-                          .map((evidence, index) => (
-                            <span
-                              className="tag"
-                              key={`${evidence.filter_key}-${index}`}
-                              title={evidence.label}
-                            >
-                              {evidence.label}
-                            </span>
-                          ))
-                      ) : (
-                        <span className="candidate-meta">无附加条件</span>
-                      )}
-                    </div>
                   </td>
                   <td>
                     <button
@@ -5895,7 +6349,9 @@ function EvidenceTab({
                 <span key={`${item.school_name_raw}-${index}`}>
                   {item.school_name_raw} · {degreeLabels[item.degree]}
                   {item.major_raw ? ` · ${item.major_raw}` : ""}
-                  {item.institution_tiers.length ? ` · ${item.institution_tiers.join("/")}` : ""}
+                  {item.institution_classification
+                    ? ` · ${institutionClassificationLabel(item.institution_classification)}`
+                    : ""}
                   {item.gpa_percent != null ? ` · GPA ${item.gpa_percent.toFixed(1)}%` : ""}
                   {item.rank_percent != null ? ` · 排名前 ${item.rank_percent.toFixed(1)}%` : ""}
                   {` · ${evidenceBlockLabel(item.evidence_block_ids)}`}

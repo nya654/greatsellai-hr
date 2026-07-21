@@ -46,6 +46,17 @@ InstitutionTier = Literal[
     "private_undergraduate",
     "higher_vocational",
     "overseas",
+    "undergraduate",
+    "associate",
+    "secondary_vocational",
+]
+InstitutionClassification = Literal[
+    "985",
+    "211",
+    "undergraduate",
+    "associate",
+    "secondary_vocational",
+    "overseas",
 ]
 SkillCategory = Literal[
     "software",
@@ -1288,6 +1299,10 @@ class ResumeEducationResponse(ApiModel):
     start_month: Month | None
     end_month: Month | None
     institution_tiers: list[InstitutionTier]
+    institution_classification: InstitutionClassification | None = None
+    classification_basis: str | None = None
+    classification_registry_version: str | None = None
+    classification_evidence_block_ids: list[str] = Field(default_factory=list)
     average_score: float | None
     gpa_value: float | None
     gpa_scale: float | None
@@ -1590,6 +1605,10 @@ class EducationFilter(ApiModel):
     degree_in: list[DegreeLevel] = Field(default_factory=list, max_length=5)
     school_name_contains: list[str] = Field(default_factory=list, max_length=8)
     major_contains: list[str] = Field(default_factory=list, max_length=8)
+    institution_classifications_any_of: list[InstitutionClassification] = Field(
+        default_factory=list,
+        max_length=6,
+    )
     institution_tiers_any_of: list[InstitutionTier] = Field(default_factory=list, max_length=10)
     min_average_score: float | None = Field(default=None, ge=0, le=100)
     min_gpa_percent: float | None = Field(default=None, ge=0, le=100)
@@ -1720,18 +1739,61 @@ class CandidateSearchRequest(ApiModel):
         return self
 
 
+SearchDisplayFieldKey = Literal[
+    "institution_classifications",
+    "highest_degree",
+    "education_degree",
+    "graduation",
+    "employment_months",
+    "employment_or_internship_months",
+    "school",
+    "major",
+    "academic_performance",
+    "experience_type",
+    "experience_name",
+    "organization",
+    "title",
+    "experience_award",
+    "skills",
+    "language",
+    "scholarship",
+    "competition",
+    "leadership",
+    "keywords",
+]
+
+
+class CandidateSearchDisplayField(ApiModel):
+    """One normalized value group for the active result-table columns.
+
+    The client chooses which groups become visible columns from the successful
+    filter snapshot.  Keeping the values structured avoids trying to split a
+    human-readable evidence sentence back into school, major, company, title,
+    or score values on the client. Evidence ids are supplied for source-backed
+    values; aggregate counts and query terms intentionally have none.
+    """
+
+    key: SearchDisplayFieldKey
+    values: list[str] = Field(default_factory=list)
+    evidence_block_ids: list[str] = Field(default_factory=list)
+
+
 class CandidateSearchItem(ApiModel):
     candidate_id: str
     display_name: str | None
     resume_id: str
     original_filename: str
     is_985_211: bool
+    institution_classifications: list[InstitutionClassification] = Field(
+        default_factory=list
+    )
     highest_degree: DegreeLevel | None
     employment_months: int
     employment_or_internship_months: int
     summary_preview: str | None = None
     score_total: float | None = None
     score_template_name: str | None = None
+    display_fields: list[CandidateSearchDisplayField] = Field(default_factory=list)
     matched_filters: list[str]
     matched_evidence: list["CandidateSearchMatch"] = Field(default_factory=list)
 

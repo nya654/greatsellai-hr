@@ -26,14 +26,12 @@ from app.models import (
     ResumeUploadIdempotencyKey,
     utcnow,
 )
-from app.filter_options import (
-    INSTITUTION_TIER_OPTIONS,
-    normalize_language_credential,
-)
+from app.filter_options import normalize_language_credential
 from app.schemas import ResumeFactsSaveRequest, ResumeFactsSubmission
 from app.services.deepseek_provider import (
     DeepSeekProviderError,
     EvidenceBlock,
+    FACT_SNAPSHOT_SCHEMA_VERSION,
     extract_resume_facts,
 )
 from app.services.ai_gateway_service import (
@@ -44,8 +42,10 @@ from app.services.ai_gateway_service import (
     gateway_prompt_transport_arguments,
 )
 from app.services.institution_service import (
+    classify_education_institution,
     resolve_institution,
     resolve_institution_by_roster_id,
+    resolve_registry_institution,
 )
 from app.services.normalization import (
     highest_degree,
@@ -934,7 +934,11 @@ def _canonical_fact_payload(
     education_entries: list[dict[str, object]] = []
     for education in educations:
         evidence_block_ids = _sorted_block_ids(education.evidence_block_ids)
+        classification_evidence_block_ids = _sorted_block_ids(
+            education.classification_evidence_block_ids
+        )
         source_block_ids.update(evidence_block_ids)
+        source_block_ids.update(classification_evidence_block_ids)
         education_entries.append(
             {
                 "school_name_raw": education.school_name_raw,
@@ -946,6 +950,10 @@ def _canonical_fact_payload(
                 "start_month": education.start_month,
                 "end_month": education.end_month,
                 "institution_tiers": sorted(education.institution_tiers or []),
+                "institution_classification": education.institution_classification,
+                "classification_basis": education.classification_basis,
+                "classification_registry_version": education.classification_registry_version,
+                "classification_evidence_block_ids": classification_evidence_block_ids,
                 "average_score": education.average_score,
                 "gpa_value": education.gpa_value,
                 "gpa_scale": education.gpa_scale,
@@ -1063,7 +1071,7 @@ def _canonical_fact_payload(
     sorted_source_block_ids = sorted(source_block_ids)
     return (
         {
-            "schema_version": "resume_fact_snapshot.v4",
+            "schema_version": FACT_SNAPSHOT_SCHEMA_VERSION,
             "facts_schema_version": "resume_facts.v2",
             "education": education_entries,
             "experiences": experience_entries,
@@ -1447,6 +1455,7 @@ def _replace_facts(
     session.flush()
 
     has_985_211 = False
+    has_known_non_985_211 = False
     has_unresolved_school = not facts.education
     has_ai_rulebook_match = False
     has_invalid_ai_rulebook_reference = False
@@ -1483,35 +1492,58 @@ def _replace_facts(
         is_ai_rulebook_match = False
         if not is_local_match and force_pending_review:
             if education.ai_985_211_judgment:
-                institution = resolve_institution_by_roster_id(
-                    session,
-                    education.ai_institution_roster_id,
+                source_registry_institution = resolve_registry_institution(
+                    education.school_name_raw
                 )
-                if institution is not None and institution.is_985_211:
-                    is_ai_rulebook_match = True
-                    has_ai_rulebook_match = True
+                # An LLM-supplied roster ID is never authority by itself.  It
+                # may only recover a missing local relation when the raw,
+                # source-grounded school name has already matched the same
+                # controlled roster entry exactly.
+                if (
+                    source_registry_institution is not None
+                    and education.ai_institution_roster_id
+                    == source_registry_institution.roster_id
+                ):
+                    ai_institution = resolve_institution_by_roster_id(
+                        session,
+                        education.ai_institution_roster_id,
+                    )
+                    if ai_institution is not None and ai_institution.is_985_211:
+                        institution = ai_institution
+                        is_ai_rulebook_match = True
+                        has_ai_rulebook_match = True
+                    else:
+                        has_invalid_ai_rulebook_reference = True
                 else:
-                    institution = None
                     has_invalid_ai_rulebook_reference = True
             elif education.ai_institution_roster_id is not None:
                 has_invalid_ai_rulebook_reference = True
-        is_matched = institution is not None
+        classification = classify_education_institution(
+            school_name_raw=education.school_name_raw,
+            degree=education.degree,
+            evidence_text=evidence_text,
+            evidence_block_ids=education.evidence_block_ids,
+            registry_roster_id=institution.roster_id if institution is not None else None,
+        )
+        is_higher_education_match = (
+            classification.basis == "moe_higher_education_registry"
+        )
+        is_matched = classification.classification is not None
         if not is_matched:
             has_unresolved_school = True
-        if institution is not None and institution.is_985_211:
+        if classification.classification in {"985", "211"}:
             has_985_211 = True
-        registry_tiers = list(institution.tier_tags or []) if institution else []
-        explicit_tiers: list[str] = []
-        tier_labels = {
-            item["value"]: item["label"] for item in INSTITUTION_TIER_OPTIONS
-        }
-        for tier in education.institution_tiers:
-            if tier in registry_tiers:
-                continue
-            if not normalized_contains(evidence_text, tier_labels[tier]):
-                raise FactValidationError("institution_tier_not_grounded_in_evidence")
-            explicit_tiers.append(tier)
-        institution_tiers = sorted(set([*registry_tiers, *explicit_tiers]))
+        elif classification.classification is not None:
+            has_known_non_985_211 = True
+        # New writes have one exact category, or no category when the source
+        # cannot prove it.  Keep the JSON column for old snapshots/filters but
+        # do not let unverified model-provided legacy labels create a false
+        # school type.
+        institution_tiers = (
+            [classification.classification]
+            if classification.classification is not None
+            else []
+        )
         gpa_percent = (
             round(education.gpa_value / education.gpa_scale * 100, 4)
             if education.gpa_value is not None and education.gpa_scale is not None
@@ -1536,18 +1568,26 @@ def _replace_facts(
                     "exact"
                     if is_local_match
                     else (
-                        "ai_rulebook"
-                        if is_ai_rulebook_match
+                        "higher_education_registry"
+                        if is_higher_education_match
                         else (
-                            "ai_non_member"
-                            if force_pending_review
+                            "source_evidence"
+                            if classification.basis == "source_evidence"
                             else (
-                                "manual"
-                                if (
-                                    request.complete_review
-                                    and request.is_985_211_override is not None
+                                "ai_rulebook"
+                                if is_ai_rulebook_match
+                                else (
+                                    "ai_non_member"
+                                    if force_pending_review
+                                    else (
+                                        "manual"
+                                        if (
+                                            request.complete_review
+                                            and request.is_985_211_override is not None
+                                        )
+                                        else "unmatched"
+                                    )
                                 )
-                                else "unmatched"
                             )
                         )
                     )
@@ -1558,6 +1598,12 @@ def _replace_facts(
                 start_month=education.start_month,
                 end_month=education.end_month,
                 institution_tiers=institution_tiers,
+                institution_classification=classification.classification,
+                classification_basis=classification.basis,
+                classification_registry_version=classification.registry_version,
+                classification_evidence_block_ids=list(
+                    classification.evidence_block_ids
+                ),
                 average_score=education.average_score,
                 gpa_value=education.gpa_value,
                 gpa_scale=education.gpa_scale,
@@ -1789,6 +1835,12 @@ def _replace_facts(
             resume.is_985_211 = request.is_985_211_override
         else:
             resume.is_985_211 = None
+    elif has_known_non_985_211:
+        # An exact domestic Ministry of Education roster match, explicit
+        # secondary-vocational evidence, or explicit overseas study evidence
+        # is enough to establish that this record is not a historical 985/211
+        # institution.  This is not inferred from degree wording alone.
+        resume.is_985_211 = False
     else:
         # The local registry contains historical 985/211 institutions only.
         # Reaching this branch is defensive, but it must still not manufacture

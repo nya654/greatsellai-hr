@@ -153,12 +153,20 @@ def test_ready_new_resume_replaces_prior_active_version_in_search(client) -> Non
             "resume_id": second_resume_id,
             "original_filename": "resume.pdf",
             "is_985_211": True,
+            "institution_classifications": ["985"],
             "highest_degree": "master",
             "employment_months": 0,
             "employment_or_internship_months": 0,
             "summary_preview": None,
             "score_total": None,
             "score_template_name": None,
+            "display_fields": [
+                {
+                    "key": "skills",
+                    "values": ["Python"],
+                    "evidence_block_ids": ["page-001"],
+                }
+            ],
             "matched_filters": ["skills_all_of"],
             "matched_evidence": [
                 {

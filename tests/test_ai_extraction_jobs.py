@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
 from sqlalchemy import select
 
 from app.models import (
@@ -680,6 +681,75 @@ def test_worker_auto_activates_with_ambiguous_ai_work_item_stored_as_unknown(
     assert payload["experiences"][0]["experience_type"] == "unknown"
     assert payload["employment_months"] == 0
     assert "work_context_ambiguous" in payload["quality_flags"]
+
+
+@pytest.mark.parametrize("section_heading", ["Work History", "工作履历"])
+def test_worker_counts_grounded_explicit_work_history_as_employment(
+    ai_client,
+    monkeypatch,
+    section_heading: str,
+) -> None:
+    uploaded = _upload_new_resume(ai_client)
+    resume_id = str(uploaded["resume_id"])
+    school = load_registry().institutions[0].canonical_name
+    database = ai_client.app.state.database
+    with database.session_factory() as session:
+        block = session.scalar(
+            select(ResumeSourceBlock).where(
+                ResumeSourceBlock.resume_id == resume_id,
+                ResumeSourceBlock.block_id == "page-001",
+            )
+        )
+        assert block is not None
+        block.text = (
+            f"Education {school} Computer Science. {section_heading} "
+            "Acme Python Engineer 2022-07 to 2024-06. Skills Python SQL."
+        )
+        session.commit()
+
+    def fake_extract(**kwargs: object) -> ResumeFactsSubmission:
+        return ResumeFactsSubmission.model_validate(
+            {
+                "education": [
+                    {
+                        "school_name_raw": school,
+                        "degree": "bachelor",
+                        "major_raw": "Computer Science",
+                        "evidence_block_ids": ["page-001"],
+                    }
+                ],
+                "experiences": [
+                    {
+                        "experience_type": "employment",
+                        "organization_name_raw": "Acme",
+                        "title_raw": "Python Engineer",
+                        "start_month": "2022-07",
+                        "end_month": "2024-06",
+                        "is_current": False,
+                        "evidence_block_ids": ["page-001"],
+                        "classification_evidence_block_ids": ["page-001"],
+                    }
+                ],
+                "skills": [
+                    {"skill_display": "Python", "evidence_block_ids": ["page-001"]}
+                ],
+            }
+        )
+
+    monkeypatch.setattr(job_service, "extract_resume_facts", fake_extract)
+    assert job_service.run_ai_extraction_worker_once(
+        database,
+        settings=ai_client.app.state.settings,
+        worker_id="test-worker",
+    )
+
+    detail = ai_client.get(f"/v1/resumes/{resume_id}/review")
+    assert detail.status_code == 200, detail.text
+    payload = detail.json()
+    assert payload["experiences"][0]["experience_type"] == "employment"
+    assert payload["employment_months"] == 24
+    assert payload["employment_or_internship_months"] == 24
+    assert "work_context_ambiguous" not in payload["quality_flags"]
 
 
 def test_worker_persists_grounded_ai_facts_when_one_item_is_not_grounded(

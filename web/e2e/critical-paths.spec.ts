@@ -99,6 +99,12 @@ test.describe("招聘工作台关键路径", () => {
 
     await page.getByRole("button", { name: "筛选工作台", exact: true }).click();
     await expect(page.getByLabel("综合评分排序规则")).not.toHaveValue("");
+    const institutionTypes = page.getByLabel("院校类型条件");
+    await expect(institutionTypes).toBeVisible();
+    await expect(page.getByLabel("院校类型快捷筛选")).toHaveCount(0);
+    const institution985 = institutionTypes.getByRole("checkbox", { name: "985" });
+    await institution985.check();
+    await expect(institution985).toBeChecked();
     await page.locator("#school-name").fill("清华");
     await page.getByRole("button", { name: "应用筛选条件" }).click();
     await expect(page.getByText("E2E 推荐候选人")).toBeVisible();
@@ -106,6 +112,8 @@ test.describe("招聘工作台关键路径", () => {
     await expect(page.getByRole("columnheader", { name: "经历", exact: true })).toBeVisible();
     await expect(page.getByRole("columnheader", { name: "核心技能", exact: true })).toBeVisible();
     await expect(page.getByText("e2e-fixture-1.pdf", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("正式工作年限待核实").first()).toBeVisible();
+    await expect(page.getByText("未设门槛")).toHaveCount(0);
 
     await page.getByRole("button", { name: "查看 E2E 推荐候选人 的评分详情" }).click();
     await expect(page.getByRole("tab", { name: "评分详情" })).toHaveAttribute(

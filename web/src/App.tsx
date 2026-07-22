@@ -884,11 +884,15 @@ function clampMonths(value: number): number {
   return Math.max(0, Math.min(240, Math.round(value / 12) * 12));
 }
 
-function formatMonths(months: number): string {
-  if (months <= 0) return "未设门槛";
+function formatDuration(months: number): string {
+  if (months <= 0) return "0 个月";
   const years = Math.floor(months / 12);
   const rest = months % 12;
   return rest ? `${years} 年 ${rest} 个月` : `${years} 年`;
+}
+
+function formatMinimumDuration(months: number): string {
+  return months <= 0 ? "不限" : formatDuration(months);
 }
 
 function formatLibraryDate(value: string): string {
@@ -1971,28 +1975,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     return true;
   };
 
-  const toggleInstitutionClassification = useCallback(
-    (classification: InstitutionClassification) => {
-      const current = filterDraftRef.current;
-      const selected = current.institutionClassifications.includes(classification);
-      const next: FilterDraft = {
-        ...current,
-        institutionClassifications: sortInstitutionClassifications(
-          selected
-            ? current.institutionClassifications.filter(
-                (value) => value !== classification,
-              )
-            : [...current.institutionClassifications, classification],
-        ),
-      };
-      // Keep the ref in sync before the request so quick successive clicks
-      // compose from the latest selection instead of a stale render.
-      replaceFilterDraft(next);
-      void runSearch(next);
-    },
-    [replaceFilterDraft, runSearch],
-  );
-
   const deleteSavedFilter = async (filter: SavedFilter) => {
     try {
       await api.deleteSavedFilter(filter.saved_filter_id);
@@ -2441,7 +2423,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
               onDeleteSaved={deleteSavedFilter}
               onOpenCandidate={openCandidate}
               onScoreTemplateChange={changeScoreTemplate}
-              onToggleInstitutionClassification={toggleInstitutionClassification}
               onLoadMore={() =>
                 void runSearch(appliedFilterRef.current, true, search.next_cursor)
               }
@@ -3571,7 +3552,6 @@ function FilterWorkspace({
   onDeleteSaved,
   onOpenCandidate,
   onScoreTemplateChange,
-  onToggleInstitutionClassification,
   onLoadMore,
   onUpload,
   scoreTemplateId,
@@ -3592,16 +3572,11 @@ function FilterWorkspace({
   onDeleteSaved: (filter: SavedFilter) => Promise<void>;
   onOpenCandidate: (item: CandidateSearchItem, tab?: DrawerTab) => void;
   onScoreTemplateChange: (templateId: string | null) => void;
-  onToggleInstitutionClassification: (
-    classification: InstitutionClassification,
-  ) => void;
   onLoadMore: () => void;
   onUpload: () => void;
   scoreTemplateId: string | null;
   scoreTemplates: ScoreTemplate[];
 }) {
-  const classifications = resolvedInstitutionClassificationOptions(filterOptions);
-
   return (
     <div className="filter-workspace">
       <FilterPanel
@@ -3617,12 +3592,9 @@ function FilterWorkspace({
       />
       <ResultsPane
         appliedDraft={appliedDraft}
-        institutionClassifications={draft.institutionClassifications}
-        institutionClassificationOptions={classifications}
         onLoadMore={onLoadMore}
         onOpenCandidate={onOpenCandidate}
         onScoreTemplateChange={onScoreTemplateChange}
-        onToggleInstitutionClassification={onToggleInstitutionClassification}
         onUpload={onUpload}
         search={search}
         searching={searching}
@@ -3659,6 +3631,7 @@ function FilterPanel({
   const [saveName, setSaveName] = useState("");
   const [saving, setSaving] = useState(false);
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+  const institutionClassifications = resolvedInstitutionClassificationOptions(filterOptions);
 
   const update = (patch: Partial<FilterDraft>) =>
     onDraftChange({ ...draft, ...patch });
@@ -3783,6 +3756,34 @@ function FilterPanel({
           <div className="filter-section-heading">
             <h3>学历与院校</h3>
             <span>精确筛选</span>
+          </div>
+          <div className="field-stack">
+            <span className="field-label">院校类型</span>
+            <div className="choice-grid" aria-label="院校类型条件">
+              {institutionClassifications.map((option) => (
+                <label className="choice-row" key={option.value}>
+                  <input
+                    checked={draft.institutionClassifications.includes(option.value)}
+                    onChange={() =>
+                      update({
+                        institutionClassifications: sortInstitutionClassifications(
+                          draft.institutionClassifications.includes(option.value)
+                            ? draft.institutionClassifications.filter(
+                                (value) => value !== option.value,
+                              )
+                            : [
+                                ...draft.institutionClassifications,
+                                option.value,
+                              ],
+                        ),
+                      })
+                    }
+                    type="checkbox"
+                  />
+                  {option.label}
+                </label>
+              ))}
+            </div>
           </div>
           <span className="field-label">最高学历</span>
           <div className="choice-grid" aria-label="学历条件">
@@ -3973,7 +3974,7 @@ function FilterPanel({
               value={draft.minEmploymentOrInternshipMonths}
             />
             <div className="range-values">
-              <span>{formatMonths(draft.minEmploymentOrInternshipMonths)}</span>
+              <span>{formatMinimumDuration(draft.minEmploymentOrInternshipMonths)}</span>
               <span>20 年</span>
             </div>
           </div>
@@ -4531,7 +4532,7 @@ function resultDisplayValueLabel(
     key === "employment_or_internship_months"
   ) {
     const months = Number(normalized);
-    return Number.isFinite(months) ? formatMonths(months) : normalized;
+    return Number.isFinite(months) ? formatDuration(months) : normalized;
   }
   return normalized;
 }
@@ -4656,13 +4657,31 @@ function CandidateExperienceCell({ item }: { item: CandidateSearchItem }) {
   ]
     .filter(Boolean)
     .join(" · ");
+  const hasVerifiedEmployment = item.employment_months > 0;
+  const hasAdditionalInternshipTenure =
+    item.employment_or_internship_months > item.employment_months;
   return (
     <div className="candidate-profile-cell">
       <div className="candidate-profile-primary">
-        <span className="candidate-profile-title">
-          {formatMonths(item.employment_months)} 正式工作
+        <span
+          aria-label={
+            hasVerifiedEmployment
+              ? `正式工作 ${formatDuration(item.employment_months)}`
+              : "正式工作年限待核实"
+          }
+          className="candidate-profile-title"
+          title="正式工作年限仅累计有明确工作类型、公司、职位和起止日期的工作经历；实习单独计入“工作 + 实习”。"
+        >
+          {hasVerifiedEmployment
+            ? `${formatDuration(item.employment_months)} 正式工作`
+            : "正式工作年限待核实"}
         </span>
       </div>
+      {hasAdditionalInternshipTenure && (
+        <span className="candidate-meta">
+          工作 + 实习 {formatDuration(item.employment_or_internship_months)}
+        </span>
+      )}
       {role ? (
         <span className="candidate-meta">
           {experienceType ? `${experienceType} · ` : ""}
@@ -4694,33 +4713,22 @@ function CandidateSkillHighlights({ item }: { item: CandidateSearchItem }) {
 
 function ResultsPane({
   appliedDraft,
-  institutionClassifications,
-  institutionClassificationOptions,
   search,
   searching,
   selectedResumeId,
   onOpenCandidate,
   onScoreTemplateChange,
-  onToggleInstitutionClassification,
   onLoadMore,
   onUpload,
   scoreTemplateId,
   scoreTemplates,
 }: {
   appliedDraft: FilterDraft;
-  institutionClassifications: InstitutionClassification[];
-  institutionClassificationOptions: Array<{
-    value: InstitutionClassification;
-    label: string;
-  }>;
   search: CandidateSearchResponse;
   searching: boolean;
   selectedResumeId: string | null;
   onOpenCandidate: (item: CandidateSearchItem, tab?: DrawerTab) => void;
   onScoreTemplateChange: (templateId: string | null) => void;
-  onToggleInstitutionClassification: (
-    classification: InstitutionClassification,
-  ) => void;
   onLoadMore: () => void;
   onUpload: () => void;
   scoreTemplateId: string | null;
@@ -4775,30 +4783,6 @@ function ResultsPane({
             <Icon name="upload" size={16} />
             上传简历
           </button>
-        </div>
-        <div
-          aria-label="院校类型快捷筛选"
-          className="institution-quick-filters"
-          role="group"
-        >
-          <span className="institution-quick-filters-label">院校类型</span>
-          <div className="institution-quick-filter-options">
-            {institutionClassificationOptions.map((option) => (
-              <label className="institution-quick-filter" key={option.value}>
-                <input
-                  checked={institutionClassifications.includes(option.value)}
-                  onChange={() => onToggleInstitutionClassification(option.value)}
-                  type="checkbox"
-                />
-                <span>{option.label}</span>
-              </label>
-            ))}
-          </div>
-          {searching && (
-            <span aria-live="polite" className="institution-quick-filter-status">
-              正在更新
-            </span>
-          )}
         </div>
       </header>
       <div
@@ -7110,7 +7094,12 @@ function EvidenceTab({
             </div>
             <div className="fact-row">
               <strong>年限统计</strong>
-              <span>正式工作 {formatMonths(review.employment_months)}；工作 + 实习 {formatMonths(review.employment_or_internship_months)}。</span>
+              <span>
+                {review.employment_months > 0
+                  ? `正式工作 ${formatDuration(review.employment_months)}；`
+                  : "正式工作年限待核实；"}
+                工作 + 实习 {formatDuration(review.employment_or_internship_months)}。
+              </span>
             </div>
           </div>
         </div>

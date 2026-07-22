@@ -28,6 +28,12 @@ _LEGACY_DIRECT_TRANSPORT_ENABLED: ContextVar[bool] = ContextVar(
 )
 EMAIL_PATTERN = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
 PHONE_PATTERN = re.compile(r"(?<!\d)(?:\+?86[-\s]?)?1[3-9]\d{9}(?!\d)")
+_ENGLISH_SCORE_PROSE_WORD = re.compile(
+    r"(?i)\b(?:a|an|the|is|are|was|were|be|been|has|have|had|with|and|or|of|to|"
+    r"in|for|from|on|at|by|this|that|these|those|candidate|candidates|experience|"
+    r"experiences|skill|skills|needs|need|requires|required|relevant|relevance|explicit|"
+    r"explicitly|listed|available|information|not|no|missing|confirm|verify)\b"
+)
 LABELED_PERSONAL_LINE = re.compile(
     r"(?im)^\s*(?:姓名|电话|手机|手机号|邮箱|地址|住址|出生年月|出生日期|性别)\s*[:：].*$"
 )
@@ -1202,6 +1208,30 @@ def _valid_score_value(value: object) -> float:
     return numeric_value
 
 
+def _require_simplified_chinese_score_text(value: object, *, code: str) -> str:
+    """Return one recruiter-facing score sentence, rejecting English-only prose.
+
+    Score explanations are shown directly in the Chinese HR workspace.  Company
+    names and technology terms may retain their source spelling, but every
+    explanation must still contain Chinese prose so a provider cannot return a
+    complete English sentence or paragraph to the user.
+    """
+
+    if not isinstance(value, str):
+        raise _contract_error(code)
+    normalized = value.strip()
+    chinese_character_count = len(re.findall(r"[\u4e00-\u9fff]", normalized))
+    latin_letter_count = len(re.findall(r"[A-Za-z]", normalized))
+    if (
+        not normalized
+        or chinese_character_count == 0
+        or latin_letter_count > chinese_character_count * 8
+        or _ENGLISH_SCORE_PROSE_WORD.search(normalized)
+    ):
+        raise _contract_error(code)
+    return normalized
+
+
 def validate_resume_score_output(
     payload: Mapping[str, Any],
     *,
@@ -1252,18 +1282,25 @@ def validate_resume_score_output(
         key = item["key"]
         if not isinstance(key, str) or key not in by_key or key in seen_keys:
             raise _contract_error("score_dimension_key")
-        rationale = item["rationale"]
-        if not isinstance(rationale, str) or not rationale.strip():
-            raise _contract_error("score_rationale")
-        uncertainties = _require_string_list(
-            item["uncertainties"],
-            code="score_uncertainties",
+        rationale = _require_simplified_chinese_score_text(
+            item["rationale"],
+            code="score_rationale_language",
         )
+        uncertainties = [
+            _require_simplified_chinese_score_text(
+                uncertainty,
+                code="score_uncertainties_language",
+            )
+            for uncertainty in _require_string_list(
+                item["uncertainties"],
+                code="score_uncertainties",
+            )
+        ]
         normalized_scores.append(
             {
                 "key": key,
                 "raw_score": _valid_score_value(item["raw_score"]),
-                "rationale": rationale.strip(),
+                "rationale": rationale,
                 "fact_ids": _validate_fact_references(
                     item["fact_ids"],
                     fact_ids=fact_id_set,
@@ -1276,9 +1313,10 @@ def validate_resume_score_output(
     if set(expected_keys) != seen_keys or len(normalized_scores) != len(expected_keys):
         raise _contract_error("score_dimension_keys")
 
-    overall_summary = payload["overall_summary"]
-    if not isinstance(overall_summary, str) or not overall_summary.strip():
-        raise _contract_error("score_overall_summary")
+    overall_summary = _require_simplified_chinese_score_text(
+        payload["overall_summary"],
+        code="score_overall_summary_language",
+    )
     if not isinstance(payload["risk_flags"], list):
         raise _contract_error("score_risk_flags")
     normalized_risk_flags: list[dict[str, Any]] = []
@@ -1290,12 +1328,13 @@ def validate_resume_score_output(
             {"message", "fact_ids"},
             code="score_risk_flag_fields",
         )
-        message = risk_flag["message"]
-        if not isinstance(message, str) or not message.strip():
-            raise _contract_error("score_risk_flag_message")
+        message = _require_simplified_chinese_score_text(
+            risk_flag["message"],
+            code="score_risk_flag_message_language",
+        )
         normalized_risk_flags.append(
             {
-                "message": message.strip(),
+                "message": message,
                 "fact_ids": _validate_fact_references(
                     risk_flag["fact_ids"],
                     fact_ids=fact_id_set,
@@ -1308,7 +1347,7 @@ def validate_resume_score_output(
     return {
         "schema_version": SCORE_SCHEMA_VERSION,
         "dimension_scores": normalized_scores,
-        "overall_summary": overall_summary.strip(),
+        "overall_summary": overall_summary,
         "risk_flags": normalized_risk_flags,
         "needs_human_review": payload["needs_human_review"],
     }
@@ -1389,37 +1428,66 @@ def score_resume_fact_snapshot(
     snapshot, fact_ids = _validate_fact_snapshot(fact_snapshot)
     normalized_dimensions = _normalize_score_dimensions(dimensions)
     dimension_keys = [item["key"] for item in normalized_dimensions]
-    result = call_strict_function(
-        api_key=api_key,
-        model=model,
-        timeout_seconds=timeout_seconds,
-        function_name="submit_resume_score",
-        function_description=(
-            "Submit factual per-dimension scores for a structured resume fact snapshot."
-        ),
-        parameters_schema=resume_score_tool_schema(
-            dimension_keys=dimension_keys,
+
+    def request_score(*, correction_pass: bool) -> dict[str, Any]:
+        correction = (
+            " 这是纠正重试：上一次结果没有满足简体中文输出或函数参数约束。"
+            "请重新生成完整结果，不要解释前一次结果，也不要输出英文完整句或英文段落。"
+            if correction_pass
+            else ""
+        )
+        result = call_strict_function(
+            api_key=api_key,
+            model=model,
+            timeout_seconds=timeout_seconds,
+            function_name="submit_resume_score",
+            function_description="提交基于结构化简历事实的各维度评分结果。",
+            parameters_schema=resume_score_tool_schema(
+                dimension_keys=dimension_keys,
+                fact_ids=fact_ids,
+            ),
+            system_prompt=(
+                "只能根据提供的结构化简历事实评分，不得推断、编造或使用个人敏感信息。"
+                "每个评分维度都要返回 0 到 100 的原始分，只能引用提供的事实 ID；缺少事实应写为"
+                "待确认项，不能当作证据。不要计算加权总分，服务端会确定性计算。"
+                "所有面向招聘人员的解释性字段——rationale、uncertainties、overall_summary 和"
+                "risk_flags.message——必须使用简体中文（zh-CN）写成简洁完整的中文句子。"
+                "不得输出英文完整句、英文段落或英文说明。公司名、学校名、职位名、产品名和技术名词"
+                "仅在翻译会降低准确性时可以保留原文，但必须嵌入中文句子中。"
+                "只返回符合 Schema 的函数参数；字段名和事实 ID 保持不变。"
+                + correction
+            ),
+            user_prompt=(
+                "请对以下评分维度和结构化简历事实进行评分。\n评分维度：\n"
+                + json.dumps(normalized_dimensions, ensure_ascii=False, separators=(",", ":"))
+                + "\n结构化简历事实：\n"
+                + json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
+                + "\n\n输出语言要求：rationale、uncertainties、overall_summary 和每条"
+                "risk_flags.message 都必须使用简体中文。即使输入事实或评分指引包含英文，也必须"
+                "用中文解释；只有必要的专有名称和技术名词可保留原文。"
+            ),
+            max_tokens=1800,
+        )
+        return validate_resume_score_output(
+            result,
+            dimensions=normalized_dimensions,
             fact_ids=fact_ids,
-        ),
-        system_prompt=(
-            "Score only the supplied structured resume facts. Do not infer, invent, or "
-            "use personal data. Return one raw score from 0 to 100 for every supplied dimension. "
-            "Cite only supplied fact IDs. A missing fact is an uncertainty, not evidence. "
-            "Do not calculate a weighted total; the server does that deterministically."
-        ),
-        user_prompt=(
-            "Score dimensions:\n"
-            + json.dumps(normalized_dimensions, ensure_ascii=False, separators=(",", ":"))
-            + "\nStructured resume fact snapshot:\n"
-            + json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
-        ),
-        max_tokens=1800,
-    )
-    return validate_resume_score_output(
-        result,
-        dimensions=normalized_dimensions,
-        fact_ids=fact_ids,
-    )
+        )
+
+    try:
+        return request_score(correction_pass=False)
+    except DeepSeekProviderError as exc:
+        if str(exc) not in {
+            "deepseek_contract_score_rationale_language",
+            "deepseek_contract_score_uncertainties_language",
+            "deepseek_contract_score_overall_summary_language",
+            "deepseek_contract_score_risk_flag_message_language",
+            "deepseek_invalid_structured_response",
+            "deepseek_tool_call_missing",
+            "deepseek_arguments_missing",
+        }:
+            raise
+        return request_score(correction_pass=True)
 
 
 def summarize_resume_fact_snapshot(

@@ -2223,10 +2223,6 @@ button {
   grid-template-rows: auto minmax(0, 1fr);
 }
 
-.drawer-body.has-data-actions {
-  grid-template-rows: auto auto minmax(0, 1fr);
-}
-
 .tabs {
   display: flex;
   min-height: 3rem;
@@ -2579,137 +2575,6 @@ button {
 
 .drawer-score-empty {
   min-height: 18rem;
-}
-
-.drawer-data-actions {
-  background: #fcfcfb;
-  border-bottom: 1px solid var(--line);
-}
-
-.drawer-data-actions details {
-  min-width: 0;
-}
-
-.drawer-data-actions summary {
-  display: grid;
-  min-height: 3rem;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 0.5rem;
-  align-items: center;
-  padding: 0.625rem var(--space-lg);
-  color: var(--ink-soft);
-  cursor: pointer;
-  list-style: none;
-}
-
-.drawer-data-actions summary::-webkit-details-marker {
-  display: none;
-}
-
-.drawer-data-actions summary:hover {
-  color: var(--ink);
-  background: var(--surface-muted);
-}
-
-.drawer-data-actions summary:focus-visible {
-  outline: 0;
-  box-shadow: inset 0 0 0 0.1875rem rgb(215 22 24 / 0.14);
-}
-
-.drawer-data-actions summary > span {
-  color: var(--ink);
-  font-size: 0.8125rem;
-  font-weight: 680;
-}
-
-.drawer-data-actions summary small {
-  color: var(--ink-muted);
-  font-size: 0.75rem;
-}
-
-.drawer-data-actions summary svg {
-  transition: transform 160ms var(--ease-out);
-}
-
-.drawer-data-actions details[open] summary svg {
-  transform: rotate(180deg);
-}
-
-.drawer-data-actions-body {
-  display: grid;
-  gap: var(--space-md);
-  padding: var(--space-md) var(--space-lg) var(--space-lg);
-  border-top: 1px solid var(--line);
-}
-
-.drawer-data-section {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.625rem var(--space-md);
-  align-items: center;
-  padding: 0.75rem;
-  background: var(--surface-muted);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-}
-
-.drawer-data-section > div:first-child {
-  min-width: 0;
-}
-
-.drawer-data-section strong {
-  display: block;
-  color: var(--ink);
-  font-size: 0.875rem;
-}
-
-.drawer-data-section p {
-  max-width: 58ch;
-  margin: 0.1875rem 0 0;
-  color: var(--ink-muted);
-  font-size: 0.75rem;
-  line-height: 1.45;
-}
-
-.drawer-data-option {
-  grid-column: 1;
-  justify-self: start;
-}
-
-.drawer-data-section > .button {
-  grid-column: 2;
-  grid-row: 1 / span 2;
-}
-
-.drawer-data-danger {
-  grid-template-columns: minmax(0, 1fr) minmax(11rem, 14rem);
-  align-items: start;
-  background: #fffafa;
-  border-color: #efd0cd;
-}
-
-.drawer-data-danger > div:first-child,
-.drawer-data-danger > .drawer-data-scope,
-.drawer-data-danger > .field-stack,
-.drawer-data-danger > .drawer-data-confirmation,
-.drawer-data-danger > .button {
-  grid-column: 1 / -1;
-  grid-row: auto;
-}
-
-.drawer-data-scope {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.5rem;
-}
-
-.drawer-data-confirmation {
-  justify-self: start;
-  background: transparent;
-}
-
-.drawer-data-note {
-  min-height: 4.5rem;
 }
 
 .pdf-viewer {
@@ -6068,7 +5933,7 @@ button {
     justify-self: start;
   }
 
-  .drawer-actions .button {
+  .drawer-actions .button:not(.resume-delete-button) {
     display: none;
   }
 

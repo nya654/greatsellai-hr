@@ -148,27 +148,47 @@ def _valid_score_output() -> dict[str, object]:
             {
                 "key": "skills",
                 "raw_score": 32,
-                "rationale": "Python is explicitly listed.",
+                "rationale": "简历明确列出了 Python 技能。",
                 "fact_ids": ["skill-001"],
                 "uncertainties": [],
             },
             {
                 "key": "experience",
                 "raw_score": 48,
-                "rationale": "The snapshot has one employment record.",
+                "rationale": "简历中有一条明确的正式工作经历。",
                 "fact_ids": ["experience-001"],
-                "uncertainties": ["No domain relevance is stated."],
+                "uncertainties": ["尚未说明与目标行业的直接相关性。"],
             },
         ],
-        "overall_summary": "The factual record shows Python and one role.",
+        "overall_summary": "现有事实显示候选人具备 Python 技能并拥有一段工作经历。",
         "risk_flags": [
             {
-                "message": "Domain relevance needs verification.",
+                "message": "需要在后续沟通中核实与目标行业的相关性。",
                 "fact_ids": ["experience-001"],
             }
         ],
         "needs_human_review": True,
     }
+
+
+def _english_score_output() -> dict[str, object]:
+    payload = _valid_score_output()
+    dimensions = payload["dimension_scores"]
+    assert isinstance(dimensions, list)
+    first = dimensions[0]
+    second = dimensions[1]
+    assert isinstance(first, dict)
+    assert isinstance(second, dict)
+    first["rationale"] = "Python is explicitly listed."
+    second["rationale"] = "The snapshot has one employment record."
+    second["uncertainties"] = ["No domain relevance is stated."]
+    payload["overall_summary"] = "The factual record shows Python and one role."
+    risk_flags = payload["risk_flags"]
+    assert isinstance(risk_flags, list)
+    risk_flag = risk_flags[0]
+    assert isinstance(risk_flag, dict)
+    risk_flag["message"] = "Domain relevance needs verification."
+    return payload
 
 
 def _valid_summary_output() -> dict[str, object]:
@@ -268,6 +288,138 @@ def test_score_output_rejects_scores_above_hundred() -> None:
             dimensions=_dimensions(),
             fact_ids=_fact_ids(),
         )
+
+
+def test_score_output_rejects_english_recruiter_text() -> None:
+    invalid_rationale = _valid_score_output()
+    rationale_dimensions = invalid_rationale["dimension_scores"]
+    assert isinstance(rationale_dimensions, list)
+    assert isinstance(rationale_dimensions[0], dict)
+    rationale_dimensions[0]["rationale"] = "Python is explicitly listed."
+    with pytest.raises(DeepSeekProviderError, match="score_rationale_language"):
+        validate_resume_score_output(
+            invalid_rationale,
+            dimensions=_dimensions(),
+            fact_ids=_fact_ids(),
+        )
+
+    mixed_language_rationale = _valid_score_output()
+    mixed_dimensions = mixed_language_rationale["dimension_scores"]
+    assert isinstance(mixed_dimensions, list)
+    assert isinstance(mixed_dimensions[0], dict)
+    mixed_dimensions[0]["rationale"] = "Python is explicitly listed。中文提示。"
+    with pytest.raises(DeepSeekProviderError, match="score_rationale_language"):
+        validate_resume_score_output(
+            mixed_language_rationale,
+            dimensions=_dimensions(),
+            fact_ids=_fact_ids(),
+        )
+
+    invalid_uncertainty = _valid_score_output()
+    uncertainty_dimensions = invalid_uncertainty["dimension_scores"]
+    assert isinstance(uncertainty_dimensions, list)
+    assert isinstance(uncertainty_dimensions[1], dict)
+    uncertainty_dimensions[1]["uncertainties"] = ["No domain relevance is stated."]
+    with pytest.raises(DeepSeekProviderError, match="score_uncertainties_language"):
+        validate_resume_score_output(
+            invalid_uncertainty,
+            dimensions=_dimensions(),
+            fact_ids=_fact_ids(),
+        )
+
+    invalid_summary = _valid_score_output()
+    invalid_summary["overall_summary"] = "The factual record shows Python and one role."
+    with pytest.raises(DeepSeekProviderError, match="score_overall_summary_language"):
+        validate_resume_score_output(
+            invalid_summary,
+            dimensions=_dimensions(),
+            fact_ids=_fact_ids(),
+        )
+
+    invalid_risk = _valid_score_output()
+    risk_flags = invalid_risk["risk_flags"]
+    assert isinstance(risk_flags, list)
+    assert isinstance(risk_flags[0], dict)
+    risk_flags[0]["message"] = "Domain relevance needs verification."
+    with pytest.raises(DeepSeekProviderError, match="score_risk_flag_message_language"):
+        validate_resume_score_output(
+            invalid_risk,
+            dimensions=_dimensions(),
+            fact_ids=_fact_ids(),
+        )
+
+
+def test_score_prompt_requires_simplified_chinese_content(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_provider_call(**kwargs):
+        captured.update(kwargs)
+        return _valid_score_output()
+
+    monkeypatch.setattr(
+        "app.services.deepseek_provider.call_strict_function",
+        fake_provider_call,
+    )
+
+    score_resume_fact_snapshot(
+        api_key="not-used",
+        model="not-used",
+        timeout_seconds=1,
+        fact_snapshot=_fact_snapshot(),
+        dimensions=_dimensions(),
+    )
+
+    assert "简体中文" in str(captured["system_prompt"])
+    assert "不得输出英文完整句" in str(captured["system_prompt"])
+    assert "输出语言要求" in str(captured["user_prompt"])
+
+
+def test_score_retries_once_to_correct_english_output(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_provider_call(**kwargs):
+        calls.append(kwargs)
+        return _english_score_output() if len(calls) == 1 else _valid_score_output()
+
+    monkeypatch.setattr(
+        "app.services.deepseek_provider.call_strict_function",
+        fake_provider_call,
+    )
+
+    result = score_resume_fact_snapshot(
+        api_key="not-used",
+        model="not-used",
+        timeout_seconds=1,
+        fact_snapshot=_fact_snapshot(),
+        dimensions=_dimensions(),
+    )
+
+    assert result["overall_summary"].startswith("现有事实")
+    assert len(calls) == 2
+    assert "纠正重试" in str(calls[1]["system_prompt"])
+
+
+def test_score_rejects_two_english_outputs_after_one_correction(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_provider_call(**kwargs):
+        calls.append(kwargs)
+        return _english_score_output()
+
+    monkeypatch.setattr(
+        "app.services.deepseek_provider.call_strict_function",
+        fake_provider_call,
+    )
+
+    with pytest.raises(DeepSeekProviderError, match="score_rationale_language"):
+        score_resume_fact_snapshot(
+            api_key="not-used",
+            model="not-used",
+            timeout_seconds=1,
+            fact_snapshot=_fact_snapshot(),
+            dimensions=_dimensions(),
+        )
+    assert len(calls) == 2
 
 
 def test_summary_schema_and_output_require_fixed_sections_and_known_citations() -> None:

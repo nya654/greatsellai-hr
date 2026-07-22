@@ -1734,10 +1734,10 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
   }, [selectedResumeId]);
 
   /**
-   * Original files must not be fetched merely because a drawer opens.  Clear
-   * every in-memory object URL when the user switches away, closes the drawer
-   * or selects another resume; a later explicit button press creates the
-   * server-side audit grant.
+   * Keep protected originals scoped to the active original-file tab. Opening
+   * that tab creates a fresh, audited view grant; switching away, closing the
+   * drawer, or selecting another resume invalidates the local object URL and
+   * any in-flight request.
    */
   useEffect(() => {
     releaseOriginalFile();
@@ -1886,6 +1886,34 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
       if (requestId === originalFileRequestRef.current) setPdfLoading(false);
     }
   }, [pdfLoading, selectedResumeId]);
+
+  useEffect(() => {
+    if (
+      !drawerOpen ||
+      drawerTab !== "original" ||
+      !selectedResumeId ||
+      !review ||
+      review.resume_id !== selectedResumeId ||
+      !canPreviewInline(review.original_filename) ||
+      pdfUrl ||
+      pdfLoading ||
+      pdfError
+    ) {
+      return;
+    }
+    // Opening the original-file tab is an intentional view action. Request a
+    // short-lived, audited grant and render the protected object URL directly.
+    void previewOriginalFile();
+  }, [
+    drawerOpen,
+    drawerTab,
+    pdfError,
+    pdfLoading,
+    pdfUrl,
+    previewOriginalFile,
+    review,
+    selectedResumeId,
+  ]);
 
   const downloadOriginalFile = useCallback(async () => {
     if (!selectedResumeId || pdfDownloadLoading) return;
@@ -6649,7 +6677,7 @@ function OriginalDocumentTab({
       <section className="original-file-access" aria-label="原文件访问">
         <div>
           <strong>原文件访问</strong>
-          <p>仅在你主动查看或下载时请求原件，并写入工作区访问审计。</p>
+          <p>打开此标签时会自动加载一次预览，并写入工作区访问审计。</p>
         </div>
         <div className="original-file-access-actions">
           {canPreview && (
@@ -6662,7 +6690,7 @@ function OriginalDocumentTab({
               {loading ? (
                 <><i className="spinner" />正在加载</>
               ) : (
-                <><Icon name="document" size={16} />{pdfUrl ? "重新查看原文件" : "查看原文件"}</>
+                <><Icon name="document" size={16} />重新加载预览</>
               )}
             </button>
           )}
@@ -6712,11 +6740,11 @@ function OriginalDocumentTab({
               title={filename ? `${filename} 原始文件` : "原始文件"}
             />
           )
-        ) : pdfUrl ? (
+        ) : !canPreview && review ? (
           <div className="empty-state">
             <div className="empty-state-inner">
               <span className="empty-glyph"><Icon name="document" size={23} /></span>
-              <h2>{resumeFileTypeLabel(filename)} 原件可下载</h2>
+              <h2>{resumeFileTypeLabel(filename)} 原件仅支持下载</h2>
               <p>浏览器不能安全预览此格式，请使用上方“下载原文件”查看。</p>
             </div>
           </div>
@@ -6724,8 +6752,8 @@ function OriginalDocumentTab({
           <div className="empty-state original-file-idle">
             <div className="empty-state-inner">
               <span className="empty-glyph"><Icon name="document" size={23} /></span>
-              <h2>原文件尚未加载</h2>
-              <p>点击“查看原文件”后加载本次预览。关闭或切换简历后，本地预览会自动释放。</p>
+              <h2>正在准备原文件预览</h2>
+              <p>本次预览会自动加载；如加载失败，可使用上方“重新加载预览”。关闭或切换简历后，本地预览会自动释放。</p>
             </div>
           </div>
         )}

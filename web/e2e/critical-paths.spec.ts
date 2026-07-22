@@ -90,6 +90,21 @@ test.describe("招聘工作台关键路径", () => {
     await page.getByRole("button", { name: /上传 1 份并自动提取/ }).click();
     await expect(page.getByText("简历已保存，AI 正在提取候选人姓名和结构化事实。")).toBeVisible();
     await expect(page.getByText("原件已保存，AI 正在排队提取候选人姓名和结构化事实")).toBeVisible();
+    await page.getByRole("button", { name: "查看状态" }).click();
+    await expect(page.getByRole("dialog", { name: /简历详情/ })).toBeVisible();
+
+    const autoPreviewGrant = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.status() === 200 &&
+        /\/v1\/resumes\/[^/]+\/file-access$/.test(new URL(response.url()).pathname),
+    );
+    await page.getByRole("tab", { name: "原始文件" }).click();
+    await autoPreviewGrant;
+    const originalPreview = page.getByTitle("e2e-resume.pdf 原始文件");
+    await expect(originalPreview).toBeVisible();
+    await expect(originalPreview).toHaveAttribute("src", /^blob:/);
+    await expect(page.getByRole("button", { name: "重新加载预览" })).toBeVisible();
   });
 
   test("筛选、批量评分和 JD 三栏均走真实工作区 API", async ({ page }) => {

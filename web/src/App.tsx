@@ -31,7 +31,6 @@ import type {
   CandidateDataAuditEvent,
   CandidateDataDeletionBatch,
   CandidateDataDeletionReason,
-  CandidateDataDeletionResponse,
   CandidateDataExport,
   CandidateDataRetentionCleanupRun,
   CandidateDataRetentionMode,
@@ -2093,15 +2092,12 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
   }, [enrichingFacts, notify, refreshReview, selectedResumeId]);
 
   const deleteSelectedResumeData = useCallback(
-    async (
-      reason: CandidateDataDeletionReason,
-      otherNote?: string | null,
-    ): Promise<CandidateDataDeletionResponse> => {
+    async (): Promise<void> => {
       if (!selectedResumeId) throw new Error("resume_not_found");
       try {
         const response = await api.deleteResumeCandidateData(selectedResumeId, {
-          reason,
-          ...(reason === "other" ? { other_note: otherNote?.trim() || null } : {}),
+          reason: "other",
+          other_note: "simple_resume_delete",
         });
         releaseOriginalFile();
         summaryRequestRef.current += 1;
@@ -2114,95 +2110,12 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
           "success",
           `当前简历版本已移出工作台，可在 ${formatLibraryDate(response.recovery_deadline_at)} 前恢复。`,
         );
-        return response;
       } catch (error) {
         notify("error", humanizeError(error));
         throw error;
       }
     },
     [notify, releaseOriginalFile, selectedResumeId],
-  );
-
-  const deleteSelectedCandidateData = useCallback(
-    async (
-      reason: CandidateDataDeletionReason,
-      otherNote?: string | null,
-    ): Promise<CandidateDataDeletionResponse> => {
-      const candidateId = selectedResume?.candidateId;
-      if (!candidateId) throw new Error("candidate_not_found");
-      try {
-        const response = await api.deleteCandidateData(candidateId, {
-          reason,
-          ...(reason === "other" ? { other_note: otherNote?.trim() || null } : {}),
-        });
-        releaseOriginalFile();
-        summaryRequestRef.current += 1;
-        setReview(null);
-        setSummaries([]);
-        setSelectedResume(null);
-        setDrawerOpen(false);
-        setLibraryRefreshToken((current) => current + 1);
-        notify(
-          "success",
-          `候选人及其简历已移出工作台，可在 ${formatLibraryDate(response.recovery_deadline_at)} 前恢复。`,
-        );
-        return response;
-      } catch (error) {
-        notify("error", humanizeError(error));
-        throw error;
-      }
-    },
-    [notify, releaseOriginalFile, selectedResume?.candidateId],
-  );
-
-  const updateSelectedCandidateRetentionHold = useCallback(
-    async (retentionHold: boolean): Promise<void> => {
-      const candidateId = selectedResume?.candidateId;
-      if (!candidateId) throw new Error("candidate_not_found");
-      try {
-        await api.setCandidateRetentionHold(candidateId, retentionHold);
-        setReview((current) => (
-          current && current.candidate_id === candidateId
-            ? { ...current, retention_hold: retentionHold }
-            : current
-        ));
-        notify(
-          "success",
-          retentionHold
-            ? "已冻结该候选人的自动清理；仍可由管理员手动删除。"
-            : "已取消该候选人的保留冻结，后续将按工作区策略处理。",
-        );
-      } catch (error) {
-        notify("error", humanizeError(error));
-        throw error;
-      }
-    },
-    [notify, selectedResume?.candidateId],
-  );
-
-  const exportSelectedCandidateData = useCallback(
-    async (includeOriginals: boolean): Promise<void> => {
-      const candidateId = selectedResume?.candidateId;
-      if (!candidateId) throw new Error("candidate_not_found");
-      try {
-        const created = await api.createCandidateDataExport({
-          candidate_ids: [candidateId],
-          include_originals: includeOriginals,
-        });
-        setDrawerOpen(false);
-        setView("data");
-        notify(
-          "success",
-          created.status === "completed"
-            ? "候选人资料已导出，可在数据保留与恢复中下载。"
-            : "候选人资料正在导出，可在数据保留与恢复中查看状态。",
-        );
-      } catch (error) {
-        notify("error", humanizeError(error));
-        throw error;
-      }
-    },
-    [notify, selectedResume?.candidateId],
   );
 
   const handleGlobalSearch = (event: ReactKeyboardEvent<HTMLInputElement>) => {
@@ -2510,11 +2423,8 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
         summaryLoading={summaryLoading}
         onClose={() => setDrawerOpen(false)}
         onCreateManualSummary={createManualSummary}
-        onDeleteCandidate={deleteSelectedCandidateData}
         onDeleteResume={deleteSelectedResumeData}
-        onSetRetentionHold={updateSelectedCandidateRetentionHold}
         onDownloadOriginal={downloadOriginalFile}
-        onExportCandidate={exportSelectedCandidateData}
         onGenerateSummary={() => void generateSummary()}
         onReparseSource={() => void reparseSelectedSource()}
         onEnrichFacts={() => void enrichSelectedFacts()}
@@ -5875,9 +5785,6 @@ function CandidateDrawer({
   onDownloadOriginal,
   onRefreshScores,
   onDeleteResume,
-  onDeleteCandidate,
-  onSetRetentionHold,
-  onExportCandidate,
 }: {
   candidate: SelectedResume | null;
   review: ResumeReviewDetail | null;
@@ -5908,18 +5815,10 @@ function CandidateDrawer({
   onPreviewOriginal: () => void;
   onDownloadOriginal: () => void;
   onRefreshScores: () => void;
-  onDeleteResume: (
-    reason: CandidateDataDeletionReason,
-    otherNote?: string | null,
-  ) => Promise<CandidateDataDeletionResponse>;
-  onDeleteCandidate: (
-    reason: CandidateDataDeletionReason,
-    otherNote?: string | null,
-  ) => Promise<CandidateDataDeletionResponse>;
-  onSetRetentionHold: (retentionHold: boolean) => Promise<void>;
-  onExportCandidate: (includeOriginals: boolean) => Promise<void>;
+  onDeleteResume: () => Promise<void>;
 }) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const [deleting, setDeleting] = useState(false);
   const currentSummary =
     summaries.find((item) => item.is_current) ?? summaries[0] ?? null;
   const sourceTextIssue = hasSourceTextQualityIssue(review?.quality_flags);
@@ -5931,6 +5830,25 @@ function CandidateDrawer({
     );
     return () => window.cancelAnimationFrame(frame);
   }, [isOpen]);
+
+  const deleteResume = async () => {
+    if (
+      !window.confirm(
+        "删除当前简历？它会立即从工作台移除，并在恢复期内可恢复。",
+      )
+    ) {
+      return;
+    }
+    setDeleting(true);
+    try {
+      await onDeleteResume();
+    } catch {
+      // The parent reports a user-facing error toast.
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   return (
     <aside
       aria-hidden={!isOpen}
@@ -5957,6 +5875,17 @@ function CandidateDrawer({
           <p>{review ? review.original_filename : "正在读取简历详情…"}</p>
         </div>
         <div className="drawer-actions">
+          {canManageCandidateData && candidate && (
+            <button
+              aria-busy={deleting}
+              className="button button-danger-ghost resume-delete-button"
+              disabled={deleting}
+              onClick={() => void deleteResume()}
+              type="button"
+            >
+              {deleting ? <><i className="spinner" />正在删除</> : "删除简历"}
+            </button>
+          )}
           <button
             aria-label="关闭简历详情"
             className="icon-button"
@@ -5975,7 +5904,7 @@ function CandidateDrawer({
         />
       )}
       {supersededReparse && !sourceTextIssue && <SupersededReparseNotice />}
-      <div className={`drawer-body${canManageCandidateData && candidate && review ? " has-data-actions" : ""}`}>
+      <div className="drawer-body">
         <div aria-label="详情标签" className="tabs" role="tablist">
           {(
             [
@@ -5997,17 +5926,6 @@ function CandidateDrawer({
             </button>
           ))}
         </div>
-        {canManageCandidateData && candidate && review && (
-          <CandidateDataActions
-            candidateName={candidate.candidateName}
-            onDeleteCandidate={onDeleteCandidate}
-            onDeleteResume={onDeleteResume}
-            onExport={onExportCandidate}
-            onSetRetentionHold={onSetRetentionHold}
-            retentionHold={review.retention_hold}
-            resumeFilename={review.original_filename}
-          />
-        )}
         <div className="drawer-content">
           {reviewLoading && !review ? (
             <TableSkeleton />
@@ -6439,204 +6357,6 @@ const candidateDataDeletionReasonOptions: Array<{
   { value: "duplicate", label: "重复资料" },
   { value: "other", label: "其他原因" },
 ];
-
-function CandidateDataActions({
-  candidateName,
-  resumeFilename,
-  retentionHold,
-  onExport,
-  onDeleteResume,
-  onDeleteCandidate,
-  onSetRetentionHold,
-}: {
-  candidateName: string;
-  resumeFilename: string;
-  retentionHold: boolean;
-  onExport: (includeOriginals: boolean) => Promise<void>;
-  onDeleteResume: (
-    reason: CandidateDataDeletionReason,
-    otherNote?: string | null,
-  ) => Promise<CandidateDataDeletionResponse>;
-  onDeleteCandidate: (
-    reason: CandidateDataDeletionReason,
-    otherNote?: string | null,
-  ) => Promise<CandidateDataDeletionResponse>;
-  onSetRetentionHold: (retentionHold: boolean) => Promise<void>;
-}) {
-  const [includeOriginals, setIncludeOriginals] = useState(false);
-  const [exporting, setExporting] = useState(false);
-  const [updatingRetentionHold, setUpdatingRetentionHold] = useState(false);
-  const [scope, setScope] = useState<"resume" | "candidate">("candidate");
-  const [reason, setReason] = useState<CandidateDataDeletionReason>("recruitment_closed");
-  const [otherNote, setOtherNote] = useState("");
-  const [confirmed, setConfirmed] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-
-  useEffect(() => {
-    setIncludeOriginals(false);
-    setExporting(false);
-    setUpdatingRetentionHold(false);
-    setScope("candidate");
-    setReason("recruitment_closed");
-    setOtherNote("");
-    setConfirmed(false);
-    setDeleting(false);
-  }, [candidateName, resumeFilename]);
-
-  const deleteLabel = scope === "candidate"
-    ? "删除候选人及全部简历"
-    : "删除当前简历版本";
-  const otherReasonMissing = reason === "other" && !otherNote.trim();
-
-  return (
-    <section className="drawer-data-actions" aria-label="候选人数据管理">
-      <details>
-        <summary>
-          <span>候选人数据管理</span>
-          <small>导出、删除与恢复</small>
-          <Icon name="chevron-down" size={16} />
-        </summary>
-        <div className="drawer-data-actions-body">
-          <section className="drawer-data-section">
-            <div>
-              <strong>导出候选人资料</strong>
-              <p>默认导出结构化事实、AI 总结、评分与 JD 匹配。原始文件需单独勾选。</p>
-            </div>
-            <label className="choice-row drawer-data-option">
-              <input
-                checked={includeOriginals}
-                disabled={exporting}
-                onChange={(event) => setIncludeOriginals(event.target.checked)}
-                type="checkbox"
-              />
-              包含原始简历文件
-            </label>
-            <button
-              className="button"
-              disabled={exporting}
-              onClick={() => {
-                setExporting(true);
-                void onExport(includeOriginals).catch(() => undefined).finally(() => setExporting(false));
-              }}
-              type="button"
-            >
-              {exporting ? <><i className="spinner" />正在创建</> : <><Icon name="download" size={16} />创建导出</>}
-            </button>
-          </section>
-
-          <section className="drawer-data-section">
-            <div>
-              <strong>保留冻结</strong>
-              <p>
-                {retentionHold
-                  ? "当前候选人不会被自动到期清理。手动删除仍需单独确认。"
-                  : "冻结后，自动保留策略会跳过该候选人及其所有简历版本。"}
-              </p>
-            </div>
-            <button
-              className="button button-ghost"
-              disabled={updatingRetentionHold || deleting}
-              onClick={() => {
-                setUpdatingRetentionHold(true);
-                void onSetRetentionHold(!retentionHold)
-                  .catch(() => undefined)
-                  .finally(() => setUpdatingRetentionHold(false));
-              }}
-              type="button"
-            >
-              {updatingRetentionHold ? (
-                <><i className="spinner" />正在更新</>
-              ) : retentionHold ? "取消冻结" : "冻结自动清理"}
-            </button>
-          </section>
-
-          <section className="drawer-data-section drawer-data-danger">
-            <div>
-              <strong>删除与恢复</strong>
-              <p>删除后会立即从工作台移除。恢复期限内可在“数据保留与恢复”中恢复，之后才会清理原件与关联资料。</p>
-            </div>
-            <div className="drawer-data-scope" role="radiogroup" aria-label="删除范围">
-              <label className="choice-row">
-                <input
-                  checked={scope === "candidate"}
-                  disabled={deleting}
-                  name="candidate-data-deletion-scope"
-                  onChange={() => setScope("candidate")}
-                  type="radio"
-                />
-                删除候选人与全部简历
-              </label>
-              <label className="choice-row">
-                <input
-                  checked={scope === "resume"}
-                  disabled={deleting}
-                  name="candidate-data-deletion-scope"
-                  onChange={() => setScope("resume")}
-                  type="radio"
-                />
-                仅删除当前简历版本
-              </label>
-            </div>
-            <div className="field-stack">
-              <label className="field-label" htmlFor="candidate-data-deletion-reason">删除原因</label>
-              <div className="select-wrap">
-                <select
-                  className="select-field"
-                  disabled={deleting}
-                  id="candidate-data-deletion-reason"
-                  onChange={(event) => setReason(event.target.value as CandidateDataDeletionReason)}
-                  value={reason}
-                >
-                  {candidateDataDeletionReasonOptions.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
-                <Icon name="chevron-down" size={16} />
-              </div>
-            </div>
-            {reason === "other" && (
-              <label className="field-stack" htmlFor="candidate-data-deletion-note">
-                <span className="field-label">补充说明</span>
-                <textarea
-                  className="textarea-field drawer-data-note"
-                  disabled={deleting}
-                  id="candidate-data-deletion-note"
-                  maxLength={500}
-                  onChange={(event) => setOtherNote(event.target.value)}
-                  placeholder="说明删除原因，仅用于本次确认，不写入候选人资料或审计记录"
-                  value={otherNote}
-                />
-              </label>
-            )}
-            <label className="choice-row drawer-data-confirmation">
-              <input
-                checked={confirmed}
-                disabled={deleting}
-                onChange={(event) => setConfirmed(event.target.checked)}
-                type="checkbox"
-              />
-              我确认执行“{deleteLabel}”
-            </label>
-            <button
-              className="button button-danger-ghost"
-              disabled={deleting || !confirmed || otherReasonMissing}
-              onClick={() => {
-                setDeleting(true);
-                const action = scope === "candidate"
-                  ? onDeleteCandidate(reason, otherNote || null)
-                  : onDeleteResume(reason, otherNote || null);
-                void action.catch(() => undefined).finally(() => setDeleting(false));
-              }}
-              type="button"
-            >
-              {deleting ? <><i className="spinner" />正在删除</> : deleteLabel}
-            </button>
-          </section>
-        </div>
-      </details>
-    </section>
-  );
-}
 
 function OriginalDocumentTab({
   review,

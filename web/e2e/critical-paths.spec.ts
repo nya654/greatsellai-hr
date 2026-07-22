@@ -136,6 +136,41 @@ test.describe("招聘工作台关键路径", () => {
     await expect(page.getByText("E2E 不匹配候选人", { exact: true }).first()).toBeVisible();
   });
 
+  test("简历详情只保留直接删除当前简历的入口", async ({ page }) => {
+    await registerAndVerify(page, "simple-resume-delete");
+    await seedWorkspaceFixture(page);
+
+    await page.getByRole("button", { name: "筛选工作台", exact: true }).click();
+    await page.locator("#school-name").fill("清华");
+    await page.getByRole("button", { name: "应用筛选条件" }).click();
+    await page.getByRole("button", { name: "查看 E2E 推荐候选人 的评分详情" }).click();
+
+    const drawer = page.getByRole("dialog", { name: "E2E 推荐候选人 的简历详情" });
+    const deleteButton = drawer.getByRole("button", { name: "删除简历", exact: true });
+    await expect(deleteButton).toBeVisible();
+    await expect(drawer.getByText("候选人数据管理", { exact: true })).toHaveCount(0);
+    await expect(drawer.getByText("导出候选人资料", { exact: true })).toHaveCount(0);
+
+    const deleteRequest = page.waitForRequest((request) => {
+      const { pathname } = new URL(request.url());
+      return request.method() === "DELETE" && /^\/v1\/resumes\/[^/]+$/.test(pathname);
+    });
+    page.once("dialog", async (dialog) => {
+      expect(dialog.type()).toBe("confirm");
+      expect(dialog.message()).toContain("删除当前简历");
+      await dialog.accept();
+    });
+    await deleteButton.click();
+
+    const request = await deleteRequest;
+    expect(request.postDataJSON()).toEqual({
+      reason: "other",
+      other_note: "simple_resume_delete",
+    });
+    await expect(page.getByText(/当前简历版本已移出工作台/)).toBeVisible();
+    await expect(drawer).toBeHidden();
+  });
+
   test("窄屏仍可展开筛选条件并应用", async ({ page }) => {
     await registerAndVerify(page, "mobile-filter");
     await page.setViewportSize({ width: 390, height: 844 });

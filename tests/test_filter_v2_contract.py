@@ -228,6 +228,62 @@ def test_exact_211_filter_matches_only_a_211_only_school(client) -> None:
     assert response.json()["items"][0]["institution_classifications"] == ["211"]
 
 
+def test_undergraduate_roster_classification_survives_unknown_degree(client) -> None:
+    candidate_id = create_candidate(client)
+    resume_id = upload_text_resume(client, candidate_id)
+    replace_page_evidence(
+        client,
+        resume_id,
+        "\u6559\u80b2\u7ecf\u5386 \u5317\u4eac\u8bed\u8a00\u5927\u5b66 \u8ba1\u7b97\u673a\u79d1\u5b66\u3002",
+    )
+    saved = client.put(
+        f"/v1/resumes/{resume_id}/facts",
+        json={
+            "facts": {
+                "schema_version": "resume_facts.v2",
+                "education": [
+                    {
+                        "school_name_raw": "\u5317\u4eac\u8bed\u8a00\u5927\u5b66",
+                        "degree": "unknown",
+                        "major_raw": "\u8ba1\u7b97\u673a\u79d1\u5b66",
+                        "evidence_block_ids": ["page-001"],
+                    }
+                ],
+            }
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["is_985_211"] is False
+
+    undergraduate = client.post(
+        "/v1/candidates/search",
+        json={
+            "education_any_of": [
+                {"institution_classifications_any_of": ["undergraduate"]}
+            ]
+        },
+    )
+    assert undergraduate.status_code == 200, undergraduate.text
+    assert [item["resume_id"] for item in undergraduate.json()["items"]] == [resume_id]
+    assert undergraduate.json()["items"][0]["institution_classifications"] == [
+        "undergraduate"
+    ]
+
+    # The school type is known from the Ministry roster, but the candidate's
+    # own degree is still unknown and must not be promoted to a bachelor.
+    bachelor = client.post(
+        "/v1/candidates/search",
+        json={
+            "highest_degree_in": ["bachelor"],
+            "education_any_of": [
+                {"institution_classifications_any_of": ["undergraduate"]}
+            ],
+        },
+    )
+    assert bachelor.status_code == 200, bachelor.text
+    assert bachelor.json()["items"] == []
+
+
 def test_search_display_fields_keep_matching_experience_values_structured(client) -> None:
     candidate_id = create_candidate(client)
     resume_id = upload_text_resume(client, candidate_id)

@@ -120,6 +120,10 @@ isolated Playwright critical paths: registration and verification, login,
 password recovery, upload, filtering, batch scoring, three-lane JD matching,
 mailbox queueing, and cross-workspace denial.
 
+On the trusted self-hosted runner, Playwright's Linux system dependencies are
+provisioned once during runner setup. CI downloads Chromium for each checked
+out workspace but does not invoke `apt` on every PR.
+
 The existing **Production image builds** check reuses the exact application
 image it just built to run `scripts/run_release_regression.py --all`. The
 runtime gate exercises real LibreOffice, Tesseract, and document extraction

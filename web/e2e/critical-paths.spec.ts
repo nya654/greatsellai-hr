@@ -219,6 +219,9 @@ test.describe("招聘工作台关键路径", () => {
     const closeButton = dialog.getByRole("button", { name: "关闭招聘助手" });
     await expect(dialog).toBeVisible();
     await expect(closeButton).toBeFocused();
+    await expect(dialog.getByText(/当前候选人：|未选择候选人/)).toHaveCount(0);
+    await expect(dialog.getByLabel("常用提问")).toHaveCount(0);
+    await expect(dialog.getByLabel("向招聘助手提问")).toBeVisible();
 
     await page.keyboard.press("Escape");
     await expect(trigger).toBeFocused();

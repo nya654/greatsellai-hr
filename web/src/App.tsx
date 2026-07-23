@@ -2448,15 +2448,14 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
       />
       <RecruitingAgentDrawer
         isOpen={agentOpen}
-        mailboxToolsAvailable={
-          authSession?.role === "admin" &&
-          authSession?.plan?.feature_flags.mailbox_import === true
-        }
-        selectedResume={selectedResume}
         onClose={closeAgent}
         onOpenMatchWorkspace={() => {
           setAgentOpen(false);
           setView("match");
+        }}
+        onOpenScoreWorkspace={() => {
+          setAgentOpen(false);
+          setView("score");
         }}
         onOpenMailboxWorkspace={() => {
           setAgentOpen(false);
@@ -3186,18 +3185,16 @@ function AgentMarkdown({ content }: { content: string }) {
 
 function RecruitingAgentDrawer({
   isOpen,
-  mailboxToolsAvailable,
-  selectedResume,
   onClose,
   onOpenMatchWorkspace,
+  onOpenScoreWorkspace,
   onOpenMailboxWorkspace,
   onOpenResume,
 }: {
   isOpen: boolean;
-  mailboxToolsAvailable: boolean;
-  selectedResume: SelectedResume | null;
   onClose: () => void;
   onOpenMatchWorkspace: () => void;
+  onOpenScoreWorkspace: () => void;
   onOpenMailboxWorkspace: () => void;
   onOpenResume: (candidate: RecruitingAgentCandidate) => void;
 }) {
@@ -3212,7 +3209,7 @@ function RecruitingAgentDrawer({
       id: 1,
       role: "assistant",
       content:
-        "我是招聘助手。可以筛选简历、处理 JD 匹配和评分；已开通邮箱入库的工作区也可以查询收件状态，并按你的指令发起后台同步。",
+        "我是招聘助手。可以在当前工作区筛选简历、处理 JD 匹配、查看排行榜，并按已有评分规则发起全量评分；已开通邮箱入库的工作区也可以查询收件状态，并按你的指令发起后台同步。",
     },
   ]);
 
@@ -3296,7 +3293,6 @@ function RecruitingAgentDrawer({
       const turn = await api.runRecruitingAgentTurn({
         message,
         job_version_id: jobVersionId || null,
-        resume_id: selectedResume?.resumeId ?? null,
       });
       addAssistantReply(turn);
     } catch (error) {
@@ -3362,9 +3358,6 @@ function RecruitingAgentDrawer({
           </select>
           <Icon name="chevron-down" size={15} />
         </div>
-        <span className="agent-context-note">
-          {selectedResume ? `当前候选人：${selectedResume.candidateName}` : "未选择候选人"}
-        </span>
       </div>
       <div className="agent-conversation" aria-live="polite">
         {messages.map((item) => (
@@ -3422,6 +3415,12 @@ function RecruitingAgentDrawer({
                 打开 JD 匹配工作区
               </button>
             )}
+            {item.actions?.some((action) => action.action === "open_score_workspace") && (
+              <button className="button button-ghost agent-workspace-button" onClick={onOpenScoreWorkspace} type="button">
+                <Icon name="layers" size={15} />
+                打开评分工作台
+              </button>
+            )}
             {item.actions?.some((action) => action.action === "open_mailbox_workspace") && (
               <button className="button button-ghost agent-workspace-button" onClick={onOpenMailboxWorkspace} type="button">
                 <Icon name="inbox" size={15} />
@@ -3437,19 +3436,6 @@ function RecruitingAgentDrawer({
         )}
       </div>
       <div className="agent-composer">
-        <div className="agent-suggestions" aria-label="常用提问">
-          {[
-            "找 985 或 211 院校、3 年以上的候选人",
-            "为当前 JD 批量匹配",
-            "查看当前 JD 排行榜",
-            "解释当前候选人的分数",
-            ...(mailboxToolsAvailable ? ["查看收件邮箱状态", "同步全部收件邮箱"] : []),
-          ].map((prompt) => (
-            <button disabled={loading} key={prompt} onClick={() => void send(prompt)} type="button">
-              {prompt}
-            </button>
-          ))}
-        </div>
         <form
           className="agent-input-row"
           onSubmit={(event) => {

@@ -72,7 +72,99 @@ git push --force-with-lease origin <branch>
 推荐提交粒度是“一次提交解决一个可解释问题”。不要把不同功能、格式化和同事改动混在
 同一个提交中。
 
-## 3. 同事之间如何拉齐
+## 3. 创建 PR：所有 Agent 可复现的流程
+
+创建 PR 不是“push 完分支就结束”。PR 是共享交付物，必须能被其他人复核、测试和安全
+发布。按以下顺序执行。
+
+### 3.1 创建前的最后检查
+
+```bash
+git fetch origin --prune --tags
+git status -sb
+git merge-base --is-ancestor origin/main HEAD
+git diff --check origin/main...HEAD
+git log --oneline origin/main..HEAD
+```
+
+- `git merge-base` 返回非 0 时，说明分支未包含最新 `main`；先理解新提交、rebase 或明确
+  说明冲突，再继续。
+- 确认 staged/unstaged 文件只属于本任务，不含 `.env`、凭据、PDF、数据库、上传文件、
+  生产产物或候选人资料。
+- 在创建 PR 前运行完整后端测试、前端 `npm run build`，并记录迁移验证（如适用）。
+
+### 3.2 推送功能分支
+
+```bash
+git push -u origin <branch-name>
+```
+
+禁止 `git push origin main`。如果分支已经推送且必须改写历史，只能使用
+`git push --force-with-lease`，并在 PR 中说明原因。
+
+### 3.3 创建 PR，并验证文字编码
+
+优先使用 GitHub CLI：
+
+```bash
+gh pr create --base main --head <branch-name> \
+  --title "fix: concise English or verified UTF-8 title" \
+  --body-file <utf8-markdown-file>
+```
+
+没有 `gh` 时，可以使用 GitHub REST API；令牌只从本机 Git 凭据读取，不回显、不写入文件。
+PowerShell 必须显式以 UTF-8 发送 JSON，不能依赖终端默认编码：
+
+```powershell
+$credentialLines = @("protocol=https", "host=github.com", "username=greatsellai", "") |
+  & git credential fill
+$tokenLine = $credentialLines | Where-Object { $_ -like "password=*" } | Select-Object -First 1
+if (-not $tokenLine) { throw "GitHub credential not available" }
+$token = $tokenLine.Substring("password=".Length)
+
+$prBody = "## Summary`n- Explain the scoped change.`n`n## Validation`n- python -m pytest -q`n- npm run build"
+$payload = [PSCustomObject]@{
+  title = "fix: describe the scoped change"
+  head = "<branch-name>"
+  base = "main"
+  body = $prBody
+} | ConvertTo-Json -Compress
+$utf8Payload = [System.Text.Encoding]::UTF8.GetBytes($payload)
+$headers = @{
+  Authorization = "Bearer $token"
+  Accept = "application/vnd.github+json"
+  "X-GitHub-Api-Version" = "2022-11-28"
+}
+$pr = Invoke-RestMethod -Method Post `
+  -Uri "https://api.github.com/repos/greatsellai/greatsellai-hr/pulls" `
+  -Headers $headers -ContentType "application/json; charset=utf-8" -Body $utf8Payload
+if ($pr.title -match "\?{2,}" -or $pr.body -match "\?{2,}") {
+  throw "PR metadata was corrupted; repair it before waiting for CI."
+}
+$pr.html_url
+```
+
+PR 的标题和正文必须说明：范围、为什么改、数据/隐私与兼容性影响、迁移影响、已运行的
+验证命令、遗留风险。不要把真实候选人、原文、密钥、口令或环境变量放进 PR。仓库的
+UTF-8 门禁会拒绝乱码和连续 `??` 占位符；创建后应立即读取一次 GitHub 返回的 title/body，
+确认没有变成问号。
+
+### 3.4 等待检查、合并与发布
+
+```bash
+gh pr checks <PR-number> --watch
+```
+
+至少确认 UTF-8、后端测试、PostgreSQL 邮箱并发、Web build/Playwright、生产镜像构建全部
+成功。任何失败都先定位、修复、重新测试，不得带红合并。
+
+没有当前任务的明确合并授权时，Agent 只创建 PR 并回报链接；获得授权后才可合并。合并前
+再次 `git fetch origin --prune --tags`，确认没有新的 `main` 冲突或未解决评论。本仓库
+合并到 `main` 后由 GitHub Actions 自动发布；Agent 不得绕过 CI 直接登录服务器部署。
+
+完成后必须回报：PR 链接、分支、提交、合并提交、测试结果、迁移说明、CI/CD 状态和待办。
+
+## 4. 同事之间如何拉齐
 
 新同事或新的 Codex 会话只需收到仓库地址和以下指令：
 
@@ -90,7 +182,7 @@ git push --force-with-lease origin <branch>
 
 接手者不得只相信交接文字；仍要 fetch 并用 GitHub 当前状态复核。
 
-## 4. PR 与共同账号
+## 5. PR 与共同账号
 
 共同使用一个 GitHub 账号不会自然产生独立的审核身份，因此不能把“按钮能点”当作审核
 证据。至少要在合并前完成：
@@ -103,7 +195,7 @@ git push --force-with-lease origin <branch>
 若需要可审计的双人审批，应为同事建立独立 GitHub 身份；在此之前，共同账号只能依靠
 明确的人工复核记录，不能伪装成两个独立审批人。
 
-## 5. 发布与回滚
+## 6. 发布与回滚
 
 服务器 `/home/ubuntu/resume-screening-v3` 只接收已合并并带生产标签的源码。标准顺序是：
 
@@ -119,7 +211,7 @@ git push --force-with-lease origin <branch>
 必须完成备份；上线后验证健康、HTTPS、登录、关键 API 和 PDF 鉴权。回滚操作见
 `docs/DEPLOYMENT.md`，只能指向已有 `prod-*` 标签。
 
-## 6. 不能进入 GitHub 的内容
+## 7. 不能进入 GitHub 的内容
 
 - `.env.production` 及任何真实环境变量值。
 - API Key、邮箱密码、管理口令、数据库密码、SSH 私钥。

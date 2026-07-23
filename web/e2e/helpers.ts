@@ -10,6 +10,11 @@ interface E2EDeliveriesResponse {
   deliveries: E2EDelivery[];
 }
 
+export interface PendingEmailVerification {
+  email: string;
+  verificationPath: string;
+}
+
 export interface E2EWorkspaceFixture {
   resume_ids: string[];
   job_version_id: string;
@@ -45,7 +50,10 @@ export async function e2eControl<T>(
   return payload as T;
 }
 
-export async function registerAndVerify(page: Page, label: string): Promise<string> {
+export async function registerAndAwaitEmailVerification(
+  page: Page,
+  label: string,
+): Promise<PendingEmailVerification> {
   const email = uniqueTestEmail(label);
   await page.goto("/register");
   await page.locator("#register-organization").fill(`E2E 工作区 ${label}`);
@@ -69,7 +77,17 @@ export async function registerAndVerify(page: Page, label: string): Promise<stri
   const delivery = deliveries.deliveries.at(-1);
   if (!delivery) throw new Error("Expected a local verification delivery.");
   const verificationUrl = new URL(delivery.verification_url);
-  await page.goto(`${verificationUrl.pathname}${verificationUrl.search}`);
+  return {
+    email,
+    verificationPath: `${verificationUrl.pathname}${verificationUrl.search}`,
+  };
+}
+
+export async function registerAndVerify(page: Page, label: string): Promise<string> {
+  const { email, verificationPath } = await registerAndAwaitEmailVerification(page, label);
+  await page.goto(verificationPath);
+  await expect(page.getByRole("heading", { name: "邮箱已验证" })).toBeVisible();
+  await page.goto("/");
   await expect(page.getByRole("button", { name: "退出登录" })).toBeVisible();
   return email;
 }

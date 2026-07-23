@@ -328,6 +328,7 @@ def _process_claimed_outbox_job(
             PasswordResetDelivery(
                 recipient=recipient,
                 reset_url=password_reset_url(settings, token=raw_token),
+                reset_token=raw_token,
                 expires_minutes=max(1, settings.password_reset_ttl_seconds // 60),
             )
         )

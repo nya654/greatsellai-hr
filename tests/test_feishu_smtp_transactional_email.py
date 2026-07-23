@@ -39,6 +39,7 @@ def _delivery() -> VerificationDelivery:
     return VerificationDelivery(
         recipient="candidate@example.test",
         verification_url="https://hr.example.test/verify-email?token=fixture-token",
+        verification_token="fixture-token",
         expires_minutes=60,
     )
 
@@ -47,6 +48,7 @@ def _password_reset_delivery() -> PasswordResetDelivery:
     return PasswordResetDelivery(
         recipient="candidate@example.test",
         reset_url="https://hr.example.test/reset-password?token=fixture-token",
+        reset_token="fixture-token",
         expires_minutes=60,
     )
 

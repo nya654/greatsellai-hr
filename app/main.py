@@ -674,6 +674,7 @@ def _deliver_email_verification(
             VerificationDelivery(
                 recipient=recipient,
                 verification_url=email_verification_url(settings, token=token),
+                verification_token=token,
                 expires_minutes=max(1, settings.email_verification_ttl_seconds // 60),
             )
         )

@@ -17,7 +17,7 @@ concurrency:
 jobs:
   backend:
     name: Backend tests
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, greatsell-ci]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -41,7 +41,7 @@ jobs:
 
   postgres-mailbox-race:
     name: PostgreSQL mailbox race
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, greatsell-ci]
     timeout-minutes: 15
     services:
       postgres:
@@ -75,7 +75,7 @@ jobs:
 
   web:
     name: Web build
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, greatsell-ci]
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
@@ -101,14 +101,18 @@ jobs:
         run: npm run build
       - name: Install Chromium for Playwright critical paths
         working-directory: web
-        run: npx playwright install --with-deps chromium
+        # The trusted self-hosted runner is provisioned with Playwright's
+        # Linux system dependencies once. Do not run apt on every PR: it
+        # makes CI depend on an external OS package mirror and adds minutes
+        # without increasing application coverage.
+        run: npx playwright install chromium
       - name: Run Playwright critical paths
         working-directory: web
         run: npm run e2e
 
   production-images:
     name: Production image builds
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, greatsell-ci]
     timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4

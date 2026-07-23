@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Icon } from "../../icons";
 import { adminApi, adminErrorMessage } from "../admin-api";
 import type {
@@ -542,6 +542,15 @@ type ModelScope = {
   modelSlug: string;
 };
 
+type TokenUsageFilters = {
+  organizationId: string;
+  feature: string;
+  start: string;
+  end: string;
+  granularity: AiUsageTrendGranularity;
+  modelScope: string;
+};
+
 const MODEL_SCOPE_SEPARATOR = "::";
 
 function parseModelScope(value: string): ModelScope | null {
@@ -552,10 +561,36 @@ function parseModelScope(value: string): ModelScope | null {
 }
 
 function usageRangeDays(start: string, end: string) {
-  const startTime = new Date(`${start}T00:00:00`).getTime();
-  const endTime = new Date(`${end}T23:59:59.999`).getTime();
-  if (Number.isNaN(startTime) || Number.isNaN(endTime)) return 0;
+  const toUtcDayStart = (value: string) => {
+    const [year, month, day] = value.split("-").map(Number);
+    if (![year, month, day].every(Number.isInteger)) return Number.NaN;
+    const timestamp = Date.UTC(year, month - 1, day);
+    const date = new Date(timestamp);
+    if (
+      date.getUTCFullYear() !== year
+      || date.getUTCMonth() !== month - 1
+      || date.getUTCDate() !== day
+    ) return Number.NaN;
+    return timestamp;
+  };
+  const startTime = toUtcDayStart(start);
+  const endTime = toUtcDayStart(end);
+  if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) return Number.POSITIVE_INFINITY;
   return Math.floor((endTime - startTime) / (24 * 60 * 60 * 1_000)) + 1;
+}
+
+function tokenUsageFilterError(filters: TokenUsageFilters) {
+  if (!filters.start || !filters.end) {
+    return "趋势图需要同时选择开始和结束日期。";
+  }
+  if (filters.start > filters.end) {
+    return "结束日期不能早于开始日期。";
+  }
+  const maxTrendRangeDays = MAX_TOKEN_TREND_RANGE_DAYS[filters.granularity];
+  if (usageRangeDays(filters.start, filters.end) > maxTrendRangeDays) {
+    return `按${filters.granularity === "hour" ? "小时" : "天"}最多支持 ${maxTrendRangeDays} 天，请缩小日期范围或切换粒度。`;
+  }
+  return "";
 }
 
 function browserTimeZone() {
@@ -569,18 +604,23 @@ function browserTimeZone() {
 export function AdminAiPage() {
   const initialUsageRange = useMemo(() => defaultTokenUsageRange(), []);
   const timeZone = useMemo(() => browserTimeZone(), []);
+  const loadRequestRef = useRef(0);
   const [state, setState] = useState<RequestState>("loading");
   const [error, setError] = useState("");
   const [filterError, setFilterError] = useState("");
   const [tab, setTab] = useState<AiTab>("runs");
-  const [organizationDraft, setOrganizationDraft] = useState("");
-  const [featureDraft, setFeatureDraft] = useState("");
+  const [runOrganizationDraft, setRunOrganizationDraft] = useState("");
+  const [runFeatureDraft, setRunFeatureDraft] = useState("");
+  const [usageOrganizationDraft, setUsageOrganizationDraft] = useState("");
+  const [usageFeatureDraft, setUsageFeatureDraft] = useState("");
   const [usageStartDraft, setUsageStartDraft] = useState(initialUsageRange.start);
   const [usageEndDraft, setUsageEndDraft] = useState(initialUsageRange.end);
   const [usageTrendGranularityDraft, setUsageTrendGranularityDraft] = useState<AiUsageTrendGranularity>(DEFAULT_TOKEN_TREND_GRANULARITY);
   const [modelScopeDraft, setModelScopeDraft] = useState("");
-  const [organizationId, setOrganizationId] = useState("");
-  const [feature, setFeature] = useState("");
+  const [runOrganizationId, setRunOrganizationId] = useState("");
+  const [runFeature, setRunFeature] = useState("");
+  const [usageOrganizationId, setUsageOrganizationId] = useState("");
+  const [usageFeature, setUsageFeature] = useState("");
   const [usageStart, setUsageStart] = useState(initialUsageRange.start);
   const [usageEnd, setUsageEnd] = useState(initialUsageRange.end);
   const [usageTrendGranularity, setUsageTrendGranularity] = useState<AiUsageTrendGranularity>(DEFAULT_TOKEN_TREND_GRANULARITY);
@@ -600,43 +640,59 @@ export function AdminAiPage() {
     refreshOrganizations,
   } = useCompanyOptions();
 
-  const refreshData = useCallback(async () => {
+  const refreshData = useCallback(async (requestId?: number) => {
+    const activeRequestId = requestId ?? ++loadRequestRef.current;
     const selectedModelScope = parseModelScope(modelScope);
-    const baseQuery = {
-      organization_id: organizationId || undefined,
-      feature: feature || undefined,
+    const runQuery = {
+      organization_id: runOrganizationId || undefined,
+      feature: runFeature || undefined,
       limit: 100,
       offset: 0,
     };
     const usageQuery = {
-      ...baseQuery,
+      organization_id: usageOrganizationId || undefined,
+      feature: usageFeature || undefined,
+      limit: 100,
+      offset: 0,
       provider_slug: selectedModelScope?.providerSlug,
       model_slug: selectedModelScope?.modelSlug,
       started_at_from: localDayBoundaryIso(usageStart, "start"),
       started_at_to: localDayBoundaryIso(usageEnd, "end"),
     };
     const [nextRuns, nextUsage, nextProviders, nextModels, nextRoutes] = await Promise.all([
-      adminApi.listAiRuns(baseQuery),
+      adminApi.listAiRuns(runQuery),
       adminApi.listAiUsage(usageQuery),
       adminApi.listAiProviders(),
       adminApi.listAiModels(),
       adminApi.listAiRoutes(),
     ]);
+    if (activeRequestId !== loadRequestRef.current) return;
     setRuns(nextRuns);
     setUsage(nextUsage);
     setProviders(nextProviders);
     setModels(nextModels);
     setRoutes(nextRoutes);
-  }, [feature, modelScope, organizationId, usageEnd, usageStart]);
+  }, [
+    modelScope,
+    runFeature,
+    runOrganizationId,
+    usageEnd,
+    usageFeature,
+    usageOrganizationId,
+    usageStart,
+  ]);
 
-  const refreshUsageTrend = useCallback(async () => {
+  const refreshUsageTrend = useCallback(async (requestId?: number) => {
+    const activeRequestId = requestId ?? ++loadRequestRef.current;
     const selectedModelScope = parseModelScope(modelScope);
-    setUsageTrendState("loading");
-    setUsageTrendError("");
+    if (activeRequestId === loadRequestRef.current) {
+      setUsageTrendState("loading");
+      setUsageTrendError("");
+    }
     try {
       const nextUsageTrend = await adminApi.listAiUsageTrend({
-        organization_id: organizationId || undefined,
-        feature: feature || undefined,
+        organization_id: usageOrganizationId || undefined,
+        feature: usageFeature || undefined,
         provider_slug: selectedModelScope?.providerSlug,
         model_slug: selectedModelScope?.modelSlug,
         started_at_from: localDayBoundaryIso(usageStart, "start"),
@@ -644,23 +700,37 @@ export function AdminAiPage() {
         granularity: usageTrendGranularity,
         time_zone: timeZone,
       });
+      if (activeRequestId !== loadRequestRef.current) return;
       setUsageTrend(nextUsageTrend);
       setUsageTrendState("ready");
     } catch (trendError) {
+      if (activeRequestId !== loadRequestRef.current) return;
       setUsageTrend([]);
       setUsageTrendError(adminErrorMessage(trendError));
       setUsageTrendState("error");
     }
-  }, [feature, modelScope, organizationId, timeZone, usageEnd, usageStart, usageTrendGranularity]);
+  }, [
+    modelScope,
+    timeZone,
+    usageEnd,
+    usageFeature,
+    usageOrganizationId,
+    usageStart,
+    usageTrendGranularity,
+  ]);
 
   const load = useCallback(async () => {
+    const requestId = ++loadRequestRef.current;
     setState("loading");
     setError("");
     try {
-      await refreshData();
-      if (tab === "usage") await refreshUsageTrend();
+      await refreshData(requestId);
+      if (requestId !== loadRequestRef.current) return;
+      if (tab === "usage") await refreshUsageTrend(requestId);
+      if (requestId !== loadRequestRef.current) return;
       setState("ready");
     } catch (loadError) {
+      if (requestId !== loadRequestRef.current) return;
       setError(adminErrorMessage(loadError));
       setState("error");
     }
@@ -687,12 +757,14 @@ export function AdminAiPage() {
   const modelScopeOptions = useMemo(() => [...models].sort((left, right) => (
     `${left.provider_slug}/${modelDisplayName(left)}`.localeCompare(`${right.provider_slug}/${modelDisplayName(right)}`, "zh-CN")
   )), [models]);
+  const visibleFeatureDraft = tab === "usage" ? usageFeatureDraft : runFeatureDraft;
+  const visibleOrganizationDraft = tab === "usage" ? usageOrganizationDraft : runOrganizationDraft;
   const featureFilterOptions = useMemo(() => {
     const options = new Map(aiFeatureFilterOptions.map((item) => [item.value, item.label]));
     routes.forEach((route) => options.set(route.feature, routeDisplayName(route)));
-    if (featureDraft && !options.has(featureDraft)) options.set(featureDraft, "当前自定义功能");
+    if (visibleFeatureDraft && !options.has(visibleFeatureDraft)) options.set(visibleFeatureDraft, "当前自定义功能");
     return [...options].map(([value, label]) => ({ value, label }));
-  }, [featureDraft, routes]);
+  }, [routes, visibleFeatureDraft]);
   const tokenUsageScopeLabel = selectedModelScope
     ? selectedModel
       ? `${providerNames.get(selectedModelScope.providerSlug) ?? "模型服务"} · ${modelDisplayName(selectedModel)}`
@@ -723,51 +795,108 @@ export function AdminAiPage() {
     usageStart === initialUsageRange.start
     && usageEnd === initialUsageRange.end
   );
-  const hasActiveFilters = Boolean(
-    organizationId
-    || feature
-    || (tab === "usage" && (modelScope || !isDefaultUsageRange || usageTrendGranularity !== DEFAULT_TOKEN_TREND_GRANULARITY)),
-  );
+  const hasActiveFilters = tab === "usage"
+    ? Boolean(
+      usageOrganizationId
+      || usageFeature
+      || modelScope
+      || !isDefaultUsageRange
+      || usageTrendGranularity !== DEFAULT_TOKEN_TREND_GRANULARITY
+      || usageOrganizationDraft
+      || usageFeatureDraft
+      || modelScopeDraft
+      || usageStartDraft !== initialUsageRange.start
+      || usageEndDraft !== initialUsageRange.end
+      || usageTrendGranularityDraft !== DEFAULT_TOKEN_TREND_GRANULARITY,
+    )
+    : Boolean(runOrganizationId || runFeature);
   const usageRange = tokenUsageRangeLabel(usageStart, usageEnd);
+
+  const applyUsageFilters = useCallback((nextFilters: TokenUsageFilters) => {
+    const validationError = tokenUsageFilterError(nextFilters);
+    if (validationError) {
+      setFilterError(`${validationError} 当前统计和趋势仍显示上一次有效筛选结果。`);
+      return false;
+    }
+    setFilterError("");
+    setUsageOrganizationId(nextFilters.organizationId.trim());
+    setUsageFeature(nextFilters.feature.trim());
+    setUsageStart(nextFilters.start);
+    setUsageEnd(nextFilters.end);
+    setUsageTrendGranularity(nextFilters.granularity);
+    setModelScope(nextFilters.modelScope);
+    return true;
+  }, []);
+
+  const updateUsageFilters = useCallback((patch: Partial<TokenUsageFilters>) => {
+    const nextFilters: TokenUsageFilters = {
+      organizationId: usageOrganizationDraft,
+      feature: usageFeatureDraft,
+      start: usageStartDraft,
+      end: usageEndDraft,
+      granularity: usageTrendGranularityDraft,
+      modelScope: modelScopeDraft,
+      ...patch,
+    };
+    setUsageOrganizationDraft(nextFilters.organizationId);
+    setUsageFeatureDraft(nextFilters.feature);
+    setUsageStartDraft(nextFilters.start);
+    setUsageEndDraft(nextFilters.end);
+    setUsageTrendGranularityDraft(nextFilters.granularity);
+    setModelScopeDraft(nextFilters.modelScope);
+    applyUsageFilters(nextFilters);
+  }, [
+    applyUsageFilters,
+    modelScopeDraft,
+    usageEndDraft,
+    usageFeatureDraft,
+    usageOrganizationDraft,
+    usageStartDraft,
+    usageTrendGranularityDraft,
+  ]);
 
   const apply = (event: FormEvent) => {
     event.preventDefault();
-    if (tab === "usage" && (!usageStartDraft || !usageEndDraft)) {
-      setFilterError("趋势图需要同时选择开始和结束日期。");
+    if (tab === "usage") {
+      applyUsageFilters({
+        organizationId: usageOrganizationDraft,
+        feature: usageFeatureDraft,
+        start: usageStartDraft,
+        end: usageEndDraft,
+        granularity: usageTrendGranularityDraft,
+        modelScope: modelScopeDraft,
+      });
       return;
     }
-    if (usageStartDraft && usageEndDraft && usageStartDraft > usageEndDraft) {
-      setFilterError("结束日期不能早于开始日期。");
-      return;
-    }
-    const maxTrendRangeDays = MAX_TOKEN_TREND_RANGE_DAYS[usageTrendGranularityDraft];
-    if (tab === "usage" && usageRangeDays(usageStartDraft, usageEndDraft) > maxTrendRangeDays) {
-      setFilterError(`按${usageTrendGranularityDraft === "hour" ? "小时" : "天"}最多支持 ${maxTrendRangeDays} 天，请缩小日期范围或切换粒度。`);
-      return;
-    }
-    setFilterError("");
-    setOrganizationId(organizationDraft.trim());
-    setFeature(featureDraft.trim());
-    setUsageStart(usageStartDraft);
-    setUsageEnd(usageEndDraft);
-    setUsageTrendGranularity(usageTrendGranularityDraft);
-    setModelScope(modelScopeDraft);
+    setRunOrganizationId(runOrganizationDraft.trim());
+    setRunFeature(runFeatureDraft.trim());
+  };
+
+  const changeTab = (nextTab: AiTab) => {
+    setTab(nextTab);
   };
 
   const clearFilters = () => {
-    setFilterError("");
-    setOrganizationDraft("");
-    setFeatureDraft("");
-    setUsageStartDraft(initialUsageRange.start);
-    setUsageEndDraft(initialUsageRange.end);
-    setUsageTrendGranularityDraft(DEFAULT_TOKEN_TREND_GRANULARITY);
-    setModelScopeDraft("");
-    setOrganizationId("");
-    setFeature("");
-    setUsageStart(initialUsageRange.start);
-    setUsageEnd(initialUsageRange.end);
-    setUsageTrendGranularity(DEFAULT_TOKEN_TREND_GRANULARITY);
-    setModelScope("");
+    if (tab === "usage") {
+      setFilterError("");
+      setUsageOrganizationDraft("");
+      setUsageFeatureDraft("");
+      setUsageStartDraft(initialUsageRange.start);
+      setUsageEndDraft(initialUsageRange.end);
+      setUsageTrendGranularityDraft(DEFAULT_TOKEN_TREND_GRANULARITY);
+      setModelScopeDraft("");
+      setUsageOrganizationId("");
+      setUsageFeature("");
+      setUsageStart(initialUsageRange.start);
+      setUsageEnd(initialUsageRange.end);
+      setUsageTrendGranularity(DEFAULT_TOKEN_TREND_GRANULARITY);
+      setModelScope("");
+      return;
+    }
+    setRunOrganizationDraft("");
+    setRunFeatureDraft("");
+    setRunOrganizationId("");
+    setRunFeature("");
   };
 
   return (
@@ -779,38 +908,41 @@ export function AdminAiPage() {
       />
       <div className="admin-segmented" aria-label="AI 运营视图">
         {([['runs', '运行记录'], ['usage', 'Token 用量'], ['resources', '模型与功能'], ['configure', '配置与发布']] as Array<[AiTab, string]>).map(([value, label]) => (
-          <button aria-pressed={tab === value} key={value} onClick={() => setTab(value)} type="button">{label}</button>
+          <button aria-pressed={tab === value} key={value} onClick={() => changeTab(value)} type="button">{label}</button>
         ))}
       </div>
       {(tab === "runs" || tab === "usage") && (
         <form className="admin-filter-bar" onSubmit={apply}>
           <CompanyFilterField
-            onChange={setOrganizationDraft}
+            onChange={(organizationId) => {
+              if (tab === "usage") updateUsageFilters({ organizationId });
+              else setRunOrganizationDraft(organizationId);
+            }}
             onRetry={() => void refreshOrganizations()}
             organizations={organizations}
-            selectedOrganizationId={organizationDraft}
+            selectedOrganizationId={visibleOrganizationDraft}
             state={organizationOptionsState}
           />
-          <label className="admin-model-scope-field"><span>AI 功能</span><select className="select-field" onChange={(event) => setFeatureDraft(event.target.value)} value={featureDraft}><option value="">全部功能</option>{featureFilterOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+          <label className="admin-model-scope-field"><span>AI 功能</span><select aria-label="AI 功能" className="select-field" onChange={(event) => { if (tab === "usage") updateUsageFilters({ feature: event.target.value }); else setRunFeatureDraft(event.target.value); }} value={visibleFeatureDraft}><option value="">全部功能</option>{featureFilterOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
           {tab === "usage" && <>
-            <label className="admin-date-field"><span>开始日期</span><input className="field" onChange={(event) => { setUsageStartDraft(event.target.value); setFilterError(""); }} type="date" value={usageStartDraft} /></label>
-            <label className="admin-date-field"><span>结束日期</span><input className="field" onChange={(event) => { setUsageEndDraft(event.target.value); setFilterError(""); }} type="date" value={usageEndDraft} /></label>
-            <fieldset aria-describedby="admin-token-trend-granularity-note" className="admin-token-trend-granularity">
+            <label className="admin-date-field"><span>开始日期</span><input aria-describedby={filterError ? "admin-token-filter-error" : undefined} aria-invalid={Boolean(filterError)} className="field" onChange={(event) => updateUsageFilters({ start: event.target.value })} type="date" value={usageStartDraft} /></label>
+            <label className="admin-date-field"><span>结束日期</span><input aria-describedby={filterError ? "admin-token-filter-error" : undefined} aria-invalid={Boolean(filterError)} className="field" onChange={(event) => updateUsageFilters({ end: event.target.value })} type="date" value={usageEndDraft} /></label>
+            <fieldset aria-describedby={filterError ? "admin-token-trend-granularity-note admin-token-filter-error" : "admin-token-trend-granularity-note"} className="admin-token-trend-granularity">
               <legend>趋势粒度</legend>
               <div aria-label="趋势粒度" className="admin-segmented" role="group">
-                <button aria-pressed={usageTrendGranularityDraft === "hour"} onClick={() => { setUsageTrendGranularityDraft("hour"); setFilterError(""); }} type="button">按小时</button>
-                <button aria-pressed={usageTrendGranularityDraft === "day"} onClick={() => { setUsageTrendGranularityDraft("day"); setFilterError(""); }} type="button">按天</button>
+                <button aria-pressed={usageTrendGranularityDraft === "hour"} onClick={() => updateUsageFilters({ granularity: "hour" })} type="button">按小时</button>
+                <button aria-pressed={usageTrendGranularityDraft === "day"} onClick={() => updateUsageFilters({ granularity: "day" })} type="button">按天</button>
               </div>
               <small id="admin-token-trend-granularity-note">按小时最多 31 天，按天最多 90 天。</small>
             </fieldset>
-            <label className="admin-model-scope-field"><span>模型</span><select className="select-field" onChange={(event) => setModelScopeDraft(event.target.value)} value={modelScopeDraft}><option value="">全部模型</option>{modelScopeDraft && !modelScopeOptions.some((model) => `${model.provider_slug}${MODEL_SCOPE_SEPARATOR}${model.slug}` === modelScopeDraft) && <option value={modelScopeDraft}>已归档模型</option>}{modelScopeOptions.map((model) => <option key={model.model_id} value={`${model.provider_slug}${MODEL_SCOPE_SEPARATOR}${model.slug}`}>{providerNames.get(model.provider_slug) ?? "模型服务"} · {modelDisplayName(model)}</option>)}</select></label>
+            <label className="admin-model-scope-field"><span>模型</span><select aria-label="模型" className="select-field" onChange={(event) => updateUsageFilters({ modelScope: event.target.value })} value={modelScopeDraft}><option value="">全部模型</option>{modelScopeDraft && !modelScopeOptions.some((model) => `${model.provider_slug}${MODEL_SCOPE_SEPARATOR}${model.slug}` === modelScopeDraft) && <option value={modelScopeDraft}>已归档模型</option>}{modelScopeOptions.map((model) => <option key={model.model_id} value={`${model.provider_slug}${MODEL_SCOPE_SEPARATOR}${model.slug}`}>{providerNames.get(model.provider_slug) ?? "模型服务"} · {modelDisplayName(model)}</option>)}</select></label>
           </>}
-          <button className="button button-primary" type="submit">{tab === "usage" ? "查看 Token" : "筛选记录"}</button>
+          {tab === "runs" && <button className="button button-primary" type="submit">筛选记录</button>}
           {hasActiveFilters && <button className="button button-ghost" onClick={clearFilters} type="button">清除条件</button>}
-          {filterError && <p className="admin-form-error admin-filter-error" role="alert">{filterError}</p>}
+          {tab === "usage" && filterError && <p className="admin-form-error admin-filter-error" id="admin-token-filter-error" role="alert">{filterError}</p>}
         </form>
       )}
-      {state === "loading" && <div className="admin-panel"><AdminLoading label="正在汇总 AI 运行数据…" /></div>}
+      {state === "loading" && <div className="admin-panel"><AdminLoading label={tab === "usage" ? "正在更新 Token 统计…" : "正在汇总 AI 运行数据…"} /></div>}
       {state === "error" && <div className="admin-panel"><AdminError message={error} onRetry={() => void load()} /></div>}
       {state === "ready" && tab === "runs" && (
         <div className="admin-table-panel">

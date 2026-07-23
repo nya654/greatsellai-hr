@@ -29,6 +29,12 @@ def test_ai_gateway_migration_upgrades_a_file_sqlite_database(tmp_path) -> None:
             "api_invocations",
             "platform_audit_events",
         }.issubset(tables)
+        organization_columns = {
+            column["name"] for column in inspector.get_columns("organizations")
+        }
+        assert {"trial_llm_call_limit", "trial_llm_call_used"}.issubset(
+            organization_columns
+        )
         audit_columns = {
             column["name"] for column in inspector.get_columns("platform_audit_events")
         }

@@ -131,6 +131,9 @@ class TrialAccessResponse(ApiModel):
     trial_started_at: datetime | None = None
     trial_ends_at: datetime | None = None
     trial_days_remaining: int | None = None
+    llm_call_limit: int | None = Field(default=None, ge=0)
+    llm_call_used: int | None = Field(default=None, ge=0)
+    llm_call_remaining: int | None = Field(default=None, ge=0)
     access_enabled: bool
 
 
@@ -160,6 +163,7 @@ class RegistrationOfferResponse(ApiModel):
     plan_code: str
     plan_name: str
     trial_days: int = Field(ge=0)
+    llm_call_limit: int = Field(ge=0)
 
 
 class EmailVerificationComplete(ApiModel):

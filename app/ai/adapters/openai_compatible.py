@@ -69,17 +69,7 @@ class OpenAICompatibleAdapter(CompletionAdapter):
         request: CompletionRequest,
         route: RouteTarget,
     ) -> CompletionResult:
-        self._validate_route(route)
-        payload = _serialize_completion_request(request, route)
-        headers = _request_headers(route)
-        http_request = urllib.request.Request(
-            route.endpoint_url,
-            data=json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode(
-                "utf-8"
-            ),
-            headers=headers,
-            method="POST",
-        )
+        http_request = self._build_http_request(request, route)
 
         opener = self._opener or urllib.request.urlopen
         try:
@@ -113,6 +103,40 @@ class OpenAICompatibleAdapter(CompletionAdapter):
             status_code=status_code,
             provider_request_id=provider_request_id,
             fallback_model_id=route.provider_model_id,
+        )
+
+    def preflight(
+        self,
+        request: CompletionRequest,
+        route: RouteTarget,
+    ) -> None:
+        """Exercise all deterministic request preparation before quota use."""
+
+        try:
+            self._build_http_request(request, route)
+        except ProviderError:
+            raise
+        except (TypeError, ValueError, UnicodeError) as exc:
+            # Request construction happens entirely in-process.  Convert any
+            # malformed local route/default payload to the stable gateway
+            # configuration category before a quota reservation is made.
+            raise ProviderConfigurationError() from exc
+
+    def _build_http_request(
+        self,
+        request: CompletionRequest,
+        route: RouteTarget,
+    ) -> urllib.request.Request:
+        self._validate_route(route)
+        payload = _serialize_completion_request(request, route)
+        headers = _request_headers(route)
+        return urllib.request.Request(
+            route.endpoint_url,
+            data=json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode(
+                "utf-8"
+            ),
+            headers=headers,
+            method="POST",
         )
 
     def _validate_route(self, route: RouteTarget) -> None:

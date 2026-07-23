@@ -19,6 +19,7 @@ from app.schemas import (
 from app.services.institution_service import build_985_211_ai_rulebook
 from app.services.normalization import normalized_contains
 from app.services.ai_gateway_service import AiGatewayError, active_legacy_payload_executor
+from app.services.trial_quota_service import TRIAL_LLM_CALL_QUOTA_EXHAUSTED_CODE
 
 
 API_URL = "https://api.deepseek.com/beta/chat/completions"
@@ -80,6 +81,11 @@ def _post_chat_completion(
         try:
             raw_response = gateway_executor(payload)
         except AiGatewayError as exc:
+            # Preserve the workspace-owned quota code for domain services and
+            # the UI. Other gateway failures keep the established provider
+            # compatibility wrapper below.
+            if str(exc) == TRIAL_LLM_CALL_QUOTA_EXHAUSTED_CODE:
+                raise
             raise DeepSeekProviderError(str(exc)) from exc
         if not isinstance(raw_response, Mapping):
             raise DeepSeekProviderError("deepseek_invalid_structured_response")

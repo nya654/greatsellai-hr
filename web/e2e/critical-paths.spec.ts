@@ -1,9 +1,11 @@
 import { expect, test } from "@playwright/test";
 
 import {
+  accountMenuTrigger,
   e2eResumePdf,
   e2eControl,
   logout,
+  openAccountMenu,
   registerAndAwaitEmailVerification,
   registerAndVerify,
   seedWorkspaceFixture,
@@ -22,12 +24,49 @@ interface PasswordResetDeliveriesResponse {
 test.describe("招聘工作台关键路径", () => {
   test("注册验证后可退出并重新登录", async ({ page }) => {
     const email = await registerAndVerify(page, "registration-login");
-    await page.getByRole("button", { name: "退出登录" }).click();
+    await logout(page);
     await expect(page.getByRole("button", { name: "登录工作台" })).toBeVisible();
     await page.locator("#login-email").fill(email);
     await page.locator("#login-password").fill("E2E-password-2026");
     await page.getByRole("button", { name: "登录工作台" }).click();
-    await expect(page.getByRole("button", { name: "退出登录" })).toBeVisible();
+    await expect(accountMenuTrigger(page)).toBeVisible();
+  });
+
+  test("右上角账户菜单展示试用额度和管理员设置，并支持 Escape 关闭", async ({ page }) => {
+    const email = await registerAndVerify(page, "account-menu");
+    const trigger = accountMenuTrigger(page);
+    const menu = page.getByRole("dialog", { name: "账户菜单" });
+
+    await expect(trigger).toHaveAccessibleName(/AI 剩余 1,000 次/);
+
+    // A direct click must open and pin the menu even though moving the mouse
+    // onto the trigger also opens it through hover.
+    await openAccountMenu(page);
+    await trigger.click();
+    await expect(menu).toBeHidden();
+
+    // Hover opens temporarily; the first click pins it and the second closes it.
+    await page.locator("#main-content").hover();
+    await trigger.hover();
+    await expect(menu).toBeVisible();
+    await menu.getByRole("button", { name: "工作区设置" }).hover();
+    await page.waitForTimeout(240);
+    await expect(menu).toBeVisible();
+    await trigger.click();
+    await expect(menu).toBeVisible();
+    await trigger.click();
+    await expect(menu).toBeHidden();
+
+    await openAccountMenu(page);
+    await expect(menu.getByText("E2E 管理员", { exact: true })).toBeVisible();
+    await expect(menu.getByText(email, { exact: true })).toBeVisible();
+    await expect(menu.getByText(/AI 调用/)).toBeVisible();
+    await expect(menu.getByRole("button", { name: "工作区设置" })).toBeVisible();
+
+    await trigger.focus();
+    await page.keyboard.press("Escape");
+    await expect(menu).toBeHidden();
+    await expect(trigger).toBeFocused();
   });
 
   test("验证链接页只确认成功，原注册页自动进入工作台", async ({ page, browser }) => {
@@ -52,11 +91,11 @@ test.describe("招聘工作台关键路径", () => {
       ).toBeVisible();
       await expect(verificationPage).toHaveURL(/\/verify-email\?token=/);
       await expect(
-        verificationPage.getByRole("button", { name: "退出登录" }),
+        accountMenuTrigger(verificationPage),
       ).toHaveCount(0);
 
       await expect(page).toHaveURL(/\/$/);
-      await expect(page.getByRole("button", { name: "退出登录" })).toBeVisible();
+      await expect(accountMenuTrigger(page)).toBeVisible();
     } finally {
       await verificationContext.close();
     }
@@ -106,7 +145,7 @@ test.describe("招聘工作台关键路径", () => {
 
     await page.locator("#login-password").fill(newPassword);
     await page.getByRole("button", { name: "登录工作台" }).click();
-    await expect(page.getByRole("button", { name: "退出登录" })).toBeVisible();
+    await expect(accountMenuTrigger(page)).toBeVisible();
   });
 
   test("上传页面通过真实 multipart 请求保存 PDF 并进入 AI 队列", async ({ page }) => {

@@ -196,6 +196,23 @@ function formatWholeNumber(value: number): string {
   return wholeNumberFormatter.format(Math.max(0, Math.trunc(value)));
 }
 
+function accountAvatarInitials(displayName: string | null): string | null {
+  const normalizedName = displayName?.trim();
+  if (!normalizedName) return null;
+
+  const hanCharacters = Array.from(normalizedName).filter((character) =>
+    /[\u3400-\u9fff]/.test(character),
+  );
+  if (hanCharacters.length > 0) return hanCharacters.slice(0, 2).join("");
+
+  const words = normalizedName.split(/\s+/).filter(Boolean);
+  const initials = words
+    .slice(0, 2)
+    .map((word) => Array.from(word)[0]?.toUpperCase() ?? "")
+    .join("");
+  return initials || null;
+}
+
 const defaultFilterDraft: FilterDraft = {
   minEmploymentMonths: 0,
   minEmploymentOrInternshipMonths: 0,
@@ -2581,13 +2598,20 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
             setAgentOpen(true);
           }}
           agentTriggerRef={agentTriggerRef}
+          canManageSettings={canManageSettings}
+          onAccountMenuOpen={() => {
+            void refreshAuthSession();
+          }}
           onLogout={() => void logout()}
           onNewUpload={() => navigateToView("upload")}
+          onOpenSettings={() => openSettings(canManageMailbox ? "mailbox" : "data")}
           organizationName={authSession?.organization?.name ?? null}
           platformAdmin={authSession?.is_platform_admin ?? false}
           planName={authSession?.plan?.name ?? null}
           role={authSession?.role ?? null}
           trial={authSession?.trial ?? null}
+          userDisplayName={authSession?.user?.display_name ?? null}
+          userEmail={authSession?.user?.email ?? null}
         />
         <TrialStatusBanner planName={authSession?.plan?.name ?? null} trial={authSession?.trial ?? null} />
         <main className="main-content" id="main-content">
@@ -3423,26 +3447,36 @@ function Topbar({
   onGlobalSearchKeyDown,
   onOpenAgent,
   agentTriggerRef,
+  canManageSettings,
+  onAccountMenuOpen,
   onLogout,
   onNewUpload,
+  onOpenSettings,
   organizationName,
   platformAdmin,
   planName,
   role,
   trial,
+  userDisplayName,
+  userEmail,
 }: {
   globalQuery: string;
   onGlobalQueryChange: (value: string) => void;
   onGlobalSearchKeyDown: (event: ReactKeyboardEvent<HTMLInputElement>) => void;
   onOpenAgent: () => void;
   agentTriggerRef: RefObject<HTMLButtonElement | null>;
+  canManageSettings: boolean;
+  onAccountMenuOpen: () => void;
   onLogout: () => void;
   onNewUpload: () => void;
+  onOpenSettings: () => void;
   organizationName: string | null;
   platformAdmin: boolean;
   planName: string | null;
   role: "admin" | "recruiter" | null;
   trial: TrialAccess | null;
+  userDisplayName: string | null;
+  userEmail: string | null;
 }) {
   const trialDays = trial?.trial_days_remaining;
   const roleLabel = role === "admin" ? "管理员" : role === "recruiter" ? "招聘官" : null;
@@ -3452,6 +3486,10 @@ function Topbar({
       : trial?.plan_status === "expired"
         ? "试用已到期"
         : null;
+  const trialLlmCallRemaining =
+    trial?.plan_status === "trial" && typeof trial.llm_call_remaining === "number"
+      ? Math.max(0, trial.llm_call_remaining)
+      : null;
   return (
     <header className="topbar">
       <div className="topbar-title-wrap">
@@ -3478,33 +3516,283 @@ function Topbar({
       </label>
       <div className="topbar-actions">
         {trialLabel && <span className={`topbar-trial${trial?.plan_status === "expired" ? " is-expired" : ""}`}>{trialLabel}</span>}
-        {platformAdmin && <a className="button button-ghost" href={platformHref()}><Icon name="layers" size={16} />平台管理</a>}
         <button
+          aria-label="招聘助手"
           className="button button-agent"
           onClick={onOpenAgent}
           ref={agentTriggerRef}
           type="button"
         >
           <Icon name="spark" size={16} />
-          招聘助手
+          <span className="topbar-action-label">招聘助手</span>
         </button>
         <button
+          aria-label="上传简历"
           className="button button-ghost"
           onClick={onNewUpload}
           type="button"
         >
           <Icon name="upload" size={16} />
-          上传简历
+          <span className="topbar-action-label">上传简历</span>
         </button>
-        <button
-          className="button button-ghost"
-          onClick={onLogout}
-          type="button"
-        >
-          退出登录
-        </button>
+        <AccountMenu
+          canManageSettings={canManageSettings}
+          onOpen={onAccountMenuOpen}
+          onOpenSettings={onOpenSettings}
+          onLogout={onLogout}
+          organizationName={organizationName}
+          platformAdmin={platformAdmin}
+          planName={planName}
+          role={role}
+          trial={trial}
+          trialLlmCallRemaining={trialLlmCallRemaining}
+          userDisplayName={userDisplayName}
+          userEmail={userEmail}
+        />
       </div>
     </header>
+  );
+}
+
+function AccountMenu({
+  canManageSettings,
+  onOpen,
+  onOpenSettings,
+  onLogout,
+  organizationName,
+  platformAdmin,
+  planName,
+  role,
+  trial,
+  trialLlmCallRemaining,
+  userDisplayName,
+  userEmail,
+}: {
+  canManageSettings: boolean;
+  onOpen: () => void;
+  onOpenSettings: () => void;
+  onLogout: () => void;
+  organizationName: string | null;
+  platformAdmin: boolean;
+  planName: string | null;
+  role: "admin" | "recruiter" | null;
+  trial: TrialAccess | null;
+  trialLlmCallRemaining: number | null;
+  userDisplayName: string | null;
+  userEmail: string | null;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [isPinned, setIsPinned] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const hoverCloseTimerRef = useRef<number | null>(null);
+  const avatarInitials = accountAvatarInitials(userDisplayName);
+  const roleLabel = role === "admin" ? "管理员" : role === "recruiter" ? "招聘官" : null;
+  const displayName = userDisplayName?.trim() || "当前用户";
+  const llmCallLimit =
+    typeof trial?.llm_call_limit === "number" ? Math.max(0, trial.llm_call_limit) : null;
+  const llmCallUsed =
+    typeof trial?.llm_call_used === "number" ? Math.max(0, trial.llm_call_used) : null;
+  const hasLlmCallUsage =
+    llmCallLimit !== null &&
+    llmCallUsed !== null &&
+    trialLlmCallRemaining !== null;
+  const trialDays =
+    trial?.plan_status === "trial" && typeof trial.trial_days_remaining === "number"
+      ? Math.max(0, trial.trial_days_remaining)
+      : null;
+  const triggerLabel = `账户与试用状态：${displayName}${
+    trialLlmCallRemaining !== null
+      ? `，AI 剩余 ${formatWholeNumber(trialLlmCallRemaining)} 次`
+      : ""
+  }`;
+
+  const cancelHoverClose = () => {
+    if (hoverCloseTimerRef.current === null) return;
+    window.clearTimeout(hoverCloseTimerRef.current);
+    hoverCloseTimerRef.current = null;
+  };
+
+  const closeMenu = (restoreFocus = false) => {
+    cancelHoverClose();
+    setIsOpen(false);
+    setIsPinned(false);
+    if (restoreFocus) {
+      window.requestAnimationFrame(() => triggerRef.current?.focus());
+    }
+  };
+
+  const openMenu = () => {
+    cancelHoverClose();
+    if (!isOpen) onOpen();
+    setIsOpen(true);
+  };
+
+  const scheduleHoverClose = () => {
+    if (isPinned) return;
+    cancelHoverClose();
+    hoverCloseTimerRef.current = window.setTimeout(() => {
+      hoverCloseTimerRef.current = null;
+      setIsOpen(false);
+      setIsPinned(false);
+    }, 180);
+  };
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const closeFromOutside = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && rootRef.current?.contains(target)) return;
+      cancelHoverClose();
+      setIsOpen(false);
+      setIsPinned(false);
+    };
+    const closeFromEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      cancelHoverClose();
+      setIsOpen(false);
+      setIsPinned(false);
+      window.requestAnimationFrame(() => triggerRef.current?.focus());
+    };
+
+    document.addEventListener("pointerdown", closeFromOutside);
+    document.addEventListener("keydown", closeFromEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeFromOutside);
+      document.removeEventListener("keydown", closeFromEscape);
+    };
+  }, [isOpen]);
+
+  useEffect(() => () => cancelHoverClose(), []);
+
+  const toggleMenu = () => {
+    if (!isOpen) {
+      onOpen();
+      setIsOpen(true);
+      setIsPinned(true);
+      return;
+    }
+    if (isPinned) {
+      closeMenu(true);
+      return;
+    }
+    setIsPinned(true);
+  };
+
+  return (
+    <div
+      className="account-menu"
+      onBlur={(event) => {
+        const nextFocused = event.relatedTarget;
+        if (nextFocused instanceof Node && rootRef.current?.contains(nextFocused)) return;
+        cancelHoverClose();
+        setIsOpen(false);
+        setIsPinned(false);
+      }}
+      onMouseEnter={openMenu}
+      onMouseLeave={scheduleHoverClose}
+      ref={rootRef}
+    >
+      <button
+        aria-controls="account-menu-popover"
+        aria-expanded={isOpen}
+        aria-haspopup="dialog"
+        aria-label={triggerLabel}
+        className="account-menu-trigger"
+        onClick={toggleMenu}
+        ref={triggerRef}
+        type="button"
+      >
+        {trialLlmCallRemaining !== null && (
+          <span
+            aria-hidden="true"
+            className={`account-menu-quota${trialLlmCallRemaining === 0 ? " is-exhausted" : ""}`}
+          >
+            AI 剩余 {formatWholeNumber(trialLlmCallRemaining)} 次
+          </span>
+        )}
+        <span className={`account-avatar${avatarInitials ? "" : " is-icon"}`} aria-hidden="true">
+          {avatarInitials ?? <Icon name="user" size={17} />}
+        </span>
+        <Icon className="account-menu-chevron" name="chevron-down" size={15} />
+      </button>
+      {isOpen && (
+        <section
+          aria-label="账户菜单"
+          className="account-menu-popover"
+          id="account-menu-popover"
+          role="dialog"
+        >
+          <div className="account-menu-profile">
+            <span className={`account-avatar account-menu-profile-avatar${avatarInitials ? "" : " is-icon"}`} aria-hidden="true">
+              {avatarInitials ?? <Icon name="user" size={18} />}
+            </span>
+            <div>
+              <strong>{displayName}</strong>
+              {userEmail && <p>{userEmail}</p>}
+            </div>
+          </div>
+          {(organizationName || roleLabel || planName) && (
+            <p className="account-menu-context">
+              {[roleLabel, organizationName, planName].filter(Boolean).join(" · ")}
+            </p>
+          )}
+          {trial?.plan_status === "trial" && (
+            <section className="account-menu-allowance" aria-label="试用状态">
+              <span>试用状态</span>
+              {hasLlmCallUsage ? (
+                <strong>
+                  AI 调用已用 {formatWholeNumber(llmCallUsed)} / {formatWholeNumber(llmCallLimit)}，剩余 {formatWholeNumber(trialLlmCallRemaining)} 次
+                </strong>
+              ) : (
+                <strong>AI 调用额度正在同步</strong>
+              )}
+              {trialDays !== null && <small>试用还剩 {trialDays} 天</small>}
+            </section>
+          )}
+          {trial?.plan_status === "expired" && (
+            <section className="account-menu-allowance is-expired" aria-label="试用状态">
+              <span>试用状态</span>
+              <strong>试用已到期</strong>
+            </section>
+          )}
+          <div className="account-menu-actions">
+            {canManageSettings && (
+              <button
+                className="account-menu-action"
+                onClick={() => {
+                  closeMenu();
+                  onOpenSettings();
+                }}
+                type="button"
+              >
+                <Icon name="gear" size={16} />
+                工作区设置
+              </button>
+            )}
+            {platformAdmin && (
+              <a className="account-menu-action" href={platformHref()} onClick={() => closeMenu()}>
+                <Icon name="layers" size={16} />
+                平台管理
+              </a>
+            )}
+            <button
+              className="account-menu-action is-danger"
+              onClick={() => {
+                closeMenu();
+                onLogout();
+              }}
+              type="button"
+            >
+              <Icon name="arrow-right" size={16} />
+              退出登录
+            </button>
+          </div>
+        </section>
+      )}
+    </div>
   );
 }
 

@@ -27,6 +27,15 @@ function uniqueTestEmail(label: string): string {
   return `playwright-${label}-${Date.now()}-${registrationSequence}@example.test`;
 }
 
+export function accountMenuTrigger(page: Page) {
+  return page.getByRole("button", { name: /账户与试用状态/ });
+}
+
+export async function openAccountMenu(page: Page): Promise<void> {
+  await accountMenuTrigger(page).click();
+  await expect(page.getByRole("dialog", { name: "账户菜单" })).toBeVisible();
+}
+
 export async function e2eControl<T>(
   page: Page,
   path: string,
@@ -91,10 +100,8 @@ export async function registerAndVerify(page: Page, label: string): Promise<stri
   await page.goto(verificationPath);
   await expect(page.getByRole("heading", { name: "邮箱已验证" })).toBeVisible();
   await page.goto("/");
-  await expect(page.getByRole("button", { name: "退出登录" })).toBeVisible();
-  await expect(
-    page.getByText("AI 调用已用 0 / 1,000，剩余 1,000 次。"),
-  ).toBeVisible();
+  await expect(accountMenuTrigger(page)).toBeVisible();
+  await expect(accountMenuTrigger(page)).toHaveAccessibleName(/AI 剩余 1,000 次/);
   return email;
 }
 
@@ -103,11 +110,12 @@ export async function login(page: Page, email: string): Promise<void> {
   await page.locator("#login-email").fill(email);
   await page.locator("#login-password").fill("E2E-password-2026");
   await page.getByRole("button", { name: "登录工作台" }).click();
-  await expect(page.getByRole("button", { name: "退出登录" })).toBeVisible();
+  await expect(accountMenuTrigger(page)).toBeVisible();
 }
 
 export async function logout(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "退出登录" }).click();
+  await openAccountMenu(page);
+  await page.getByRole("dialog", { name: "账户菜单" }).getByRole("button", { name: "退出登录" }).click();
   await expect(page.getByRole("button", { name: "登录工作台" })).toBeVisible();
 }
 

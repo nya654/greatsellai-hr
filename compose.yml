@@ -36,10 +36,15 @@ x-app-environment: &app-environment
   RESUME_V3_MAILBOX_SYNC_ATTACHMENT_LIMIT: ${RESUME_V3_MAILBOX_SYNC_ATTACHMENT_LIMIT:-20}
   RESUME_V3_EMAIL_CREDENTIALS_KEY: ${RESUME_V3_EMAIL_CREDENTIALS_KEY:-}
   # Transactional account email is isolated from mailbox-ingestion credentials.
-  # The SMTP password stays in the ignored production environment file.
+  # Tencent SES template IDs are intentionally passed to API and worker through
+  # this shared anchor: API sends verification mail, while worker sends durable
+  # password-reset outbox jobs.
   RESUME_V3_TRANSACTIONAL_EMAIL_PROVIDER: ${RESUME_V3_TRANSACTIONAL_EMAIL_PROVIDER:-disabled}
   RESUME_V3_TRANSACTIONAL_EMAIL_FROM: ${RESUME_V3_TRANSACTIONAL_EMAIL_FROM:-}
   RESUME_V3_PUBLIC_APP_URL: ${RESUME_V3_PUBLIC_APP_URL:-}
+  TENCENT_SES_REGION: ${TENCENT_SES_REGION:-ap-guangzhou}
+  TENCENT_SES_VERIFICATION_TEMPLATE_ID: ${TENCENT_SES_VERIFICATION_TEMPLATE_ID:-}
+  TENCENT_SES_PASSWORD_RESET_TEMPLATE_ID: ${TENCENT_SES_PASSWORD_RESET_TEMPLATE_ID:-}
   RESUME_V3_FEISHU_SMTP_HOST: ${RESUME_V3_FEISHU_SMTP_HOST:-smtp.feishu.cn}
   RESUME_V3_FEISHU_SMTP_PORT: ${RESUME_V3_FEISHU_SMTP_PORT:-465}
   RESUME_V3_FEISHU_SMTP_TLS_MODE: ${RESUME_V3_FEISHU_SMTP_TLS_MODE:-ssl}

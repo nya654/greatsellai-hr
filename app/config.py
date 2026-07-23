@@ -128,7 +128,9 @@ class AppSettings:
     tencent_ses_region: str = "ap-guangzhou"
     tencent_ses_verification_template_id: int | None = None
     # Password reset mail uses its own action and therefore its own approved
-    # Tencent SES template. SMTP providers render the reset message directly.
+    # Tencent SES template. Both Tencent templates are required together so a
+    # deployment cannot enable registration while silently leaving recovery
+    # mail unavailable. SMTP providers render the reset message directly.
     tencent_ses_password_reset_template_id: int | None = None
     # Temporary transactional sender backed by a dedicated Feishu public
     # mailbox.  Its app-specific SMTP password must remain environment-only.
@@ -879,8 +881,16 @@ class AppSettings:
         if self.transactional_email_provider == "tencent_ses":
             if not self.tencent_secret_id or not self.tencent_secret_key:
                 raise ValueError("Tencent SES requires TENCENT_SECRET_ID and TENCENT_SECRET_KEY")
+            if self.tencent_ses_region not in {"ap-guangzhou", "ap-hongkong"}:
+                raise ValueError(
+                    "TENCENT_SES_REGION must be ap-guangzhou or ap-hongkong for Tencent SES"
+                )
             if not self.tencent_ses_verification_template_id:
                 raise ValueError("TENCENT_SES_VERIFICATION_TEMPLATE_ID is required for Tencent SES")
+            if not self.tencent_ses_password_reset_template_id:
+                raise ValueError(
+                    "TENCENT_SES_PASSWORD_RESET_TEMPLATE_ID is required for Tencent SES"
+                )
         if self.transactional_email_provider == "feishu_smtp":
             if not self.feishu_smtp_host:
                 raise ValueError("RESUME_V3_FEISHU_SMTP_HOST is required for Feishu SMTP")

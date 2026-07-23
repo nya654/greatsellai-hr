@@ -40,6 +40,17 @@ Compose 将 Caddy 固定在专用 `proxy` 网络的 `172.30.0.2`，API 同时连
 
 `https://greatsellai.net/` 属于未来官网，HR 部署不得声明、接管或要求该根域指向 HR 服务器。如需保留 `https://greatsellai.net/greatsellhr/` 兼容入口，应由官网自身的边缘代理将该路径转发到 HR 主站，并继续由官网处理根路径和静态资源。
 
+## 腾讯云 SES 事务邮件切换
+
+注册验证和找回密码使用腾讯云 SES API，不使用简历收件邮箱的 IMAP 凭据。切换前先在腾讯云完成发件域/地址验证并创建两份已审核的事务模板：
+
+- 验证邮件模板变量：`verify_url`、`expires_minutes`；
+- 重置密码模板变量：`reset_url`、`expires_minutes`。
+
+在服务器已有的、被 Git 忽略的 `.env.production` 中设置 `RESUME_V3_TRANSACTIONAL_EMAIL_PROVIDER=tencent_ses`、已验证的 `RESUME_V3_TRANSACTIONAL_EMAIL_FROM`、规范入口 `RESUME_V3_PUBLIC_APP_URL=https://hr.greatsellai.net`、`TENCENT_SECRET_ID`、`TENCENT_SECRET_KEY`、`TENCENT_SES_REGION=ap-guangzhou`、两个模板 ID，以及独立的 `RESUME_V3_EMAIL_CREDENTIALS_KEY`。不要把这些值提交到仓库、写入前端或放进 PR。
+
+SES 配置由 Compose 的共享应用环境同时交给 API、迁移任务和 worker。发布后，使用一个非生产测试账号分别完成“注册并收取验证邮件”“重发验证邮件”“发起找回密码并收取邮件”三项烟雾验证；失败时保留用户可重试状态，不能通过关闭邮箱验证来绕过问题。
+
 ## AI 提取 worker
 
 `compose.yml` 的 `worker` 服务负责执行已经持久化的 AI 简历提取任务；上传 API 本身不等待模型调用。共享运行环境会同时传给 API 和 worker，因此两个进程必须使用同一组模型凭据。

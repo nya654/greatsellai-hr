@@ -107,9 +107,9 @@ test.describe("招聘工作台关键路径", () => {
     await expect(page.getByRole("button", { name: "重新加载预览" })).toBeVisible();
   });
 
-  test("筛选、批量评分和 JD 三栏均走真实工作区 API", async ({ page }) => {
+  test("评分不继承候选人，招聘详情按 JD 批量评估", async ({ page }) => {
     await registerAndVerify(page, "screen-score-match");
-    await seedWorkspaceFixture(page);
+    const fixture = await seedWorkspaceFixture(page);
     await page.reload();
 
     await page.getByRole("button", { name: "筛选工作台", exact: true }).click();
@@ -141,22 +141,59 @@ test.describe("招聘工作台关键路径", () => {
     await expect(page.getByText("待确认项", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "关闭简历详情" }).click();
 
-    await page.getByRole("button", { name: "评分规则", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "评分规则", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "评分模板", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "通用评分模板", exact: true })).toBeVisible();
+    await expect(page.locator("#main-content").getByText(/当前简历：|尚未选择简历/)).toHaveCount(0);
+    await expect(page.locator("#main-content").getByRole("button", { name: /生成当前候选人评分/ })).toHaveCount(0);
     await page.locator("#template-name").fill("E2E 批量评分规则");
-    await page.getByRole("button", { name: "创建评分规则" }).click();
-    await expect(page.getByText("评分规则“E2E 批量评分规则”已创建。")).toBeVisible();
-    await page.getByRole("button", { name: "一键生成全部评分" }).click();
+    await page.getByRole("button", { name: "创建评分模板" }).click();
+    await expect(page.getByText("评分模板“E2E 批量评分规则”已创建。")).toBeVisible();
+    const genericScoreRequest = page.waitForRequest((request) => {
+      const { pathname } = new URL(request.url());
+      return request.method() === "POST" && /^\/v1\/score-templates\/[^/]+\/score-all$/.test(pathname);
+    });
+    await page.getByRole("button", { name: "生成全部简历的通用评分" }).click();
+    await genericScoreRequest;
     await expect(page.getByRole("heading", { name: "批量评分任务" })).toBeVisible();
 
-    await page.getByRole("button", { name: "岗位匹配", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "候选人匹配工作区" })).toBeVisible();
+    await page.getByRole("button", { name: "招聘详情", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "招聘详情", exact: true })).toBeVisible();
+    await expect(page.locator("#main-content").getByText("当前候选人", { exact: true })).toHaveCount(0);
+    await expect(page.locator("#main-content").getByRole("button", { name: "运行岗位匹配" })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "候选人评估结果" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "推荐候选人" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "待核实候选人" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "明确不匹配" })).toBeVisible();
     await expect(page.getByText("E2E 推荐候选人", { exact: true }).first()).toBeVisible();
     await expect(page.getByText("E2E 待核实候选人", { exact: true }).first()).toBeVisible();
     await expect(page.getByText("E2E 不匹配候选人", { exact: true }).first()).toBeVisible();
+
+    const forbiddenCandidateRequests: string[] = [];
+    const observeCandidateRequests = (request: import("@playwright/test").Request) => {
+      const { pathname } = new URL(request.url());
+      if (
+        request.method() === "POST" &&
+        /^\/v1\/resumes\/[^/]+\/(scores|job-matches)$/.test(pathname)
+      ) {
+        forbiddenCandidateRequests.push(pathname);
+      }
+    };
+    page.on("request", observeCandidateRequests);
+    try {
+      const jobBatchResponse = page.waitForResponse((response) => {
+        const { pathname } = new URL(response.url());
+        return response.request().method() === "POST" &&
+          pathname === `/v1/job-versions/${fixture.job_version_id}/match-all`;
+      });
+      await page.getByRole("button", { name: "开始岗位评分（全部可匹配简历）" }).click();
+      const response = await jobBatchResponse;
+      expect(response.ok()).toBeTruthy();
+      const batch = await response.json() as { job_version_id: string };
+      expect(batch.job_version_id).toBe(fixture.job_version_id);
+      expect(forbiddenCandidateRequests).toEqual([]);
+    } finally {
+      page.off("request", observeCandidateRequests);
+    }
   });
 
   test("简历详情只保留直接删除当前简历的入口", async ({ page }) => {

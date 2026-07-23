@@ -483,8 +483,8 @@ const navigation: Array<{ view: View; label: string; icon: IconName }> = [
   { view: "filter", label: "筛选工作台", icon: "filter" },
   { view: "upload", label: "上传简历", icon: "upload" },
   { view: "inbox", label: "邮箱入库", icon: "inbox" },
-  { view: "score", label: "评分规则", icon: "layers" },
-  { view: "match", label: "岗位匹配", icon: "match" },
+  { view: "score", label: "评分模板", icon: "layers" },
+  { view: "match", label: "招聘详情", icon: "match" },
 ];
 
 const mailboxRetentionPolicies: Array<{
@@ -763,7 +763,7 @@ function humanizeError(error: unknown): string {
       candidate_data_export_original_unavailable: "部分原始文件不可用，无法创建包含原件的导出。",
       candidate_data_export_original_bytes_exceeded: "原始文件总量超过本次导出上限，请改为不含原件导出。",
       ...mailboxImportErrorMessages,
-      score_template_not_found: "评分规则不存在，请重新选择。",
+      score_template_not_found: "评分模板不存在，请重新选择。",
       resume_score_batch_not_found: "评分任务不存在或已不可访问。",
       job_version_not_found: "岗位版本不存在，请重新创建。",
       jd_generation_response_truncated:
@@ -1939,17 +1939,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     }
   }, [notify, pdfDownloadLoading, review?.original_filename, selectedResumeId]);
 
-  const scoreLibraryResume = useCallback((item: ResumeLibraryItem) => {
-    summaryRequestRef.current += 1;
-    setSelectedResume({
-      resumeId: item.resume_id,
-      candidateId: item.candidate_id,
-      candidateName: item.display_name?.trim() || "未命名候选人",
-    });
-    setDrawerOpen(false);
-    setView("score");
-  }, []);
-
   const applyFilter = async () => {
     await runSearch(filterDraftRef.current);
   };
@@ -2343,7 +2332,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
               refreshToken={libraryRefreshToken}
               selectedResumeId={selectedResumeId}
               onOpenResume={openLibraryResume}
-              onScoreResume={scoreLibraryResume}
               onUpload={() => setView("upload")}
             />
           )}
@@ -2384,7 +2372,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
           )}
           {view === "score" && (
             <ScorePage
-              selected={selectedResume}
               notify={notify}
               onScoreCreated={handleScoreCreated}
               onTemplateCreated={registerScoreTemplate}
@@ -2393,7 +2380,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
           {view === "match" && (
             <MatchPage
               canGenerateAiJd={canGenerateAiJd}
-              selected={selectedResume}
               notify={notify}
               onOpenMatchedResume={openMatchedResume}
             />
@@ -4679,7 +4665,7 @@ function ResultsPane({
   );
   const scoreOrderLabel = selectedScoreTemplate
     ? `按“${selectedScoreTemplate.name} · v${selectedScoreTemplate.version}”综合评分排序`
-    : "未选择统一评分规则，按最近更新排序";
+    : "未选择统一评分模板，按最近更新排序";
 
   return (
     <section className="results-pane" aria-label="候选人结果">
@@ -4937,13 +4923,11 @@ function ResumeLibraryPage({
   selectedResumeId,
   refreshToken,
   onOpenResume,
-  onScoreResume,
   onUpload,
 }: {
   selectedResumeId: string | null;
   refreshToken: number;
   onOpenResume: (item: ResumeLibraryItem) => void;
-  onScoreResume: (item: ResumeLibraryItem) => void;
   onUpload: () => void;
 }) {
   const [library, setLibrary] = useState<ResumeLibraryResponse | null>(null);
@@ -5191,24 +5175,16 @@ function ResumeLibraryPage({
                         ) : item.score_total !== null ? (
                           <div
                             className="library-score"
-                            title={`${item.score_template_name ?? "评分规则"} · ${resumeLibraryScoreState(item.score_status)}`}
+                            title={`${item.score_template_name ?? "评分模板"} · ${resumeLibraryScoreState(item.score_status)}`}
                           >
                             <strong>{item.score_total.toFixed(1)}</strong>
                             <span>/ 100</span>
-                            <small>{item.score_template_name ?? "评分规则"} · {resumeLibraryScoreState(item.score_status)}</small>
+                            <small>{item.score_template_name ?? "评分模板"} · {resumeLibraryScoreState(item.score_status)}</small>
                           </div>
                         ) : item.is_active ? (
-                          <button
-                            className="text-button library-score-action"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              onScoreResume(item);
-                            }}
-                            onKeyDown={(event) => event.stopPropagation()}
-                            type="button"
-                          >
-                            去评分 <Icon name="arrow-right" size={14} />
-                          </button>
+                          <span className="library-empty-copy">
+                            尚无通用评分
+                          </span>
                         ) : (
                           <span className="library-empty-copy">
                             完成提取后可评分
@@ -6067,7 +6043,7 @@ function CandidateScoreDetails({
         <div className="empty-state-inner">
           <span className="empty-glyph"><Icon name="layers" size={23} /></span>
           <h2>尚未生成评分</h2>
-          <p>请先在评分规则中选择模板并生成评分。生成后，这里会展示每项得分、理由和简历依据。</p>
+          <p>请先在评分模板中批量生成通用评分。生成后，这里会展示每项得分、理由和简历依据。</p>
         </div>
       </div>
     );
@@ -6079,7 +6055,7 @@ function CandidateScoreDetails({
         <div>
           <h3>评分详情</h3>
           <p>
-            {score.template_name ?? "评分规则"} · 模板 v{score.template_version} · {formatLibraryDate(score.created_at)}
+            {score.template_name ?? "评分模板"} · 模板 v{score.template_version} · {formatLibraryDate(score.created_at)}
           </p>
         </div>
         <span className={`score-record-status is-${score.status}`}>
@@ -8398,12 +8374,10 @@ function UploadPage({
 }
 
 function ScorePage({
-  selected,
   notify,
   onScoreCreated,
   onTemplateCreated,
 }: {
-  selected: SelectedResume | null;
   notify: (kind: ToastKind, message: string) => void;
   onScoreCreated: () => void;
   onTemplateCreated: (template: ScoreTemplate) => void;
@@ -8417,11 +8391,7 @@ function ScorePage({
   );
   const [loadingTemplates, setLoadingTemplates] = useState(false);
   const [savingTemplate, setSavingTemplate] = useState(false);
-  const [scoring, setScoring] = useState(false);
   const [startingScoreBatch, setStartingScoreBatch] = useState(false);
-  const [score, setScore] = useState<ResumeScore | null>(null);
-  const [scoreHistory, setScoreHistory] = useState<ResumeScore[]>([]);
-  const [loadingScoreHistory, setLoadingScoreHistory] = useState(false);
   const [scoreBatch, setScoreBatch] = useState<ResumeScoreBatch | null>(null);
   const [scoreBatchItems, setScoreBatchItems] = useState<ResumeScoreBatchItem[]>([]);
   const [scoreBatchRefreshError, setScoreBatchRefreshError] = useState<string | null>(null);
@@ -8443,32 +8413,6 @@ function ScorePage({
     void loadTemplates();
   }, [loadTemplates]);
 
-  const loadScoreHistory = useCallback(async () => {
-    if (!selected) {
-      setScore(null);
-      setScoreHistory([]);
-      return;
-    }
-    setLoadingScoreHistory(true);
-    try {
-      const history = await api.listScores(selected.resumeId);
-      setScoreHistory(history);
-      setScore((current) =>
-        current && current.resume_id === selected.resumeId
-          ? current
-          : (history[0] ?? null),
-      );
-    } catch (error) {
-      notify("error", humanizeError(error));
-    } finally {
-      setLoadingScoreHistory(false);
-    }
-  }, [notify, selected?.resumeId]);
-
-  useEffect(() => {
-    void loadScoreHistory();
-  }, [loadScoreHistory]);
-
   const totalWeight = dimensions.reduce(
     (total, item) => total + Number(item.weight || 0),
     0,
@@ -8482,7 +8426,7 @@ function ScorePage({
     );
   const saveTemplate = async () => {
     if (!templateName.trim()) {
-      notify("error", "请填写评分规则名称。");
+      notify("error", "请填写评分模板名称。");
       return;
     }
     if (totalWeight !== 100) {
@@ -8509,43 +8453,16 @@ function ScorePage({
       setTemplates((current) => [created, ...current]);
       setTemplateId(created.template_id);
       onTemplateCreated(created);
-      notify("success", `评分规则“${created.name}”已创建。`);
+      notify("success", `评分模板“${created.name}”已创建。`);
     } catch (error) {
       notify("error", humanizeError(error));
     } finally {
       setSavingTemplate(false);
     }
   };
-  const runScore = async () => {
-    if (!selected) {
-      notify("error", "请先在简历库打开一份简历。");
-      return;
-    }
-    if (!templateId) {
-      notify("error", "请先选择或创建一套评分规则。");
-      return;
-    }
-    setScoring(true);
-    try {
-      const response = await api.createScore(selected.resumeId, {
-        template_id: templateId,
-      });
-      setScore(response);
-      setScoreHistory((current) => [
-        response,
-        ...current.filter((item) => item.score_id !== response.score_id),
-      ]);
-      onScoreCreated();
-      notify("success", "AI 评分已完成。");
-    } catch (error) {
-      notify("error", humanizeError(error));
-    } finally {
-      setScoring(false);
-    }
-  };
   const runAllScores = async () => {
     if (!templateId) {
-      notify("error", "请先选择或创建一套评分规则。");
+      notify("error", "请先选择或创建一套评分模板。");
       return;
     }
     setStartingScoreBatch(true);
@@ -8584,7 +8501,6 @@ function ScorePage({
         setScoreBatchRefreshError(null);
         if (isTerminal && !wasTerminal) {
           onScoreCreated();
-          void loadScoreHistory();
         }
       } catch {
         if (!cancelled) {
@@ -8603,31 +8519,7 @@ function ScorePage({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [loadScoreHistory, onScoreCreated, scoreBatch?.batch_id, scoreBatch?.status]);
-  const overrideDimension = async (
-    scoreId: string,
-    dimensionKey: string,
-    rawScore: number,
-    reason: string,
-  ) => {
-    try {
-      const updated = await api.overrideScoreDimension(scoreId, dimensionKey, {
-        raw_score: rawScore,
-        reason,
-      });
-      setScore(updated);
-      setScoreHistory((current) =>
-        current.map((item) =>
-          item.score_id === updated.score_id ? updated : item,
-        ),
-      );
-      onScoreCreated();
-      notify("success", "已保留人工调整和调整原因。");
-    } catch (error) {
-      notify("error", humanizeError(error));
-      throw error;
-    }
-  };
+  }, [onScoreCreated, scoreBatch?.batch_id, scoreBatch?.status]);
   const scoreBatchIsRunning =
     scoreBatch?.status === "queued" || scoreBatch?.status === "running";
 
@@ -8635,24 +8527,17 @@ function ScorePage({
     <div className="page-frame">
       <header className="page-heading">
         <div>
-          <h1>评分规则</h1>
-          <p>你设定维度和权重；AI 会基于这份简历给出可追溯的评分结果。</p>
+          <h1>通用评分模板</h1>
+          <p>在这里维护维度和权重；生成通用评分时会面向简历库批量执行，不会暗中选择某位候选人。</p>
         </div>
-        {selected ? (
-          <span className="status-pill">
-            当前简历：{selected.candidateName}
-          </span>
-        ) : (
-          <span className="status-pill">尚未选择简历</span>
-        )}
       </header>
       <div className="page-layout">
         <div>
           <section className="panel">
             <div className="panel-heading">
               <div>
-                <h2>新建评分规则</h2>
-                <p>权重总和必须为 100；建议将最影响岗位成功的条件权重拉高。</p>
+                <h2>新建评分模板</h2>
+                <p>权重总和必须为 100。模板用于简历库的通用评分；按 JD 的岗位评估请在招聘详情中发起。</p>
               </div>
               <button
                 className="button"
@@ -8661,7 +8546,7 @@ function ScorePage({
                 type="button"
               >
                 <Icon name="refresh" size={15} />
-                刷新规则
+                刷新模板
               </button>
             </div>
             <div className="form-grid">
@@ -8818,7 +8703,7 @@ function ScorePage({
                 ) : (
                   <>
                     <Icon name="layers" size={16} />
-                    创建评分规则
+                    创建评分模板
                   </>
                 )}
               </button>
@@ -8831,13 +8716,13 @@ function ScorePage({
           <section className="panel">
             <div className="panel-heading">
               <div>
-                <h2>运行 AI 评分</h2>
-                <p>每次运行都会保留结果；更新规则后可重新评分。</p>
+                <h2>批量生成通用评分</h2>
+                <p>按所选模板对当前工作区所有符合条件的启用简历评分。岗位 JD 匹配度请在招聘详情中运行。</p>
               </div>
             </div>
             <div className="field-stack">
               <label className="field-label" htmlFor="score-template">
-                选择评分规则
+                选择评分模板
               </label>
               <div className="select-wrap">
                 <select
@@ -8846,7 +8731,7 @@ function ScorePage({
                   onChange={(event) => setTemplateId(event.target.value)}
                   value={templateId}
                 >
-                  <option value="">选择评分规则</option>
+                  <option value="">选择评分模板</option>
                   {templates.map((template) => (
                     <option
                       key={template.template_id}
@@ -8861,24 +8746,6 @@ function ScorePage({
             </div>
             <div className="review-actions">
               <button
-                className="button"
-                disabled={!selected || !templateId || scoring || scoreBatchIsRunning}
-                onClick={() => void runScore()}
-                type="button"
-              >
-                {scoring ? (
-                  <>
-                    <i className="spinner" />
-                    AI 正在评分…
-                  </>
-                ) : (
-                  <>
-                    <Icon name="spark" size={16} />
-                    生成当前候选人评分
-                  </>
-                )}
-              </button>
-              <button
                 className="button button-primary"
                 disabled={!templateId || startingScoreBatch || scoreBatchIsRunning}
                 onClick={() => void runAllScores()}
@@ -8892,7 +8759,7 @@ function ScorePage({
                 ) : (
                   <>
                     <Icon name="layers" size={16} />
-                    一键生成全部评分
+                    生成全部简历的通用评分
                   </>
                 )}
               </button>
@@ -8905,18 +8772,12 @@ function ScorePage({
               refreshError={scoreBatchRefreshError}
             />
           )}
-          {score && (
-            <ScoreResult
-              onOverride={overrideDimension}
-              score={score}
-            />
-          )}
         </div>
         <aside className="panel">
           <div className="panel-heading">
             <div>
-              <h2>现有规则</h2>
-              <p>创建后可以作为任意候选人的评分基准。</p>
+              <h2>现有模板</h2>
+              <p>选择一套模板后，可对简历库批量生成通用评分。</p>
             </div>
           </div>
           <div className="fact-list">
@@ -8940,41 +8801,9 @@ function ScorePage({
                 </button>
               ))
             ) : (
-              <p className="candidate-meta">还没有可用评分规则。</p>
+              <p className="candidate-meta">还没有可用评分模板。</p>
             )}
           </div>
-          {selected && (
-            <section className="score-history-panel">
-              <div className="panel-heading">
-                <div>
-                  <h2>评分历史</h2>
-                  <p>每次 AI 评分和人工调整都会保留，旧结论不会被覆盖。</p>
-                </div>
-                <button
-                  className="button button-ghost"
-                  disabled={loadingScoreHistory}
-                  onClick={() => void loadScoreHistory()}
-                  type="button"
-                >
-                  {loadingScoreHistory ? <i className="spinner" /> : <Icon name="refresh" size={15} />}
-                  刷新
-                </button>
-              </div>
-              <div className="fact-list">
-                {scoreHistory.length ? scoreHistory.map((item) => (
-                  <button
-                    className={`fact-row${score?.score_id === item.score_id ? " is-selected" : ""}`}
-                    key={item.score_id}
-                    onClick={() => setScore(item)}
-                    type="button"
-                  >
-                    <strong>{item.total_score.toFixed(1)} / 100 · {item.status === "overridden" ? "含人工调整" : "AI 评分"}</strong>
-                    <span>模板 v{item.template_version} · 事实 v{item.facts_version} · {formatLibraryDate(item.created_at)}</span>
-                  </button>
-                )) : <p className="candidate-meta">当前简历还没有评分记录。</p>}
-              </div>
-            </section>
-          )}
         </aside>
       </div>
     </div>
@@ -9277,12 +9106,10 @@ function ScoreBatchDetails({
 
 function MatchPage({
   canGenerateAiJd,
-  selected,
   notify,
   onOpenMatchedResume,
 }: {
   canGenerateAiJd: boolean;
-  selected: SelectedResume | null;
   notify: (kind: ToastKind, message: string) => void;
   onOpenMatchedResume: (match: JobMatch) => void;
 }) {
@@ -9299,7 +9126,6 @@ function MatchPage({
   const [versioningJobId, setVersioningJobId] = useState<string | null>(null);
   const [confirmedJobVersions, setConfirmedJobVersions] = useState<JobVersion[]>([]);
   const [loading, setLoading] = useState(false);
-  const [match, setMatch] = useState<JobMatch | null>(null);
   const [matchBatch, setMatchBatch] = useState<JobMatchBatch | null>(null);
   const [batchItems, setBatchItems] = useState<JobMatchBatchItem[]>([]);
   const [jobMatches, setJobMatches] = useState<JobMatch[]>([]);
@@ -9317,9 +9143,7 @@ function MatchPage({
     setJobWorkspaceMode("view");
     setJobVersion(next);
     setVersioningJobId(null);
-    setMatch(null);
     setMatchBatch(null);
-    setBatchItems([]);
     setBatchItems([]);
   };
   const beginNewJob = () => {
@@ -9327,7 +9151,6 @@ function MatchPage({
     setJobWorkspaceMode("create");
     setJobVersion(null);
     setVersioningJobId(null);
-    setMatch(null);
     setMatchBatch(null);
     setBatchItems([]);
     setJobMatches([]);
@@ -9342,7 +9165,6 @@ function MatchPage({
     setEditedGeneratedJd(false);
     setGeneratedRequirements(null);
     setGenerationError(null);
-    setMatch(null);
     setMatchBatch(null);
     setBatchItems([]);
   };
@@ -9514,36 +9336,6 @@ function MatchPage({
       setLoading(false);
     }
   };
-  const runMatch = async () => {
-    if (!selected) {
-      notify("error", "请先在筛选工作台打开一份已启用简历。");
-      return;
-    }
-    if (!jobVersion || jobVersion.status !== "confirmed") {
-      notify("error", "请先启用岗位，再运行匹配。");
-      return;
-    }
-    if (!jobVersion.requirements.length) {
-      notify("error", "原版 JD 未生成匹配条件，不能运行 AI 匹配。");
-      return;
-    }
-    setLoading(true);
-    try {
-      const response = await api.runJobMatch(selected.resumeId, {
-        job_version_id: jobVersion.job_version_id,
-      });
-      setMatch(response);
-      setJobMatches((current) => [
-        response,
-        ...current.filter((item) => item.resume_id !== response.resume_id),
-      ]);
-      notify("success", "岗位匹配已完成，结果已绑定岗位与简历的事实版本。");
-    } catch (error) {
-      notify("error", humanizeError(error));
-    } finally {
-      setLoading(false);
-    }
-  };
   const runAllMatches = async () => {
     if (!jobVersion || jobVersion.status !== "confirmed") {
       notify("error", "请先启用岗位，再批量匹配简历。");
@@ -9562,7 +9354,7 @@ function MatchPage({
       setBatchItems([]);
       notify(
         "success",
-        `已将 ${response.total_count} 份简历加入岗位匹配队列。`,
+        `已将 ${response.total_count} 份简历加入岗位评估队列。`,
       );
     } catch (error) {
       notify("error", humanizeError(error));
@@ -9654,18 +9446,13 @@ function MatchPage({
     <div className="page-frame">
       <header className="page-heading">
         <div>
-          <h1>岗位 JD 匹配</h1>
+          <h1>招聘详情</h1>
           <p>
             {canGenerateAiJd
-              ? "描述岗位需求，由 AI 生成可编辑 JD 和匹配条件；启用后即可对已核验的简历事实逐项比对。"
+              ? "管理岗位 JD、匹配条件与候选人评估；启用后可直接对该岗位的全部可匹配简历运行评估。"
               : "可直接发布原版 JD；AI 生成 JD 与候选人匹配需要开通相应套餐。"}
           </p>
         </div>
-        {selected ? (
-          <span className="status-pill">候选人：{selected.candidateName}</span>
-        ) : (
-          <span className="status-pill">尚未选择候选人</span>
-        )}
       </header>
       <div className="page-layout">
         <div>
@@ -9977,7 +9764,6 @@ function MatchPage({
               </div>
             </section>
           )}
-          {match && <MatchResult match={match} />}
           {matchBatch && (
             <MatchBatchDetails batch={matchBatch} items={batchItems} />
           )}
@@ -9992,11 +9778,11 @@ function MatchPage({
         <aside className="panel">
           <div className="panel-heading">
             <div>
-              <h2>匹配操作</h2>
+              <h2>岗位评估</h2>
               <p>
                 {jobIsOriginal
                   ? "原版发布未生成匹配条件，因此不会调用 AI 匹配。"
-                  : "启用岗位后，可对当前候选人或全部简历运行 AI 匹配。"}
+                  : "根据当前 JD，对全部可匹配简历生成匹配度、可信度与待核实项。"}
               </p>
             </div>
           </div>
@@ -10008,10 +9794,6 @@ function MatchPage({
                   ? `${jobVersion.title} · v${jobVersion.version} · ${jobIsOriginal ? "原版已发布" : "已启用"}`
                   : "尚未启用"}
               </span>
-            </div>
-            <div className="fact-row">
-              <strong>当前候选人</strong>
-              <span>{selected?.candidateName ?? "请先从筛选结果打开"}</span>
             </div>
           </div>
           {matchBatch && (
@@ -10025,31 +9807,20 @@ function MatchPage({
           )}
           <div className="review-actions">
             <button
-              className="button"
+              className="button button-primary"
               disabled={!jobCanMatch || loading}
               onClick={() => void runAllMatches()}
               type="button"
             >
-              <Icon name="spark" size={16} />
-              批量匹配全部简历
-            </button>
-            <button
-              className="button button-primary"
-              disabled={
-                !selected || !jobCanMatch || loading
-              }
-              onClick={() => void runMatch()}
-              type="button"
-            >
-              {loading && jobCanMatch ? (
+              {loading ? (
                 <>
                   <i className="spinner" />
-                  正在匹配…
+                  正在创建评估任务…
                 </>
               ) : (
                 <>
                   <Icon name="match" size={16} />
-                  运行岗位匹配
+                  开始岗位评分（全部可匹配简历）
                 </>
               )}
             </button>
@@ -10222,7 +9993,7 @@ function MatchBatchDetails({
     <section className="panel match-batch-details">
       <div className="panel-heading">
         <div>
-          <h2>批量匹配任务</h2>
+          <h2>岗位评估任务</h2>
           <p>
             {batch.completed_count + batch.failed_count} / {batch.total_count} 已结束
             {inProgress.length ? `，仍有 ${inProgress.length} 份在队列中` : ""}。
@@ -10333,7 +10104,7 @@ function MatchLeaderboard({
     <section className="panel match-leaderboard">
       <div className="panel-heading">
         <div>
-          <h2>候选人匹配工作区</h2>
+          <h2>候选人评估结果</h2>
           <p>JD 匹配度仅按已确认信息计算，匹配可信度表示可验证条件的覆盖程度。</p>
         </div>
         <span className="status-pill">{ranked.length} 份已完成</span>
@@ -10436,8 +10207,8 @@ function MatchLeaderboard({
         <div className="empty-state match-empty-state">
           <div className="empty-state-inner">
             <span className="empty-glyph"><Icon name="match" size={23} /></span>
-            <h2>尚未生成匹配结果</h2>
-            <p>确认 JD 后，点击“批量匹配全部简历”即可在此查看排序结果。</p>
+            <h2>尚未生成岗位评估</h2>
+            <p>确认 JD 后，点击“开始岗位评分（全部可匹配简历）”即可在此查看排序结果。</p>
           </div>
         </div>
       )}

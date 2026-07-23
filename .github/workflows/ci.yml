@@ -17,7 +17,7 @@ concurrency:
 jobs:
   backend:
     name: Backend tests
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, greatsell-ci]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -41,7 +41,7 @@ jobs:
 
   postgres-mailbox-race:
     name: PostgreSQL mailbox race
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, greatsell-ci]
     timeout-minutes: 15
     services:
       postgres:
@@ -75,7 +75,7 @@ jobs:
 
   web:
     name: Web build
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, greatsell-ci]
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
@@ -108,7 +108,7 @@ jobs:
 
   production-images:
     name: Production image builds
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, greatsell-ci]
     timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4

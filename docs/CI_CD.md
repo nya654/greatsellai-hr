@@ -1,5 +1,17 @@
 # GitHub Actions CI/CD
 
+## 自托管 Runner
+
+所有工作流都通过标签 `self-hosted`、`Linux`、`X64` 和 `greatsell-ci` 路由到仓库的
+受信任 Linux 自托管 Runner，因此不会消耗 GitHub 托管 Actions 分钟。该 Runner 必须保持
+在线，并具备 Docker、Docker Compose、Python 3.12、Node 22、Chromium 运行依赖和对 GitHub
+Actions 的网络访问；`postgres-mailbox-race`、生产镜像构建和运行时回归会直接使用其 Docker
+daemon。
+
+Runner 离线时，工作流会排队而非自动回退到 GitHub 托管 Runner。生产工作流仍仅从受保护的
+`main` 或 `prod-*` 进入 `production` Environment，并只在该 Environment 中读取部署密钥与
+变量；不要把这些值加入 Runner 配置、仓库变量或源码。
+
 本仓库的自动化分为两层：每个 PR 的持续集成（CI），以及在 `main` CI 成功后的自动
 生产发布（CD）。合并 `main` 本身不会立即连接生产服务器；只有该次 `main` 提交的 CI
 四项检查全部成功后，才会先对服务器既有环境执行无副作用 Compose 预检，通过后自动创建

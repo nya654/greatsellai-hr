@@ -22,7 +22,7 @@ concurrency:
 jobs:
   deploy:
     name: Deploy production tag
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, greatsell-ci]
     timeout-minutes: 45
     environment:
       name: production

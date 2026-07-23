@@ -1,7 +1,7 @@
 """Add confirmed AI talent-search profile records.
 
-Revision ID: 20260723_0033
-Revises: 20260722_0032
+Revision ID: 20260723_0034
+Revises: 20260723_0033
 Create Date: 2026-07-23 18:00:00
 
 Talent search profiles are tenant-scoped recruiter work.  Their private
@@ -16,8 +16,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "20260723_0033"
-down_revision: Union[str, Sequence[str], None] = "20260722_0032"
+revision: str = "20260723_0034"
+down_revision: Union[str, Sequence[str], None] = "20260723_0033"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

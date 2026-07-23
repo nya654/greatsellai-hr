@@ -1729,12 +1729,17 @@ class CandidateSearchRequest(ApiModel):
     fresh_graduate_end_month: Month | None = None
     min_employment_months: int | None = Field(default=None, ge=0, le=720)
     min_employment_or_internship_months: int | None = Field(default=None, ge=0, le=720)
+    # Unlike the older compound experience filter, these top-level types are
+    # a recruiter-selected checklist. Every selected type must exist somewhere
+    # in the candidate's history, so “正式工作 + 实习” is genuinely both.
+    experience_types_all_of: list[ExperienceType] = Field(default_factory=list, max_length=12)
     education_any_of: list[EducationFilter] = Field(default_factory=list, max_length=10)
     experience_any_of: list[ExperienceFilter] = Field(default_factory=list, max_length=10)
     skill_categories_any_of: list[SkillCategory] = Field(default_factory=list, max_length=10)
     skills_all_of: list[str] = Field(default_factory=list, max_length=20)
     skills_any_of: list[str] = Field(default_factory=list, max_length=20)
     language_credentials_any_of: list[LanguageCredentialFilter] = Field(default_factory=list, max_length=12)
+    language_credentials_all_of: list[LanguageCredentialFilter] = Field(default_factory=list, max_length=12)
     scholarship_status: PresenceStatus = "any"
     scholarship_levels_any_of: list[
         Literal["national", "provincial", "school", "department", "enterprise", "other"]
@@ -1885,6 +1890,126 @@ class CandidateSearchResponse(ApiModel):
     # Total matching records before cursor pagination.  Existing callers may
     # continue to use ``items`` and ``next_cursor`` unchanged.
     total_count: int = 0
+
+
+class TalentSearchHardFilters(ApiModel):
+    """The intentionally small, recruiter-visible hard-filter subset.
+
+    It is separate from the historical, broad candidate-filter schema so an
+    AI draft cannot silently reintroduce removed sidebar fields or browser
+    supplied arbitrary conditions.
+    """
+
+    institution_classifications_any_of: list[InstitutionClassification] = Field(
+        default_factory=list,
+        max_length=6,
+    )
+    highest_degree_in: list[DegreeLevel] = Field(default_factory=list, max_length=6)
+    graduation_status: Literal["any", "fresh", "previous"] = "any"
+    fresh_graduate_start_month: Month | None = None
+    fresh_graduate_end_month: Month | None = None
+    min_employment_months: int | None = Field(default=None, ge=0, le=720)
+    min_employment_or_internship_months: int | None = Field(default=None, ge=0, le=720)
+    experience_types_all_of: list[ExperienceType] = Field(default_factory=list, max_length=12)
+    skills_all_of: list[str] = Field(default_factory=list, max_length=20)
+    language_credentials_all_of: list[LanguageCredentialFilter] = Field(
+        default_factory=list,
+        max_length=12,
+    )
+
+    @field_validator("skills_all_of")
+    @classmethod
+    def valid_required_skills(cls, value: list[str]) -> list[str]:
+        return clean_string_list(value)
+
+    @field_validator("fresh_graduate_start_month", "fresh_graduate_end_month")
+    @classmethod
+    def valid_months(cls, value: Month | None) -> Month | None:
+        if value is not None and not MONTH_PATTERN.fullmatch(value):
+            raise ValueError("month must use YYYY-MM")
+        return value
+
+    @model_validator(mode="after")
+    def valid_graduation_window(self) -> "TalentSearchHardFilters":
+        if self.graduation_status == "any":
+            if self.fresh_graduate_start_month or self.fresh_graduate_end_month:
+                raise ValueError("graduation window requires fresh or previous status")
+            return self
+        if not self.fresh_graduate_start_month or not self.fresh_graduate_end_month:
+            raise ValueError("fresh graduate window is required")
+        if self.fresh_graduate_end_month < self.fresh_graduate_start_month:
+            raise ValueError("fresh graduate window end must not be earlier than start")
+        return self
+
+
+class TalentSearchProfileRequirement(ApiModel):
+    key: str = Field(min_length=2, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
+    label: str = Field(min_length=1, max_length=500)
+    evidence_hint: str = Field(min_length=1, max_length=800)
+
+
+class TalentSearchProfileGenerateRequest(ApiModel):
+    message: str = Field(min_length=1, max_length=4000)
+    job_version_id: str | None = Field(default=None, max_length=64)
+
+
+class TalentSearchProfileRefineRequest(ApiModel):
+    # The browser must identify the draft it actually displayed.  This keeps
+    # one HR tab from silently refining a newer draft written in another tab.
+    revision_id: str = Field(min_length=1, max_length=64)
+    message: str = Field(min_length=1, max_length=2000)
+
+
+class TalentSearchProfileConfirmRequest(ApiModel):
+    # Confirmation is an explicit acceptance of one visible draft, never an
+    # implicit confirmation of whichever revision happens to be current.
+    revision_id: str = Field(min_length=1, max_length=64)
+
+
+class TalentSearchProfileRunRequest(ApiModel):
+    # A confirmed revision is immutable.  Require the client to name it so a
+    # stale card cannot start a different, later revision.
+    revision_id: str = Field(min_length=1, max_length=64)
+    limit: int = Field(default=20, ge=1, le=100)
+    cursor: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class TalentSearchProfileSearchRequest(ApiModel):
+    """Pagination only for reading a historic talent-search run."""
+
+    limit: int = Field(default=20, ge=1, le=100)
+    cursor: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class TalentSearchProfileRevisionResponse(ApiModel):
+    revision_id: str
+    revision_number: int
+    source: Literal["ai_generated", "ai_refined"]
+    status: Literal["draft", "confirmed", "superseded"]
+    title: str
+    summary: str
+    hard_filters: TalentSearchHardFilters
+    verification_requirements: list[TalentSearchProfileRequirement] = Field(default_factory=list)
+    preferred_requirements: list[TalentSearchProfileRequirement] = Field(default_factory=list)
+    aliases: list[str] = Field(default_factory=list)
+    clarifying_questions: list[str] = Field(default_factory=list)
+    created_at: str
+    confirmed_at: str | None = None
+
+
+class TalentSearchProfileResponse(ApiModel):
+    profile_id: str
+    source_type: Literal["freeform", "job"]
+    source_job_version_id: str | None = None
+    original_request: str
+    status: Literal["draft", "confirmed"]
+    current_revision: TalentSearchProfileRevisionResponse
+    created_at: str
+    updated_at: str
+
+
+class TalentSearchProfileListResponse(ApiModel):
+    items: list[TalentSearchProfileResponse] = Field(default_factory=list)
 
 
 class ResumeLibraryItem(ApiModel):
@@ -2396,3 +2521,43 @@ class JobMatchResponse(ApiModel):
     status: str
     model_name: str | None
     created_at: str
+
+
+class TalentSearchProfileMatchResult(ApiModel):
+    """A profile-safe view of one internal semantic match.
+
+    Internal profile matcher job IDs are deliberately omitted so this endpoint
+    cannot become another route into the normal JD workspace.
+    """
+
+    match_id: str
+    resume_id: str
+    candidate_id: str
+    candidate_display_name: str | None
+    facts_version: int
+    match_score: float
+    match_confidence: float | None
+    match_lane: Literal["recommended", "pending", "unmet"]
+    hard_requirement_status: str | None
+    analysis: dict[str, object]
+    requirement_results: list[JobMatchRequirementResponse]
+    status: str
+    created_at: str
+
+
+class TalentSearchRunResponse(ApiModel):
+    run_id: str
+    profile_id: str
+    revision_id: str
+    status: Literal["queued", "running", "completed", "partial"]
+    total_recalled_count: int = Field(ge=0)
+    job_match_batch_id: str | None = None
+    match_total_count: int = Field(default=0, ge=0)
+    match_completed_count: int = Field(default=0, ge=0)
+    match_failed_count: int = Field(default=0, ge=0)
+    # Results are constrained to the durable, server-derived batch items for
+    # this one profile run. They never expose the internal matcher JD.
+    match_results: list[TalentSearchProfileMatchResult] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+    candidate_recall: CandidateSearchResponse

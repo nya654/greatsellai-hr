@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -408,6 +409,97 @@ def create_job(session: Session, *, payload: JobCreate) -> JobVersionResponse:
     return _version_response(job_version)
 
 
+def create_talent_search_match_job_version(
+    session: Session,
+    *,
+    title: str,
+    verification_requirements: Sequence[Mapping[str, object]],
+    preferred_requirements: Sequence[Mapping[str, object]],
+) -> JobVersion | None:
+    """Create one private, confirmed matcher target for a talent profile.
+
+    A talent-search profile is not a published JD.  It still needs the mature
+    fact-grounded matching worker after strict recall, so this function creates
+    a deliberately hidden ``Job`` carrier.  Its clauses are generated from
+    recruiter-visible, confirmed profile requirements, which keeps every
+    stored matcher requirement auditable without leaking it into the JD UI.
+    """
+
+    def normalized_entries(
+        values: Sequence[Mapping[str, object]],
+        *,
+        priority: str,
+    ) -> list[tuple[str, str]]:
+        entries: list[tuple[str, str]] = []
+        seen_labels: set[str] = set()
+        for value in values:
+            label = value.get("label")
+            if not isinstance(label, str):
+                continue
+            cleaned = " ".join(label.split())
+            key = " ".join(cleaned.casefold().split())
+            if not cleaned or key in seen_labels:
+                continue
+            seen_labels.add(key)
+            entries.append((priority, cleaned))
+        return entries
+
+    entries = [
+        *normalized_entries(verification_requirements, priority="must_have"),
+        *normalized_entries(preferred_requirements, priority="preferred"),
+    ]
+    if not entries:
+        return None
+
+    private_title = f"人才画像：{title.strip()}"[:200]
+    raw_lines = [
+        ("必须核验：" if priority == "must_have" else "优先考虑：") + label
+        for priority, label in entries
+    ]
+    job = Job(
+        kind="talent_search_profile",
+        title=private_title,
+        jd_text="\n".join(raw_lines),
+        requirements={
+            "must_have": [label for priority, label in entries if priority == "must_have"],
+            "preferred": [label for priority, label in entries if priority == "preferred"],
+        },
+        version=1,
+    )
+    session.add(job)
+    session.flush()
+    job_version = JobVersion(
+        job_id=job.id,
+        version=1,
+        title=private_title,
+        raw_text=job.jd_text,
+        status="draft",
+    )
+    session.add(job_version)
+    session.flush()
+    clauses = _create_clauses(session, job_version=job_version)
+    requirements = [
+        JobRequirementInput(
+            requirement_key=f"profile-{index:03d}",
+            priority=priority,  # type: ignore[arg-type]
+            category="other",
+            raw_requirement=label,
+            terms=[label],
+            clause_ids=[clauses[index - 1].clause_id],
+        )
+        for index, (priority, label) in enumerate(entries, start=1)
+    ]
+    _persist_requirements(
+        session,
+        job_version=job_version,
+        requirements=requirements,
+    )
+    job_version.status = "confirmed"
+    job_version.confirmed_at = _utcnow()
+    session.flush()
+    return job_version
+
+
 def publish_original_job(
     session: Session,
     *,
@@ -486,7 +578,7 @@ def create_job_version(
     payload: JobCreate,
 ) -> JobVersionResponse:
     job = session.get(Job, job_id)
-    if job is None:
+    if job is None or job.kind != "job":
         raise JobNotFoundError("job_not_found")
     next_version = (session.scalar(select(JobVersion.version).where(JobVersion.job_id == job.id).order_by(JobVersion.version.desc())) or 0) + 1
     job.title = payload.title.strip()
@@ -503,7 +595,11 @@ def create_job_version(
 
 
 def get_job_version(session: Session, *, job_version_id: str) -> JobVersionResponse:
-    job_version = session.get(JobVersion, job_version_id)
+    job_version = session.scalar(
+        select(JobVersion)
+        .join(Job, Job.id == JobVersion.job_id)
+        .where(JobVersion.id == job_version_id, Job.kind == "job")
+    )
     if job_version is None:
         raise JobVersionNotFoundError("job_version_not_found")
     return _version_response(job_version)
@@ -520,9 +616,11 @@ def get_latest_confirmed_job_version(session: Session) -> JobVersionResponse:
 
     job_version = session.scalar(
         select(JobVersion)
+        .join(Job, Job.id == JobVersion.job_id)
         .where(
             JobVersion.status == "confirmed",
             JobVersion.requirements.any(),
+            Job.kind == "job",
         )
         .order_by(JobVersion.confirmed_at.desc(), JobVersion.created_at.desc())
     )
@@ -540,14 +638,16 @@ def list_confirmed_job_versions(session: Session) -> list[JobVersionResponse]:
 
     versions = session.scalars(
         select(JobVersion)
-        .where(JobVersion.status == "confirmed")
+        .join(Job, Job.id == JobVersion.job_id)
+        .where(JobVersion.status == "confirmed", Job.kind == "job")
         .order_by(JobVersion.confirmed_at.desc(), JobVersion.created_at.desc())
     ).all()
     return [_version_response(version) for version in versions]
 
 
 def list_job_versions(session: Session, *, job_id: str) -> list[JobVersionResponse]:
-    if session.get(Job, job_id) is None:
+    job = session.get(Job, job_id)
+    if job is None or job.kind != "job":
         raise JobNotFoundError("job_not_found")
     versions = session.scalars(
         select(JobVersion)
@@ -565,7 +665,7 @@ def extract_job_version_requirements(
 ) -> JobVersionResponse:
     _require_ai_gateway_credentials(settings)
     job_version = session.get(JobVersion, job_version_id)
-    if job_version is None:
+    if job_version is None or job_version.job.kind != "job":
         raise JobVersionNotFoundError("job_version_not_found")
     if job_version.status != "draft":
         raise JobServiceError("confirmed_job_version_cannot_be_extracted")
@@ -623,7 +723,7 @@ def update_job_version_requirements(
     payload: JobVersionRequirementsUpdate,
 ) -> JobVersionResponse:
     job_version = session.get(JobVersion, job_version_id)
-    if job_version is None:
+    if job_version is None or job_version.job.kind != "job":
         raise JobVersionNotFoundError("job_version_not_found")
     if job_version.status != "draft":
         raise JobServiceError("confirmed_job_version_cannot_be_edited")
@@ -639,7 +739,7 @@ def update_job_version_requirements(
 
 def confirm_job_version(session: Session, *, job_version_id: str) -> JobVersionResponse:
     job_version = session.get(JobVersion, job_version_id)
-    if job_version is None:
+    if job_version is None or job_version.job.kind != "job":
         raise JobVersionNotFoundError("job_version_not_found")
     if job_version.status != "draft":
         raise JobServiceError("job_version_not_draft")
@@ -841,10 +941,13 @@ def run_job_match(
     pinned_route_policy_version_id: str | None = None,
     ai_run_business_ref_type: str = "job_match",
     ai_run_business_ref_id: str | None = None,
+    allow_internal_job: bool = False,
 ) -> JobMatchResponse:
     _require_ai_gateway_credentials(settings)
     job_version = session.get(JobVersion, payload.job_version_id)
-    if job_version is None:
+    if job_version is None or (
+        job_version.job.kind != "job" and not allow_internal_job
+    ):
         raise JobVersionNotFoundError("job_version_not_found")
     if job_version.status != "confirmed":
         raise JobServiceError("job_version_must_be_confirmed_for_matching")
@@ -980,7 +1083,8 @@ def get_job_match(session: Session, *, match_id: str) -> JobMatchResponse:
     job_match = session.scalar(
         select(JobMatch)
         .join(Resume, Resume.id == JobMatch.resume_id)
-        .where(JobMatch.id == match_id)
+        .join(Job, Job.id == JobMatch.job_id)
+        .where(JobMatch.id == match_id, Job.kind == "job")
     )
     if job_match is None:
         raise JobMatchNotFoundError("job_match_not_found")
@@ -997,7 +1101,8 @@ def list_resume_job_matches(
     matches = session.scalars(
         select(JobMatch)
         .join(Resume, Resume.id == JobMatch.resume_id)
-        .where(JobMatch.resume_id == resume_id)
+        .join(Job, Job.id == JobMatch.job_id)
+        .where(JobMatch.resume_id == resume_id, Job.kind == "job")
         .order_by(JobMatch.created_at.desc(), JobMatch.id.desc())
     ).all()
     return [_match_response(match) for match in matches]
@@ -1008,12 +1113,18 @@ def list_job_version_matches(
     *,
     job_version_id: str,
 ) -> list[JobMatchResponse]:
-    if session.get(JobVersion, job_version_id) is None:
+    job_version = session.scalar(
+        select(JobVersion)
+        .join(Job, Job.id == JobVersion.job_id)
+        .where(JobVersion.id == job_version_id, Job.kind == "job")
+    )
+    if job_version is None:
         raise JobVersionNotFoundError("job_version_not_found")
     matches = session.scalars(
         select(JobMatch)
         .join(Resume, Resume.id == JobMatch.resume_id)
-        .where(JobMatch.job_version_id == job_version_id)
+        .join(Job, Job.id == JobMatch.job_id)
+        .where(JobMatch.job_version_id == job_version_id, Job.kind == "job")
         .order_by(JobMatch.created_at.desc(), JobMatch.id.desc())
     ).all()
     # Python sorting intentionally retains the query's newest-first order for
@@ -1033,6 +1144,7 @@ __all__ = [
     "classify_job_match_lane",
     "create_job",
     "create_job_version",
+    "create_talent_search_match_job_version",
     "derive_job_match_score",
     "extract_job_version_requirements",
     "generate_job_description",

@@ -33,6 +33,7 @@ from app.models import (
     Candidate,
     CandidateDataExport,
     CandidateDataFileAccessGrant,
+    Job,
     JobMatch,
     Resume,
     ResumeFactSnapshot,
@@ -334,9 +335,12 @@ def _snapshot_selection(
                 scores_by_resume[score.resume_id].append(score.id)
 
         matches = session.scalars(
-            select(JobMatch).where(
+            select(JobMatch)
+            .join(Job, Job.id == JobMatch.job_id)
+            .where(
                 JobMatch.resume_id.in_(resume_ids),
                 JobMatch.fact_snapshot_id.in_(fact_snapshot_ids),
+                Job.kind == "job",
             )
         ).all()
         for match in matches:
@@ -730,7 +734,12 @@ def _load_export_build_payload(
         job_matches = session.scalars(
             select(JobMatch)
             .join(Resume, Resume.id == JobMatch.resume_id)
-            .where(JobMatch.id.in_(job_match_ids), JobMatch.resume_id == resume.id)
+            .join(Job, Job.id == JobMatch.job_id)
+            .where(
+                JobMatch.id.in_(job_match_ids),
+                JobMatch.resume_id == resume.id,
+                Job.kind == "job",
+            )
         ).all() if job_match_ids else []
         original_path: Path | None = None
         original_suffix: str | None = None

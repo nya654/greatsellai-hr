@@ -791,6 +791,7 @@ def search_candidates(
     request: CandidateSearchRequest,
     *,
     include_source_language_evidence: bool = False,
+    resume_ids: set[str] | None = None,
 ) -> CandidateSearchResponse:
     """Search one workspace's eligible resumes.
 
@@ -824,6 +825,10 @@ def search_candidates(
         .where(Resume.is_active.is_(True), Resume.extraction_status == "ready")
         .order_by(Resume.updated_at.desc(), Resume.id.desc())
     )
+    if resume_ids is not None:
+        if not resume_ids:
+            return CandidateSearchResponse(items=[], total_count=0)
+        statement = statement.where(Resume.id.in_(sorted(resume_ids)))
     if request.is_985_211 is not None:
         statement = statement.where(Resume.is_985_211.is_(request.is_985_211))
     if request.highest_degree_in:
@@ -1161,6 +1166,52 @@ def search_candidates(
                 for experience in matching_experience
             )
 
+        # The compact recruiter sidebar treats selected experience categories
+        # as a checklist: choosing both employment and internship means the
+        # candidate must have *both* somewhere in the history.  Keep this
+        # separate from the older compound ``experience_any_of`` API so saved
+        # historical filters retain their established OR behaviour.
+        if request.experience_types_all_of:
+            required_experience_types = set(request.experience_types_all_of)
+            matching_experience_types = [
+                experience
+                for experience in resume.experiences
+                if experience.experience_type in required_experience_types
+            ]
+            present_experience_types = {
+                experience.experience_type for experience in matching_experience_types
+            }
+            if not required_experience_types.issubset(present_experience_types):
+                continue
+            matched_filters.append("experience_types_all_of")
+            _add_display_field(
+                display_field_values,
+                key="experience_type",
+                values=[experience.experience_type for experience in matching_experience_types],
+                evidence_block_ids=[
+                    block_id
+                    for experience in matching_experience_types
+                    for block_id in (
+                        experience.classification_evidence_block_ids
+                        or experience.evidence_block_ids
+                        or []
+                    )
+                ],
+            )
+            matched_evidence.extend(
+                CandidateSearchMatch(
+                    filter_key="experience_types_all_of",
+                    label=experience.experience_type,
+                    fact_type="experience",
+                    evidence_block_ids=(
+                        experience.classification_evidence_block_ids
+                        or experience.evidence_block_ids
+                        or []
+                    ),
+                )
+                for experience in matching_experience_types
+            )
+
         if request.skill_categories_any_of:
             matching_category_skills = [
                 skill
@@ -1280,6 +1331,51 @@ def search_candidates(
                     evidence_origin=item.evidence_origin,
                 )
                 for item in matching_language_evidence
+            )
+
+        # Explicit credential filters are also a checklist when used by a
+        # confirmed talent-search profile.  A candidate must have evidence for
+        # every requested credential; an absent or explicitly not-passed row is
+        # not silently treated as a match.
+        if request.language_credentials_all_of:
+            all_language_evidence = [
+                (
+                    filter_item,
+                    _matching_language_evidence(
+                        resume,
+                        [filter_item],
+                        include_source_language_evidence=include_source_language_evidence,
+                    ),
+                )
+                for filter_item in request.language_credentials_all_of
+            ]
+            if any(not evidence for _, evidence in all_language_evidence):
+                continue
+            matched_filters.append("language_credentials_all_of")
+            flattened_language_evidence = [
+                item
+                for _, evidence in all_language_evidence
+                for item in evidence
+            ]
+            _add_display_field(
+                display_field_values,
+                key="language",
+                values=[item.label for item in flattened_language_evidence],
+                evidence_block_ids=[
+                    block_id
+                    for item in flattened_language_evidence
+                    for block_id in item.evidence_block_ids
+                ],
+            )
+            matched_evidence.extend(
+                CandidateSearchMatch(
+                    filter_key="language_credentials_all_of",
+                    label=item.label,
+                    fact_type="language",
+                    evidence_block_ids=item.evidence_block_ids,
+                    evidence_origin=item.evidence_origin,
+                )
+                for item in flattened_language_evidence
             )
 
         if request.scholarship_status == "unknown":
@@ -1631,22 +1727,26 @@ def search_candidates(
         if len(results) > len(page_results) and page_results
         else None
     )
-    needs_review_candidate_ids = set(
-        session.scalars(
-            select(Resume.candidate_id).where(Resume.extraction_status == "needs_review")
-        ).all()
+    review_scope = select(Resume.candidate_id).where(
+        Resume.extraction_status == "needs_review"
     )
+    if resume_ids is not None:
+        review_scope = review_scope.where(Resume.id.in_(sorted(resume_ids)))
+    needs_review_candidate_ids = set(session.scalars(review_scope).all())
     # An older bad extraction may already be ``ready`` and active.  Surface it
     # in the same review counter so it is not silently lost after exclusion
     # from search results.
+    unreliable_active_statement = select(Resume).where(
+        Resume.is_active.is_(True),
+        Resume.extraction_status == "ready",
+    )
+    if resume_ids is not None:
+        unreliable_active_statement = unreliable_active_statement.where(
+            Resume.id.in_(sorted(resume_ids))
+        )
     unreliable_active_candidate_ids = {
         resume.candidate_id
-        for resume in session.scalars(
-            select(Resume).where(
-                Resume.is_active.is_(True),
-                Resume.extraction_status == "ready",
-            )
-        ).all()
+        for resume in session.scalars(unreliable_active_statement).all()
         if not is_resume_screening_eligible(resume)
     }
     needs_review_candidate_ids.update(unreliable_active_candidate_ids)

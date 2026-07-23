@@ -70,6 +70,7 @@ _LEGACY_ROUTE_COPY: dict[str, tuple[str, str]] = {
     "jd_requirements_extract": ("JD 要求提取", "将职位描述整理为评估要求。"),
     "jd_match": ("JD 匹配", "分析候选人与岗位的匹配情况。"),
     "recruiting_agent_turn": ("招聘助手对话", "为招聘助手生成下一轮回复。"),
+    "talent_search_profile": ("AI 人才画像", "根据招聘需求生成待 HR 确认的人才搜索画像。"),
     "resume_ocr_page": ("简历 OCR 识别", "识别扫描件或图片简历页面。"),
 }
 
@@ -87,6 +88,7 @@ SUPPORTED_AI_FEATURES = frozenset(
         "jd_requirements_extract",
         "jd_match",
         "recruiting_agent_turn",
+        "talent_search_profile",
         "resume_ocr_page",
     }
 )

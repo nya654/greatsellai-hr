@@ -48,6 +48,14 @@ def test_controlled_rosters_split_985_211_and_higher_education_levels() -> None:
         == "undergraduate"
     )
     assert (
+        _classify(
+            "\u5317\u4eac\u8bed\u8a00\u5927\u5b66",
+            degree="unknown",
+            evidence_text="\u6559\u80b2\u7ecf\u5386 \u5317\u4eac\u8bed\u8a00\u5927\u5b66",
+        ).classification
+        == "undergraduate"
+    )
+    assert (
         _classify("\u5317\u4eac\u5de5\u4e1a\u804c\u4e1a\u6280\u672f\u5b66\u9662").classification
         == "associate"
     )
@@ -72,8 +80,9 @@ def test_degree_wording_or_english_name_never_infers_a_school_type() -> None:
 
 
 def test_non_degree_study_never_inherits_the_host_school_classification() -> None:
-    # Both records name a controlled 985 institution, but neither is a formal
-    # degree record.  A whitelist must not turn a summer school into 985.
+    # These records name a controlled school, but none is a formal degree
+    # record. A whitelist must not turn a summer school, exchange, or training
+    # record into an institution classification.
     assert (
         _classify(
             "\u6e05\u534e\u5927\u5b66",
@@ -90,6 +99,21 @@ def test_non_degree_study_never_inherits_the_host_school_classification() -> Non
         ).classification
         is None
     )
+    for evidence_text in (
+        "\u5317\u4eac\u8bed\u8a00\u5927\u5b66 \u4ea4\u6362\u9879\u76ee",
+        "\u5317\u4eac\u8bed\u8a00\u5927\u5b66 \u77ed\u8bad",
+        "\u5317\u4eac\u8bed\u8a00\u5927\u5b66 \u8f85\u4fee\u65e5\u8bed",
+        "\u5317\u4eac\u8bed\u8a00\u5927\u5b66 \u8bc1\u4e66\u9879\u76ee",
+        "\u5317 \u4eac\u8bed\u8a00\u5927\u5b66 \u4ea4\u6362\u9879\u76ee",
+    ):
+        assert (
+            _classify(
+                "\u5317\u4eac\u8bed\u8a00\u5927\u5b66",
+                degree="unknown",
+                evidence_text=evidence_text,
+            ).classification
+            is None
+        )
 
 
 def test_registry_hint_cannot_override_the_source_grounded_school_name() -> None:

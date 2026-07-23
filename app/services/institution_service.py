@@ -107,20 +107,25 @@ _NON_DEGREE_EDUCATION_MARKERS = (
     "\u6691\u671f\u5b66\u6821",
     "\u6691\u6821",
     "\u590f\u6821",
+    "\u4ea4\u6362",
     "\u4ea4\u6362\u751f",
     "\u4ea4\u6362\u5b66\u4e60",
     "\u8bbf\u5b66",
     "\u6e38\u5b66",
     "\u77ed\u671f",
+    "\u77ed\u8bad",
     "\u57f9\u8bad",
     "\u57f9\u8bad\u73ed",
+    "\u8f85\u4fee",
     "\u8fdb\u4fee",
     "\u7814\u4fee",
     "\u7ee7\u7eed\u6559\u80b2",
     "\u975e\u5b66\u5386",
+    "\u8bc1\u4e66\u9879\u76ee",
     "\u8bc1\u4e66\u8bfe\u7a0b",
     "summer school",
     "summer program",
+    "exchange",
     "exchange program",
     "visiting student",
     "short-term",
@@ -479,13 +484,23 @@ def classify_education_institution(
         school_name_raw=school_name_raw,
         evidence_text=evidence_text,
     )
-    # A school name is not by itself proof of a formal degree record.  Reject
-    # unknown-degree and explicitly non-degree study before consulting any
-    # whitelist; otherwise a summer school at a 985 university would become a
-    # false positive 985 classification.
-    if degree == "unknown" or _has_any_marker(
-        local_context,
-        _NON_DEGREE_EDUCATION_MARKERS,
+    # The extracted fact is already an education record with a source-grounded
+    # school name. An omitted degree level must not discard an exact Ministry
+    # of Education roster match: the roster describes the school, not the
+    # candidate's degree. Explicit non-degree study remains excluded so a
+    # summer school, exchange, or training course cannot inherit a host
+    # school's classification.
+    school_name = school_name_raw.strip()
+    has_literal_school_span = bool(school_name) and (
+        school_name.casefold() in evidence_text.casefold()
+    )
+    # Grounding accepts normalized text, while the local-context window uses
+    # literal positions. If OCR spacing or punctuation prevents a literal
+    # position lookup, do not let a non-degree marker elsewhere in the same
+    # grounded evidence get ignored merely because this fallback has no window.
+    if _has_any_marker(local_context, _NON_DEGREE_EDUCATION_MARKERS) or (
+        not has_literal_school_span
+        and _has_any_marker(evidence_text, _NON_DEGREE_EDUCATION_MARKERS)
     ):
         return EducationInstitutionClassification(None, None, None, ())
 

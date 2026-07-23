@@ -509,6 +509,8 @@ const mailboxRetentionPolicies: Array<{
   },
 ];
 
+const AUTO_FILTER_SEARCH_DELAY_MS = 350;
+
 function freshDefaultFilter(): FilterDraft {
   return {
     ...defaultFilterDraft,
@@ -1413,6 +1415,7 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
   const appliedFilterRef = useRef(appliedFilter);
   const scoreTemplateIdRef = useRef<string | null>(null);
   const searchRequestRef = useRef(0);
+  const scheduledFilterSearchRef = useRef<number | null>(null);
   const reviewRequestRef = useRef(0);
   const summaryRequestRef = useRef(0);
   const drawerScoreRequestRef = useRef(0);
@@ -1435,6 +1438,12 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
   const replaceFilterDraft = useCallback((next: FilterDraft) => {
     filterDraftRef.current = next;
     setFilterDraft(next);
+  }, []);
+
+  const cancelScheduledFilterSearch = useCallback(() => {
+    if (scheduledFilterSearchRef.current === null) return;
+    window.clearTimeout(scheduledFilterSearchRef.current);
+    scheduledFilterSearchRef.current = null;
   }, []);
 
   const replaceAppliedFilter = useCallback((next: FilterDraft) => {
@@ -1520,6 +1529,32 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
       }
     },
     [notify, replaceAppliedFilter],
+  );
+
+  const updateFilterDraft = useCallback(
+    (next: FilterDraft, timing: "immediate" | "debounced" = "immediate") => {
+      replaceFilterDraft(next);
+      cancelScheduledFilterSearch();
+      if (timing === "immediate") {
+        void runSearch(next);
+        return;
+      }
+
+      // Invalidate an in-flight result while the recruiter keeps typing, so
+      // an older request cannot briefly present rows for stale conditions.
+      searchRequestRef.current += 1;
+      setSearching(true);
+      scheduledFilterSearchRef.current = window.setTimeout(() => {
+        scheduledFilterSearchRef.current = null;
+        void runSearch(next);
+      }, AUTO_FILTER_SEARCH_DELAY_MS);
+    },
+    [cancelScheduledFilterSearch, replaceFilterDraft, runSearch],
+  );
+
+  useEffect(
+    () => () => cancelScheduledFilterSearch(),
+    [cancelScheduledFilterSearch],
   );
 
   const registerScoreTemplate = useCallback(
@@ -1939,11 +1974,8 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     }
   }, [notify, pdfDownloadLoading, review?.original_filename, selectedResumeId]);
 
-  const applyFilter = async () => {
-    await runSearch(filterDraftRef.current);
-  };
-
   const resetFilter = async () => {
+    cancelScheduledFilterSearch();
     const clean = freshDefaultFilter();
     replaceFilterDraft(clean);
     await runSearch(clean);
@@ -1986,6 +2018,7 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
       notify("error", result.error);
       return false;
     }
+    cancelScheduledFilterSearch();
     replaceFilterDraft(result.draft);
     void runSearch(result.draft);
     return true;
@@ -2124,6 +2157,7 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
       .map((term) => term.trim())
       .filter(Boolean);
     const next = { ...filterDraftRef.current, keywords: terms };
+    cancelScheduledFilterSearch();
     replaceFilterDraft(next);
     setView("filter");
     void runSearch(next);
@@ -2340,12 +2374,11 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
               appliedDraft={appliedFilter}
               draft={filterDraft}
               filterOptions={filterOptions}
-              onDraftChange={replaceFilterDraft}
+              onDraftChange={updateFilterDraft}
               savedFilters={savedFilters}
               search={search}
               searching={searching}
               selectedResumeId={selectedResumeId}
-              onApply={applyFilter}
               onReset={resetFilter}
               onSave={saveCurrentFilter}
               onApplySaved={applySavedFilter}
@@ -3455,7 +3488,6 @@ function FilterWorkspace({
   search,
   searching,
   selectedResumeId,
-  onApply,
   onReset,
   onSave,
   onApplySaved,
@@ -3470,12 +3502,11 @@ function FilterWorkspace({
   appliedDraft: FilterDraft;
   draft: FilterDraft;
   filterOptions: FilterOptions;
-  onDraftChange: (draft: FilterDraft) => void;
+  onDraftChange: (draft: FilterDraft, timing?: "immediate" | "debounced") => void;
   savedFilters: SavedFilter[];
   search: CandidateSearchResponse;
   searching: boolean;
   selectedResumeId: string | null;
-  onApply: () => void;
   onReset: () => void;
   onSave: (name: string) => Promise<void>;
   onApplySaved: (filter: SavedFilter) => boolean;
@@ -3492,7 +3523,6 @@ function FilterWorkspace({
       <FilterPanel
         draft={draft}
         filterOptions={filterOptions}
-        onApply={onApply}
         onApplySaved={onApplySaved}
         onDeleteSaved={onDeleteSaved}
         onDraftChange={onDraftChange}
@@ -3521,7 +3551,6 @@ function FilterPanel({
   filterOptions,
   onDraftChange,
   savedFilters,
-  onApply,
   onReset,
   onSave,
   onApplySaved,
@@ -3529,9 +3558,8 @@ function FilterPanel({
 }: {
   draft: FilterDraft;
   filterOptions: FilterOptions;
-  onDraftChange: (draft: FilterDraft) => void;
+  onDraftChange: (draft: FilterDraft, timing?: "immediate" | "debounced") => void;
   savedFilters: SavedFilter[];
-  onApply: () => void;
   onReset: () => void;
   onSave: (name: string) => Promise<void>;
   onApplySaved: (filter: SavedFilter) => boolean;
@@ -3545,6 +3573,8 @@ function FilterPanel({
 
   const update = (patch: Partial<FilterDraft>) =>
     onDraftChange({ ...draft, ...patch });
+  const updateAfterTyping = (patch: Partial<FilterDraft>) =>
+    onDraftChange({ ...draft, ...patch }, "debounced");
   const applySaved = (id: string) => {
     setSelectedSavedId(id);
     const saved = savedFilters.find((item) => item.saved_filter_id === id);
@@ -3559,11 +3589,6 @@ function FilterPanel({
     } finally {
       setSaving(false);
     }
-  };
-
-  const apply = () => {
-    onApply();
-    setMobileFiltersOpen(false);
   };
 
   return (
@@ -3738,7 +3763,7 @@ function FilterPanel({
                 <span className="field-label">应届窗口开始</span>
                 <input
                   className="field"
-                  onChange={(event) => update({ freshGraduateStartMonth: event.target.value })}
+                  onChange={(event) => updateAfterTyping({ freshGraduateStartMonth: event.target.value })}
                   type="month"
                   value={draft.freshGraduateStartMonth}
                 />
@@ -3747,7 +3772,7 @@ function FilterPanel({
                 <span className="field-label">应届窗口结束</span>
                 <input
                   className="field"
-                  onChange={(event) => update({ freshGraduateEndMonth: event.target.value })}
+                  onChange={(event) => updateAfterTyping({ freshGraduateEndMonth: event.target.value })}
                   type="month"
                   value={draft.freshGraduateEndMonth}
                 />
@@ -3761,7 +3786,7 @@ function FilterPanel({
             <input
               className="field"
               id="school-name"
-              onChange={(event) => update({ schoolName: event.target.value })}
+              onChange={(event) => updateAfterTyping({ schoolName: event.target.value })}
               placeholder="可填全称或简称，例如：北大"
               value={draft.schoolName}
             />
@@ -3775,7 +3800,7 @@ function FilterPanel({
                   className="field"
                   max="100"
                   min="0"
-                  onChange={(event) => update({ minAverageScore: event.target.value })}
+                  onChange={(event) => updateAfterTyping({ minAverageScore: event.target.value })}
                   placeholder="例如：85"
                   type="number"
                   value={draft.minAverageScore}
@@ -3787,7 +3812,7 @@ function FilterPanel({
                   className="field"
                   max="100"
                   min="0"
-                  onChange={(event) => update({ minGpaPercent: event.target.value })}
+                  onChange={(event) => updateAfterTyping({ minGpaPercent: event.target.value })}
                   placeholder="例如：85"
                   type="number"
                   value={draft.minGpaPercent}
@@ -3798,7 +3823,7 @@ function FilterPanel({
                 <input
                   className="field"
                   min="1"
-                  onChange={(event) => update({ maxRankPosition: event.target.value })}
+                  onChange={(event) => updateAfterTyping({ maxRankPosition: event.target.value })}
                   placeholder="例如：10（前 10 名）"
                   type="number"
                   value={draft.maxRankPosition}
@@ -3810,7 +3835,7 @@ function FilterPanel({
                   className="field"
                   max="100"
                   min="1"
-                  onChange={(event) => update({ maxRankPercent: event.target.value })}
+                  onChange={(event) => updateAfterTyping({ maxRankPercent: event.target.value })}
                   placeholder="例如：10"
                   type="number"
                   value={draft.maxRankPercent}
@@ -3828,7 +3853,7 @@ function FilterPanel({
             <input
               className="field"
               id="major-name"
-              onChange={(event) => update({ major: event.target.value })}
+              onChange={(event) => updateAfterTyping({ major: event.target.value })}
               placeholder="例如：计算机科学"
               value={draft.major}
             />
@@ -3850,7 +3875,7 @@ function FilterPanel({
               max="240"
               min="0"
               onChange={(event) =>
-                update({
+                updateAfterTyping({
                   minEmploymentMonths: clampMonths(Number(event.target.value)),
                 })
               }
@@ -3873,7 +3898,7 @@ function FilterPanel({
               max="240"
               min="0"
               onChange={(event) =>
-                update({
+                updateAfterTyping({
                   minEmploymentOrInternshipMonths: clampMonths(
                     Number(event.target.value),
                   ),
@@ -3921,7 +3946,7 @@ function FilterPanel({
             <input
               className="field"
               id="experience-name"
-              onChange={(event) => update({ experienceName: event.target.value })}
+              onChange={(event) => updateAfterTyping({ experienceName: event.target.value })}
               placeholder="例如：全国大学生数学建模竞赛"
               value={draft.experienceName}
             />
@@ -3933,7 +3958,7 @@ function FilterPanel({
             <input
               className="field"
               id="company-name"
-              onChange={(event) => update({ company: event.target.value })}
+              onChange={(event) => updateAfterTyping({ company: event.target.value })}
               placeholder="例如：字节跳动"
               value={draft.company}
             />
@@ -3945,7 +3970,7 @@ function FilterPanel({
             <input
               className="field"
               id="role-name"
-              onChange={(event) => update({ title: event.target.value })}
+              onChange={(event) => updateAfterTyping({ title: event.target.value })}
               placeholder="例如：后端工程师"
               value={draft.title}
             />
@@ -3972,7 +3997,7 @@ function FilterPanel({
             </div>
             <input
               className="field"
-              onChange={(event) => update({ experienceAwardResult: event.target.value })}
+              onChange={(event) => updateAfterTyping({ experienceAwardResult: event.target.value })}
               placeholder="获奖结果，例如：一等奖"
               value={draft.experienceAwardResult}
             />
@@ -4062,7 +4087,7 @@ function FilterPanel({
                       className="field score-field"
                       min="0"
                       onChange={(event) =>
-                        update({
+                        updateAfterTyping({
                           languageScores: {
                             ...draft.languageScores,
                             [option.value]: event.target.value,
@@ -4081,7 +4106,7 @@ function FilterPanel({
           {draft.languageCredentials.includes("custom") && (
             <input
               className="field"
-              onChange={(event) => update({ customLanguageName: event.target.value })}
+              onChange={(event) => updateAfterTyping({ customLanguageName: event.target.value })}
               placeholder="填写英语证书名称"
               value={draft.customLanguageName}
             />
@@ -4125,7 +4150,7 @@ function FilterPanel({
               </div>
               <input
                 className="field"
-                onChange={(event) => update({ scholarshipName: event.target.value })}
+                onChange={(event) => updateAfterTyping({ scholarshipName: event.target.value })}
                 placeholder="奖学金名称（可选）"
                 value={draft.scholarshipName}
               />
@@ -4206,23 +4231,6 @@ function FilterPanel({
             values={draft.keywords}
           />
         </section>
-      </div>
-      <div className="filter-actions">
-        <button
-          className="button button-primary"
-          onClick={apply}
-          type="button"
-        >
-          <Icon name="filter" size={16} />
-          应用筛选条件
-        </button>
-        <button
-          className="button button-ghost"
-          onClick={() => void onReset()}
-          type="button"
-        >
-          恢复默认条件
-        </button>
       </div>
     </aside>
   );

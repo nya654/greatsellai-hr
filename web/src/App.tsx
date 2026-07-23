@@ -39,16 +39,10 @@ import type {
   CandidateSearchItem,
   CandidateSearchRequest,
   CandidateSearchResponse,
-  AwardLevel,
   DegreeLevel,
   ExperienceType,
   FilterOptions,
   InstitutionClassification,
-  InstitutionTier,
-  LanguageCredentialCode,
-  LeadershipContext,
-  PresenceStatus,
-  ScholarshipLevel,
   JobMatchBatch,
   JobMatchBatchItem,
   JobMatch,
@@ -78,9 +72,11 @@ import type {
   RecruitingAgentCandidate,
   RecruitingAgentSearchSummary,
   RecruitingAgentTurn,
-  SavedFilter,
   ScoreDimensionCreateInput,
   ScoreTemplate,
+  TalentSearchProfile,
+  TalentSearchProfileMatchResult,
+  TalentSearchRun,
   TrialAccess,
 } from "./types";
 import { Icon, type IconName } from "./icons";
@@ -91,8 +87,6 @@ type View = "library" | "filter" | "upload" | "score" | "match" | "settings";
 type MainWorkspaceView = Exclude<View, "settings">;
 type SettingsSection = "mailbox" | "data";
 type DrawerTab = "original" | "summary" | "score" | "evidence";
-type MatchMode = "all" | "any";
-type KeywordMode = "broad" | "precise";
 type ToastKind = "success" | "error";
 type JobWorkspaceMode = "create" | "view";
 type AuthRoute = "login" | "register" | "forgot-password" | "reset-password" | "verify-email";
@@ -109,33 +103,7 @@ interface FilterDraft {
   graduationStatus: "any" | "fresh" | "previous";
   freshGraduateStartMonth: string;
   freshGraduateEndMonth: string;
-  schoolName: string;
-  major: string;
-  minAverageScore: string;
-  minGpaPercent: string;
-  maxRankPosition: string;
-  maxRankPercent: string;
   experienceTypes: ExperienceType[];
-  experienceName: string;
-  company: string;
-  title: string;
-  experienceAwardLevels: AwardLevel[];
-  experienceAwardResult: string;
-  skills: string[];
-  skillCategories: string[];
-  skillsMode: MatchMode;
-  languageCredentials: LanguageCredentialCode[];
-  languageScores: Partial<Record<LanguageCredentialCode, string>>;
-  customLanguageName: string;
-  scholarshipStatus: PresenceStatus;
-  scholarshipName: string;
-  scholarshipLevels: ScholarshipLevel[];
-  competitionStatus: PresenceStatus;
-  competitionAwardStatus: PresenceStatus;
-  leadershipContexts: LeadershipContext[];
-  leadershipRoles: string[];
-  keywords: string[];
-  keywordsMode: KeywordMode;
 }
 
 interface SelectedResume {
@@ -221,33 +189,7 @@ const defaultFilterDraft: FilterDraft = {
   graduationStatus: "any",
   freshGraduateStartMonth: `${new Date().getFullYear()}-01`,
   freshGraduateEndMonth: `${new Date().getFullYear() + 1}-12`,
-  schoolName: "",
-  major: "",
-  minAverageScore: "",
-  minGpaPercent: "",
-  maxRankPosition: "",
-  maxRankPercent: "",
   experienceTypes: [],
-  experienceName: "",
-  company: "",
-  title: "",
-  experienceAwardLevels: [],
-  experienceAwardResult: "",
-  skills: [],
-  skillCategories: [],
-  skillsMode: "all",
-  languageCredentials: [],
-  languageScores: {},
-  customLanguageName: "",
-  scholarshipStatus: "any",
-  scholarshipName: "",
-  scholarshipLevels: [],
-  competitionStatus: "any",
-  competitionAwardStatus: "any",
-  leadershipContexts: [],
-  leadershipRoles: [],
-  keywords: [],
-  keywordsMode: "broad",
 };
 
 /**
@@ -391,37 +333,6 @@ const institutionClassificationLabels: Record<InstitutionClassification, string>
   Object.fromEntries(
     institutionClassificationOptions.map((option) => [option.value, option.label]),
   ) as Record<InstitutionClassification, string>;
-
-const legacyInstitutionTierLabels: Record<InstitutionTier, string> = {
-  ...institutionClassificationLabels,
-  "211": "211",
-  "985": "985",
-  double_first_class: "双一流",
-  key_undergraduate: "重本",
-  first_tier: "一本",
-  second_tier: "二本",
-  regular_undergraduate: "普通本科",
-  private_undergraduate: "民办本科",
-  higher_vocational: "高职/高专",
-  overseas: "海外院校",
-};
-
-/**
- * A small subset of historical tiers is semantically identical to a new
- * classification. Everything else must be reselected rather than widened.
- */
-const legacyTierClassificationMap: Partial<
-  Record<InstitutionTier, InstitutionClassification[]>
-> = {
-  "985": ["985"],
-  // The product now defines 211 as 211-only. A legacy saved "211" condition
-  // therefore adopts the explicit new meaning instead of silently widening
-  // back to 985 candidates.
-  "211": ["211"],
-  regular_undergraduate: ["undergraduate"],
-  higher_vocational: ["associate"],
-  overseas: ["overseas"],
-};
 
 const fallbackFilterOptions: FilterOptions = {
   schema_version: "filter-options.v2.fallback",
@@ -625,15 +536,6 @@ function freshDefaultFilter(): FilterDraft {
     degrees: [],
     institutionClassifications: [],
     experienceTypes: [],
-    experienceAwardLevels: [],
-    skills: [],
-    skillCategories: [],
-    languageCredentials: [],
-    languageScores: {},
-    scholarshipLevels: [],
-    leadershipContexts: [],
-    leadershipRoles: [],
-    keywords: [],
   };
 }
 
@@ -649,15 +551,6 @@ function snapshotFilterDraft(draft: FilterDraft): FilterDraft {
     degrees: [...draft.degrees],
     institutionClassifications: [...draft.institutionClassifications],
     experienceTypes: [...draft.experienceTypes],
-    experienceAwardLevels: [...draft.experienceAwardLevels],
-    skills: [...draft.skills],
-    skillCategories: [...draft.skillCategories],
-    languageCredentials: [...draft.languageCredentials],
-    languageScores: { ...draft.languageScores },
-    scholarshipLevels: [...draft.scholarshipLevels],
-    leadershipContexts: [...draft.leadershipContexts],
-    leadershipRoles: [...draft.leadershipRoles],
-    keywords: [...draft.keywords],
   };
 }
 
@@ -809,6 +702,24 @@ function humanizeError(error: unknown): string {
       server_missing_admin_token: "服务器尚未配置管理口令，暂时无法访问。",
       deepseek_api_key_not_configured:
         "AI 服务尚未配置。请先在服务器环境变量中配置后重试。",
+      talent_search_profile_not_found: "这份人才画像已不存在或无法访问。",
+      talent_search_run_not_found: "这次找人记录已不存在或无法访问。",
+      talent_search_profile_not_draft: "这份画像已不是可确认草案，请刷新后查看当前版本。",
+      talent_search_profile_not_confirmed: "请先确认你当前看到的人才画像，再开始找人。",
+      talent_search_profile_revision_not_current:
+        "人才画像已在其他位置更新。请刷新并确认最新草案后再操作。",
+      talent_search_profile_revision_superseded:
+        "这版画像已被新的草案替代，请查看最新版本。",
+      talent_search_profile_revision_missing: "人才画像版本不完整，请重新生成一版草案。",
+      talent_search_profile_invalid_cursor: "候选人列表位置已失效，请点击刷新重新查看。",
+      talent_search_profile_match_target_invalid:
+        "这份画像的核验配置异常，请重新生成并确认后再找人。",
+      talent_search_profile_provider_failed:
+        "AI 人才画像暂时不可用，请稍后重新生成。",
+      talent_search_profile_response_truncated:
+        "本次需求较长，AI 未能完整生成画像。请精简后重试。",
+      talent_search_profile_service_unavailable:
+        "人才画像服务暂时不可用，请稍后重试。",
       resume_has_no_native_text_for_ai_extraction:
         "这份简历没有足够的可提取文字，暂时不能由 AI 提取。",
       resume_source_text_unavailable:
@@ -1077,258 +988,21 @@ function draftToSearchRequest(
     request.fresh_graduate_end_month =
       draft.freshGraduateEndMonth || defaultFilterDraft.freshGraduateEndMonth;
   }
-  if (
-    draft.institutionClassifications.length ||
-    draft.schoolName.trim() ||
-    draft.major.trim() ||
-    draft.minAverageScore ||
-    draft.minGpaPercent ||
-    draft.maxRankPosition ||
-    draft.maxRankPercent
-  ) {
+  if (draft.institutionClassifications.length) {
     request.education_any_of = [
       {
-        school_name_contains: draft.schoolName.trim()
-          ? [draft.schoolName.trim()]
-          : [],
-        major_contains: draft.major.trim() ? [draft.major.trim()] : [],
         institution_classifications_any_of: draft.institutionClassifications,
-        min_average_score: draft.minAverageScore
-          ? Number(draft.minAverageScore)
-          : null,
-        min_gpa_percent: draft.minGpaPercent
-          ? Number(draft.minGpaPercent)
-          : null,
-        max_rank_position: draft.maxRankPosition
-          ? Number(draft.maxRankPosition)
-          : null,
-        max_rank_percent: draft.maxRankPercent
-          ? Number(draft.maxRankPercent)
-          : null,
       },
     ];
   }
-  if (
-    draft.experienceTypes.length ||
-    draft.experienceName.trim() ||
-    draft.company.trim() ||
-    draft.title.trim() ||
-    draft.experienceAwardLevels.length ||
-    draft.experienceAwardResult.trim()
-  ) {
-    request.experience_any_of = [
-      {
-        experience_types: draft.experienceTypes.length
-          ? draft.experienceTypes
-          : experienceTypeOptions.map((option) => option.value),
-        experience_name_contains: draft.experienceName.trim()
-          ? [draft.experienceName.trim()]
-          : [],
-        organization_name_contains: draft.company.trim()
-          ? [draft.company.trim()]
-          : [],
-        title_contains: draft.title.trim() ? [draft.title.trim()] : [],
-        award_levels_any_of: draft.experienceAwardLevels,
-        award_result_contains: draft.experienceAwardResult.trim()
-          ? [draft.experienceAwardResult.trim()]
-          : [],
-      },
-    ];
-  }
-  if (draft.skillCategories.length) {
-    request.skill_categories_any_of = draft.skillCategories;
-  }
-  if (draft.skills.length) {
-    if (draft.skillsMode === "all") request.skills_all_of = draft.skills;
-    else request.skills_any_of = draft.skills;
-  }
-  const validLanguageCredentials = draft.languageCredentials.filter(
-    (code) => code !== "custom" || Boolean(draft.customLanguageName.trim()),
-  );
-  if (validLanguageCredentials.length) {
-    request.language_credentials_any_of = validLanguageCredentials.map(
-      (credential_code) => ({
-        credential_code,
-        custom_name_contains:
-          credential_code === "custom"
-            ? draft.customLanguageName.trim()
-            : null,
-        min_score: draft.languageScores[credential_code]
-          ? Number(draft.languageScores[credential_code])
-          : null,
-      }),
-    );
-  }
-  if (draft.scholarshipStatus !== "any" || draft.scholarshipName.trim()) {
-    request.scholarship_status = draft.scholarshipStatus;
-    request.scholarship_name_contains =
-      draft.scholarshipStatus === "present" && draft.scholarshipName.trim()
-      ? [draft.scholarshipName.trim()]
-      : [];
-    request.scholarship_levels_any_of =
-      draft.scholarshipStatus === "present" ? draft.scholarshipLevels : [];
-  }
-  if (draft.competitionStatus !== "any") {
-    request.competition_status = draft.competitionStatus;
-  }
-  if (draft.competitionAwardStatus !== "any") {
-    request.competition_award_status = draft.competitionAwardStatus;
-  }
-  if (draft.leadershipContexts.length || draft.leadershipRoles.length) {
-    request.leadership_any_of = [
-      {
-        contexts_any_of: draft.leadershipContexts,
-        roles_any_of: draft.leadershipRoles,
-      },
-    ];
-  }
-  if (draft.keywords.length) {
-    request.keywords = draft.keywords;
-    request.keyword_match_mode = draft.keywordsMode;
+  // Multiple experience categories are independent hard conditions. Do not
+  // collapse them into the legacy `experience_any_of` group, which used OR
+  // semantics and could let one selected category satisfy all selections.
+  if (draft.experienceTypes.length) {
+    request.experience_types_all_of = draft.experienceTypes;
   }
   if (scoreTemplateId) request.score_template_id = scoreTemplateId;
   return request;
-}
-
-type SavedFilterDraftResult =
-  | { draft: FilterDraft; error: null }
-  | { draft: null; error: string };
-
-function savedInstitutionClassifications(
-  request: CandidateSearchRequest,
-): { classifications: InstitutionClassification[]; error: string | null } {
-  const education = request.education_any_of?.[0];
-  const currentClassifications =
-    education?.institution_classifications_any_of ?? [];
-  const legacyTiers = education?.institution_tiers_any_of ?? [];
-
-  if (request.is_985_211 === false) {
-    return {
-      classifications: [],
-      error: "该历史筛选含有已下线的“非 985/211”条件，无法无损迁移。请重新设置院校类型后保存。",
-    };
-  }
-
-  const unsupportedTiers = legacyTiers.filter(
-    (tier) => !legacyTierClassificationMap[tier],
-  );
-  if (unsupportedTiers.length) {
-    return {
-      classifications: [],
-      error: `该历史筛选包含已下线的院校层级（${unsupportedTiers
-        .map((tier) => legacyInstitutionTierLabels[tier])
-        .join("、")}），无法无损迁移。请重新设置院校类型后保存。`,
-    };
-  }
-
-  if (currentClassifications.length) {
-    if (legacyTiers.length) {
-      return {
-        classifications: [],
-        error: "该历史筛选同时包含新旧院校条件，无法无损迁移。请重新设置院校类型后保存。",
-      };
-    }
-    if (
-      request.is_985_211 === true &&
-      currentClassifications.some(
-        (classification) => classification !== "985" && classification !== "211",
-      )
-    ) {
-      return {
-        classifications: [],
-        error: "该历史筛选同时包含旧版 985/211 与其他院校条件，无法无损迁移。请重新设置院校类型后保存。",
-      };
-    }
-    return {
-      classifications: sortInstitutionClassifications(currentClassifications),
-      error: null,
-    };
-  }
-
-  if (request.is_985_211 === true && legacyTiers.some(
-    (tier) => tier !== "985" && tier !== "211",
-  )) {
-    return {
-      classifications: [],
-      error: "该历史筛选同时包含旧版 985/211 与其他院校条件，无法无损迁移。请重新设置院校类型后保存。",
-    };
-  }
-
-  // A saved tier and the old top-level flag were combined with AND. When a
-  // tier is present it is therefore more specific than the old aggregate flag.
-  const classifications = legacyTiers.length
-    ? legacyTiers.flatMap((tier) => legacyTierClassificationMap[tier] ?? [])
-    : request.is_985_211 === true
-      ? (["985", "211"] as InstitutionClassification[])
-      : [];
-  return {
-    classifications: sortInstitutionClassifications(classifications),
-    error: null,
-  };
-}
-
-function searchRequestToDraft(
-  request: CandidateSearchRequest,
-): SavedFilterDraftResult {
-  const education = request.education_any_of?.[0];
-  const experience = request.experience_any_of?.[0];
-  const savedDegrees = request.highest_degree_in ?? education?.degree_in ?? [];
-  const institutionMigration = savedInstitutionClassifications(request);
-  if (institutionMigration.error) {
-    return { draft: null, error: institutionMigration.error };
-  }
-  return {
-    draft: {
-      minEmploymentMonths: request.min_employment_months ?? 0,
-      minEmploymentOrInternshipMonths:
-        request.min_employment_or_internship_months ?? 0,
-      degrees: savedDegrees.filter((degree) => degree !== "unknown"),
-      institutionClassifications: institutionMigration.classifications,
-      graduationStatus: request.graduation_status ?? "any",
-      freshGraduateStartMonth:
-        request.fresh_graduate_start_month ?? defaultFilterDraft.freshGraduateStartMonth,
-      freshGraduateEndMonth:
-        request.fresh_graduate_end_month ?? defaultFilterDraft.freshGraduateEndMonth,
-      schoolName: education?.school_name_contains?.[0] ?? "",
-      major: education?.major_contains?.[0] ?? "",
-      minAverageScore: education?.min_average_score?.toString() ?? "",
-      minGpaPercent: education?.min_gpa_percent?.toString() ?? "",
-      maxRankPosition: education?.max_rank_position?.toString() ?? "",
-      maxRankPercent: education?.max_rank_percent?.toString() ?? "",
-      experienceTypes: experience?.experience_types ?? [],
-      experienceName: experience?.experience_name_contains?.[0] ?? "",
-      company: experience?.organization_name_contains?.[0] ?? "",
-      title: experience?.title_contains?.[0] ?? "",
-      experienceAwardLevels: experience?.award_levels_any_of ?? [],
-      experienceAwardResult: experience?.award_result_contains?.[0] ?? "",
-      skills: request.skills_all_of ?? request.skills_any_of ?? [],
-      skillCategories: request.skill_categories_any_of ?? [],
-      skillsMode: request.skills_any_of?.length ? "any" : "all",
-      languageCredentials:
-        request.language_credentials_any_of?.map((item) => item.credential_code) ?? [],
-      languageScores: Object.fromEntries(
-        (request.language_credentials_any_of ?? [])
-          .filter((item) => item.min_score != null)
-          .map((item) => [item.credential_code, String(item.min_score)]),
-      ),
-      customLanguageName:
-        request.language_credentials_any_of?.find(
-          (item) => item.credential_code === "custom",
-        )?.custom_name_contains ?? "",
-      scholarshipStatus: request.scholarship_status ?? "any",
-      scholarshipName: request.scholarship_name_contains?.[0] ?? "",
-      scholarshipLevels: request.scholarship_levels_any_of ?? [],
-      competitionStatus: request.competition_status ?? "any",
-      competitionAwardStatus: request.competition_award_status ?? "any",
-      leadershipContexts: request.leadership_any_of?.[0]?.contexts_any_of ?? [],
-      leadershipRoles: request.leadership_any_of?.[0]?.roles_any_of ?? [],
-      keywords: request.keywords ?? request.keywords_all_of ?? request.keywords_any_of ?? [],
-      keywordsMode:
-        request.keyword_match_mode ??
-        (request.keywords_all_of?.length ? "precise" : "broad"),
-    },
-    error: null,
-  };
 }
 
 function isLocalDevelopmentHost(hostname: string) {
@@ -1497,7 +1171,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
   const [scoreTemplateId, setScoreTemplateId] = useState<string | null>(null);
   const [search, setSearch] = useState<CandidateSearchResponse>(emptySearch);
   const [searching, setSearching] = useState(false);
-  const [savedFilters, setSavedFilters] = useState<SavedFilter[]>([]);
   const [selectedResume, setSelectedResume] = useState<SelectedResume | null>(
     null,
   );
@@ -1519,14 +1192,12 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
   const [enrichingFacts, setEnrichingFacts] = useState(false);
   const [libraryRefreshToken, setLibraryRefreshToken] = useState(0);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
-  const [globalQuery, setGlobalQuery] = useState("");
   const [authState, setAuthState] = useState<
     "checking" | "authenticated" | "unauthenticated"
   >("checking");
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
-  const filterDraftRef = useRef(filterDraft);
   const appliedFilterRef = useRef(appliedFilter);
   const scoreTemplateIdRef = useRef<string | null>(null);
   const searchRequestRef = useRef(0);
@@ -1584,7 +1255,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
   }, []);
 
   const replaceFilterDraft = useCallback((next: FilterDraft) => {
-    filterDraftRef.current = next;
     setFilterDraft(next);
   }, []);
 
@@ -1659,14 +1329,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
       return null;
     }
   }, [applyAuthSession]);
-
-  const refreshSavedFilters = useCallback(async () => {
-    try {
-      setSavedFilters(await api.listSavedFilters());
-    } catch (error) {
-      notify("error", humanizeError(error));
-    }
-  }, [notify]);
 
   const runSearch = useCallback(
     async (
@@ -1870,7 +1532,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     )
       return;
     void runSearch(defaultFilterDraft);
-    void refreshSavedFilters();
     void api.getFilterOptions().then((options) => {
       setFilterOptions({
         ...fallbackFilterOptions,
@@ -1903,7 +1564,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     authRoute,
     authSession?.email_verification_required,
     authState,
-    refreshSavedFilters,
     replaceScoreTemplateId,
     runSearch,
   ]);
@@ -2236,46 +1896,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     [replaceScoreTemplateId, runSearch],
   );
 
-  const saveCurrentFilter = async (name: string) => {
-    const normalized = name.trim();
-    if (!normalized) {
-      notify("error", "请为这组筛选条件填写一个名称。");
-      return;
-    }
-    try {
-      await api.createSavedFilter({
-        name: normalized,
-        filters: draftToSearchRequest(filterDraftRef.current),
-      });
-      await refreshSavedFilters();
-      notify("success", `已保存“${normalized}”。`);
-    } catch (error) {
-      notify("error", humanizeError(error));
-    }
-  };
-
-  const applySavedFilter = (filter: SavedFilter): boolean => {
-    const result = searchRequestToDraft(filter.filters);
-    if (!result.draft) {
-      notify("error", result.error);
-      return false;
-    }
-    cancelScheduledFilterSearch();
-    replaceFilterDraft(result.draft);
-    void runSearch(result.draft);
-    return true;
-  };
-
-  const deleteSavedFilter = async (filter: SavedFilter) => {
-    try {
-      await api.deleteSavedFilter(filter.saved_filter_id);
-      await refreshSavedFilters();
-      notify("success", `已删除“${filter.name}”。`);
-    } catch (error) {
-      notify("error", humanizeError(error));
-    }
-  };
-
   const generateSummary = async () => {
     if (!selectedResumeId) {
       notify("error", "请先从筛选结果中打开一份简历。");
@@ -2391,19 +2011,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     },
     [notify, releaseOriginalFile, selectedResumeId],
   );
-
-  const handleGlobalSearch = (event: ReactKeyboardEvent<HTMLInputElement>) => {
-    if (event.key !== "Enter") return;
-    const terms = globalQuery
-      .split(/[、,，\s]+/)
-      .map((term) => term.trim())
-      .filter(Boolean);
-    const next = { ...filterDraftRef.current, keywords: terms };
-    cancelScheduledFilterSearch();
-    replaceFilterDraft(next);
-    navigateToView("filter");
-    void runSearch(next);
-  };
 
   const establishSession = (session: AuthSession) => {
     applyAuthSession(session);
@@ -2589,11 +2196,8 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
         onOpenSettings={() => openSettings(canManageMailbox ? "mailbox" : "data")}
       />
       <div className="app-area" inert={drawerOpen || agentOpen}>
-        <Topbar
-          globalQuery={globalQuery}
-          onGlobalQueryChange={setGlobalQuery}
-          onGlobalSearchKeyDown={handleGlobalSearch}
-          onOpenAgent={() => {
+      <Topbar
+        onOpenAgent={() => {
             setDrawerOpen(false);
             setAgentOpen(true);
           }}
@@ -2629,14 +2233,10 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
               draft={filterDraft}
               filterOptions={filterOptions}
               onDraftChange={updateFilterDraft}
-              savedFilters={savedFilters}
               search={search}
               searching={searching}
               selectedResumeId={selectedResumeId}
               onReset={resetFilter}
-              onSave={saveCurrentFilter}
-              onApplySaved={applySavedFilter}
-              onDeleteSaved={deleteSavedFilter}
               onOpenCandidate={openCandidate}
               onScoreTemplateChange={changeScoreTemplate}
               onLoadMore={() =>
@@ -3442,9 +3042,6 @@ function SideRail({
 }
 
 function Topbar({
-  globalQuery,
-  onGlobalQueryChange,
-  onGlobalSearchKeyDown,
   onOpenAgent,
   agentTriggerRef,
   canManageSettings,
@@ -3460,9 +3057,6 @@ function Topbar({
   userDisplayName,
   userEmail,
 }: {
-  globalQuery: string;
-  onGlobalQueryChange: (value: string) => void;
-  onGlobalSearchKeyDown: (event: ReactKeyboardEvent<HTMLInputElement>) => void;
   onOpenAgent: () => void;
   agentTriggerRef: RefObject<HTMLButtonElement | null>;
   canManageSettings: boolean;
@@ -3504,16 +3098,6 @@ function Topbar({
           </p>
         )}
       </div>
-      <label className="topbar-search">
-        <Icon name="search" size={17} />
-        <span className="sr-only">全局检索简历关键词</span>
-        <input
-          onChange={(event) => onGlobalQueryChange(event.target.value)}
-          onKeyDown={onGlobalSearchKeyDown}
-          placeholder="输入技能或关键词，按 Enter 筛选"
-          value={globalQuery}
-        />
-      </label>
       <div className="topbar-actions">
         {trialLabel && <span className={`topbar-trial${trial?.plan_status === "expired" ? " is-expired" : ""}`}>{trialLabel}</span>}
         <button
@@ -3803,6 +3387,8 @@ interface AgentChatMessage {
   candidates?: RecruitingAgentCandidate[];
   actions?: RecruitingAgentAction[];
   searchSummary?: RecruitingAgentSearchSummary | null;
+  talentProfile?: TalentSearchProfile;
+  talentRun?: TalentSearchRun;
   failure?: boolean;
   retryMessage?: string;
 }
@@ -3934,6 +3520,371 @@ function AgentCandidateCard({
   );
 }
 
+function talentProfileHardFilterLabels(profile: TalentSearchProfile): string[] {
+  const filters = profile.current_revision.hard_filters;
+  const labels: string[] = [];
+  if (filters.institution_classifications_any_of.length) {
+    labels.push(
+      `院校：${filters.institution_classifications_any_of
+        .map(institutionClassificationLabel)
+        .join(" / ")}（任一）`,
+    );
+  }
+  if (filters.highest_degree_in.length) {
+    labels.push(
+      `最高学历：${filters.highest_degree_in.map((value) => degreeLabels[value]).join(" / ")}（任一）`,
+    );
+  }
+  if (filters.graduation_status !== "any") {
+    const graduationLabel = filters.graduation_status === "fresh" ? "应届" : "往届";
+    labels.push(
+      `毕业：${graduationLabel}${filters.fresh_graduate_start_month && filters.fresh_graduate_end_month ? ` ${filters.fresh_graduate_start_month} 至 ${filters.fresh_graduate_end_month}` : ""}`,
+    );
+  }
+  if (filters.min_employment_months !== null) {
+    labels.push(`正式工作不少于 ${Math.round(filters.min_employment_months / 12 * 10) / 10} 年`);
+  }
+  if (filters.min_employment_or_internship_months !== null) {
+    labels.push(`工作加实习不少于 ${Math.round(filters.min_employment_or_internship_months / 12 * 10) / 10} 年`);
+  }
+  if (filters.experience_types_all_of.length) {
+    labels.push(
+      `经历：${filters.experience_types_all_of
+        .map((value) => experienceTypeOptions.find((item) => item.value === value)?.label || value)
+        .join(" + ")}（全部）`,
+    );
+  }
+  if (filters.skills_all_of.length) {
+    labels.push(`精确技能：${filters.skills_all_of.join("、")}（全部）`);
+  }
+  if (filters.language_credentials_all_of.length) {
+    labels.push(
+      `证书：${filters.language_credentials_all_of
+        .map((item) => item.custom_name_contains || item.credential_code.toUpperCase())
+        .join("、")}（全部）`,
+    );
+  }
+  return labels;
+}
+
+function profileCandidateAsAgentCandidate(item: CandidateSearchItem): RecruitingAgentCandidate {
+  const experience = [item.latest_experience_organization, item.latest_experience_title]
+    .filter(Boolean)
+    .join(" · ");
+  return {
+    candidate_id: item.candidate_id,
+    resume_id: item.resume_id,
+    display_name: item.display_name,
+    detail: experience || degreeLabels[item.highest_degree ?? "unknown"],
+    // A library score and a profile-match score are different measurements.
+    // Never show the former as an unlabeled number in the profile workflow.
+    score: null,
+    verification_status: null,
+    verification_evidence: [],
+  };
+}
+
+function talentProfileLaneLabel(lane: TalentSearchProfileMatchResult["match_lane"]): string {
+  if (lane === "recommended") return "证据充分";
+  if (lane === "pending") return "待核实";
+  return "存在缺口";
+}
+
+function talentProfileOutcomeLabel(
+  outcome: TalentSearchProfileMatchResult["requirement_results"][number]["outcome"],
+): string {
+  if (outcome === "met") return "已支持";
+  if (outcome === "partial") return "部分支持";
+  if (outcome === "unknown") return "待核实";
+  return "存在缺口";
+}
+
+function TalentProfileMatchCard({
+  match,
+  onOpen,
+}: {
+  match: TalentSearchProfileMatchResult;
+  onOpen: () => void;
+}) {
+  const confidence = match.match_confidence === null
+    ? "—"
+    : `${Math.round(match.match_confidence * 100)}%`;
+  const needsVerification = match.requirement_results.filter(
+    (item) => item.outcome === "unknown" || item.outcome === "partial",
+  );
+  return (
+    <article className="talent-profile-match-card">
+      <div className="talent-profile-match-heading">
+        <div>
+          <strong>{match.candidate_display_name?.trim() || "未命名候选人"}</strong>
+          <small>{talentProfileLaneLabel(match.match_lane)}</small>
+        </div>
+        <div className="talent-profile-match-metrics" aria-label="画像匹配指标">
+          <span><b>{match.match_score.toFixed(1)}</b>匹配度</span>
+          <span><b>{confidence}</b>可信度</span>
+          <button
+            aria-label={`查看${match.candidate_display_name?.trim() || "候选人"}详情`}
+            className="icon-button agent-candidate-open"
+            onClick={onOpen}
+            type="button"
+          >
+            <Icon name="chevron-right" size={16} />
+          </button>
+        </div>
+      </div>
+      {!!match.requirement_results.length && (
+        <ul className="talent-profile-match-requirements" aria-label="画像核验依据">
+          {match.requirement_results.map((item) => (
+            <li key={item.requirement_id}>
+              <span className={`is-${item.outcome}`}>{talentProfileOutcomeLabel(item.outcome)}</span>
+              <div>
+                <strong>{item.requirement_text}</strong>
+                <small>{item.reason}</small>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {!!needsVerification.length && (
+        <p className="talent-profile-match-note">
+          待核实：{needsVerification.map((item) => item.requirement_text).join("；")}
+        </p>
+      )}
+    </article>
+  );
+}
+
+function TalentSearchRunPanel({
+  run,
+  onOpenCandidate,
+  onRefresh,
+  onLoadMore,
+  loading,
+}: {
+  run: TalentSearchRun;
+  onOpenCandidate: (candidate: RecruitingAgentCandidate) => void;
+  onRefresh: () => void;
+  onLoadMore: () => void;
+  loading: boolean;
+}) {
+  const isProcessing = run.status === "queued" || run.status === "running";
+  const statusLabel = run.job_match_batch_id
+    ? (run.status === "queued"
+      ? "已排队，等待 AI 核验"
+      : run.status === "running"
+        ? "正在依据简历事实核验"
+        : run.status === "partial"
+          ? "部分候选人的 AI 核验未完成"
+          : "已完成依据简历事实的核验")
+    : "已按确认的硬条件完成召回";
+  const hasSemanticResults = run.match_results.length > 0;
+  const shouldShowRecall = !run.job_match_batch_id || !hasSemanticResults;
+  return (
+    <section className="talent-profile-run" aria-label="人才画像找人结果">
+      <div className="talent-profile-run-heading">
+        <div>
+          <strong>{statusLabel}</strong>
+          <small>
+            严格召回 {run.total_recalled_count} 位候选人
+            {run.job_match_batch_id
+              ? `；已完成 ${run.match_completed_count}/${run.match_total_count} 位 AI 核验。`
+              : "。"}
+          </small>
+        </div>
+        <button
+          className="button button-ghost talent-profile-refresh"
+          disabled={loading}
+          onClick={onRefresh}
+          type="button"
+        >
+          <Icon name="refresh" size={14} />刷新
+        </button>
+      </div>
+      {(isProcessing || run.status === "partial") && (
+        <p className="talent-profile-run-note">
+          待核实不代表不符合，系统不会自动拒绝或录用候选人。
+        </p>
+      )}
+      {hasSemanticResults && (
+        <div className="talent-profile-match-list">
+          {run.match_results.map((match) => (
+            <TalentProfileMatchCard
+              key={match.match_id}
+              match={match}
+              onOpen={() => onOpenCandidate({
+                candidate_id: match.candidate_id,
+                resume_id: match.resume_id,
+                display_name: match.candidate_display_name,
+                detail: "AI 人才画像核验结果",
+                score: null,
+                verification_status: null,
+                verification_evidence: [],
+              })}
+            />
+          ))}
+        </div>
+      )}
+      {shouldShowRecall && !!run.candidate_recall.items.length && (
+        <div className="agent-candidate-list">
+          {run.candidate_recall.items.map((item) => {
+            const candidate = profileCandidateAsAgentCandidate(item);
+            return (
+              <AgentCandidateCard
+                candidate={candidate}
+                key={candidate.resume_id}
+                onOpen={() => onOpenCandidate(candidate)}
+              />
+            );
+          })}
+        </div>
+      )}
+      {!run.candidate_recall.items.length && !isProcessing && !hasSemanticResults && (
+        <p className="talent-profile-run-note">当前没有符合已确认硬条件的候选人。</p>
+      )}
+      {!isProcessing && run.status === "partial" && !hasSemanticResults && (
+        <p className="talent-profile-run-note">当前未生成可用的 AI 核验结论，请稍后刷新查看失败项。</p>
+      )}
+      {run.candidate_recall.next_cursor && shouldShowRecall && (
+        <button className="button button-ghost talent-profile-load-more" disabled={loading} onClick={onLoadMore} type="button">
+          加载更多已召回候选人
+        </button>
+      )}
+    </section>
+  );
+}
+
+function TalentSearchProfileCard({
+  profile,
+  run,
+  onSupplement,
+  onRegenerate,
+  onConfirm,
+  onStart,
+  onRefreshRun,
+  onLoadMoreRecall,
+  onOpenCandidate,
+  loading,
+}: {
+  profile: TalentSearchProfile;
+  run?: TalentSearchRun;
+  onSupplement: () => void;
+  onRegenerate: () => void;
+  onConfirm: () => void;
+  onStart: () => void;
+  onRefreshRun: () => void;
+  onLoadMoreRecall: () => void;
+  onOpenCandidate: (candidate: RecruitingAgentCandidate) => void;
+  loading: boolean;
+}) {
+  const revision = profile.current_revision;
+  const hardFilters = talentProfileHardFilterLabels(profile);
+  const confirmed = profile.status === "confirmed" && revision.status === "confirmed";
+  return (
+    <section className="talent-profile-card" aria-label="AI 人才画像">
+      <div className="talent-profile-card-heading">
+        <div>
+          <span>AI 人才画像</span>
+          <strong>{revision.title}</strong>
+        </div>
+        <small className={`talent-profile-status is-${confirmed ? "confirmed" : "draft"}`}>
+          {confirmed ? "已确认" : "待确认"}
+        </small>
+      </div>
+      <p className="talent-profile-summary">{revision.summary}</p>
+      <div className="talent-profile-meta">
+        <span>{profile.source_type === "job" ? "来源：已保存 JD" : "来源：HR 描述"}</span>
+        <span>版本 {revision.revision_number}</span>
+      </div>
+      {!!hardFilters.length && (
+        <div className="talent-profile-section">
+          <span>硬条件</span>
+          <div className="talent-profile-chips">
+            {hardFilters.map((label) => <small key={label}>{label}</small>)}
+          </div>
+        </div>
+      )}
+      {!!revision.verification_requirements.length && (
+        <div className="talent-profile-section">
+          <span>重点核验</span>
+          <ul className="talent-profile-requirements">
+            {revision.verification_requirements.map((item) => (
+              <li key={item.key}>
+                <strong>{item.label}</strong>
+                <small>{item.evidence_hint}</small>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {!!revision.preferred_requirements.length && (
+        <div className="talent-profile-section">
+          <span>优先项</span>
+          <ul className="talent-profile-requirements">
+            {revision.preferred_requirements.map((item) => (
+              <li key={item.key}>
+                <strong>{item.label}</strong>
+                <small>{item.evidence_hint}</small>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {!!revision.aliases.length && (
+        <div className="talent-profile-section">
+          <span>可识别表达</span>
+          <div className="talent-profile-chips is-muted">
+            {revision.aliases.map((alias) => <small key={alias}>{alias}</small>)}
+          </div>
+        </div>
+      )}
+      {!!revision.clarifying_questions.length && !confirmed && (
+        <div className="talent-profile-question">
+          <Icon name="spark" size={14} />
+          <span>{revision.clarifying_questions.join("；")}</span>
+        </div>
+      )}
+      <div className="talent-profile-actions">
+        <button
+          className="button button-ghost"
+          disabled={loading}
+          onClick={onSupplement}
+          type="button"
+        >
+          补充条件
+        </button>
+        {!confirmed && (
+          <button
+            className="button button-ghost"
+            disabled={loading}
+            onClick={onRegenerate}
+            type="button"
+          >
+            <Icon name="refresh" size={14} />重新生成
+          </button>
+        )}
+        {confirmed && !run ? (
+          <button className="button button-primary" disabled={loading} onClick={onStart} type="button">
+            <Icon name="match" size={15} />开始找人
+          </button>
+        ) : !confirmed ? (
+          <button className="button button-primary" disabled={loading} onClick={onConfirm} type="button">
+            <Icon name="check" size={15} />确认画像
+          </button>
+        ) : null}
+      </div>
+      {run && (
+        <TalentSearchRunPanel
+          loading={loading}
+          onOpenCandidate={onOpenCandidate}
+          onLoadMore={onLoadMoreRecall}
+          onRefresh={onRefreshRun}
+          run={run}
+        />
+      )}
+    </section>
+  );
+}
+
 function RecruitingAgentDrawer({
   isOpen,
   onClose,
@@ -3952,15 +3903,22 @@ function RecruitingAgentDrawer({
   const [input, setInput] = useState("");
   const [jobs, setJobs] = useState<JobVersion[]>([]);
   const [jobVersionId, setJobVersionId] = useState("");
+  const [profileMode, setProfileMode] = useState(false);
+  const [activeTalentProfile, setActiveTalentProfile] = useState<{
+    profileId: string;
+    revisionId: string;
+  } | null>(null);
+  const [recentTalentProfiles, setRecentTalentProfiles] = useState<TalentSearchProfile[]>([]);
   const [loading, setLoading] = useState(false);
   const drawerRef = useRef<HTMLElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const [messages, setMessages] = useState<AgentChatMessage[]>([
     {
       id: 1,
       role: "assistant",
       content:
-        "我是招聘助手。可以在当前工作区筛选简历、处理 JD 匹配、查看排行榜，并按已有评分规则发起全量评分；已开通邮箱入库的工作区也可以查询收件状态，并按你的指令发起后台同步。",
+        "我是招聘助手。可以在当前工作区筛选简历、处理 JD 匹配、查看排行榜，并按已有评分规则发起全量评分。需要主动找人时，切换到“AI 人才画像”，我会先整理条件，等你确认后才开始找人。",
     },
   ]);
 
@@ -3969,21 +3927,22 @@ function RecruitingAgentDrawer({
     void api
       .listConfirmedJobVersions()
       .then((items) => {
-        // Original-published JDs intentionally have no AI matching conditions.
-        // Keep them out of the Agent selector so a matching tool cannot target
-        // a version that is display-only.
         const matchableJobs = items.filter(
           (item) => item.requirements.length > 0,
         );
-        setJobs(matchableJobs);
+        setJobs(items);
         setJobVersionId((current) =>
           current &&
-          matchableJobs.some((item) => item.job_version_id === current)
+          items.some((item) => item.job_version_id === current)
             ? current
-            : (matchableJobs[0]?.job_version_id ?? ""),
+            : (matchableJobs[0]?.job_version_id ?? items[0]?.job_version_id ?? ""),
         );
       })
       .catch(() => setJobs([]));
+    void api
+      .listTalentSearchProfiles()
+      .then((response) => setRecentTalentProfiles(response.items))
+      .catch(() => setRecentTalentProfiles([]));
   }, [isOpen]);
 
   useEffect(() => {
@@ -4031,6 +3990,207 @@ function RecruitingAgentDrawer({
     if (turn.job_version_id) setJobVersionId(turn.job_version_id);
   };
 
+  const updateTalentProfileMessage = (
+    profile: TalentSearchProfile,
+    run?: TalentSearchRun,
+  ) => {
+    setMessages((current) => current.map((item) => (
+      item.talentProfile?.profile_id === profile.profile_id
+        ? { ...item, talentProfile: profile, talentRun: run }
+        : item
+    )));
+  };
+
+  const appendTalentProfileReply = (profile: TalentSearchProfile, content: string) => {
+    setMessages((current) => [
+      ...current,
+      {
+        id: Date.now() + 1,
+        role: "assistant",
+        content,
+        talentProfile: profile,
+      },
+    ]);
+  };
+
+  const rememberTalentProfile = (profile: TalentSearchProfile) => {
+    setRecentTalentProfiles((current) => [
+      profile,
+      ...current.filter((item) => item.profile_id !== profile.profile_id),
+    ].slice(0, 12));
+  };
+
+  const addTalentProfileFailure = (error: unknown, retryMessage?: string) => {
+    setMessages((current) => [
+      ...current,
+      {
+        id: Date.now() + 1,
+        role: "assistant",
+        content: humanizeError(error),
+        failure: true,
+        retryMessage,
+      },
+    ]);
+  };
+
+  const prepareTalentProfileRefinement = (profile: TalentSearchProfile) => {
+    setActiveTalentProfile({
+      profileId: profile.profile_id,
+      revisionId: profile.current_revision.revision_id,
+    });
+    setProfileMode(true);
+    setInput("");
+    window.requestAnimationFrame(() => composerInputRef.current?.focus());
+  };
+
+  const regenerateTalentProfile = async (profile: TalentSearchProfile) => {
+    if (loading) return;
+    setLoading(true);
+    try {
+      const next = await api.refineTalentSearchProfile(profile.profile_id, {
+        revision_id: profile.current_revision.revision_id,
+        message: "请保留原始招聘目标，重新梳理一版人才画像。删去不明确的硬条件，并给出需要 HR 核验的重点。",
+      });
+      setActiveTalentProfile({
+        profileId: next.profile_id,
+        revisionId: next.current_revision.revision_id,
+      });
+      rememberTalentProfile(next);
+      setProfileMode(true);
+      updateTalentProfileMessage(next);
+    } catch (error) {
+      addTalentProfileFailure(error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const confirmTalentProfile = async (profile: TalentSearchProfile) => {
+    if (loading) return;
+    setLoading(true);
+    try {
+      const confirmed = await api.confirmTalentSearchProfile(profile.profile_id, {
+        revision_id: profile.current_revision.revision_id,
+      });
+      setActiveTalentProfile({
+        profileId: confirmed.profile_id,
+        revisionId: confirmed.current_revision.revision_id,
+      });
+      rememberTalentProfile(confirmed);
+      updateTalentProfileMessage(confirmed);
+    } catch (error) {
+      addTalentProfileFailure(error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const startTalentProfileSearch = async (profile: TalentSearchProfile) => {
+    if (loading) return;
+    setLoading(true);
+    try {
+      const run = await api.startTalentSearchProfileRun(profile.profile_id, {
+        revision_id: profile.current_revision.revision_id,
+        limit: 20,
+      });
+      updateTalentProfileMessage(profile, run);
+    } catch (error) {
+      addTalentProfileFailure(error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const refreshTalentProfileRun = async (profile: TalentSearchProfile, run: TalentSearchRun) => {
+    if (loading) return;
+    setLoading(true);
+    try {
+      const refreshed = await api.getTalentSearchProfileRun(profile.profile_id, run.run_id, { limit: 20 });
+      updateTalentProfileMessage(profile, refreshed);
+    } catch (error) {
+      addTalentProfileFailure(error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadMoreTalentProfileRecall = async (
+    profile: TalentSearchProfile,
+    run: TalentSearchRun,
+  ) => {
+    const cursor = run.candidate_recall.next_cursor;
+    if (loading || !cursor) return;
+    setLoading(true);
+    try {
+      const next = await api.getTalentSearchProfileRun(profile.profile_id, run.run_id, {
+        limit: 20,
+        cursor,
+      });
+      const seen = new Set(run.candidate_recall.items.map((item) => item.resume_id));
+      updateTalentProfileMessage(profile, {
+        ...next,
+        candidate_recall: {
+          ...next.candidate_recall,
+          items: [
+            ...run.candidate_recall.items,
+            ...next.candidate_recall.items.filter((item) => !seen.has(item.resume_id)),
+          ],
+        },
+      });
+    } catch (error) {
+      addTalentProfileFailure(error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const resumeTalentProfile = async (profileId: string) => {
+    if (loading) return;
+    setLoading(true);
+    try {
+      const profile = await api.getTalentSearchProfile(profileId);
+      setProfileMode(true);
+      setActiveTalentProfile({
+        profileId: profile.profile_id,
+        revisionId: profile.current_revision.revision_id,
+      });
+      rememberTalentProfile(profile);
+      appendTalentProfileReply(
+        profile,
+        profile.status === "confirmed"
+          ? "已恢复这份已确认的人才画像。可查看本次找人结果，或补充条件后形成新草案。"
+          : "已恢复这份人才画像草案。请确认，或继续补充条件。",
+      );
+    } catch (error) {
+      addTalentProfileFailure(error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isOpen || loading) return undefined;
+    const pending = messages.find((item) => (
+      item.talentProfile
+      && item.talentRun
+      && (item.talentRun.status === "queued" || item.talentRun.status === "running")
+    ));
+    if (!pending?.talentProfile || !pending.talentRun) return undefined;
+    const timer = window.setTimeout(() => {
+      void api.getTalentSearchProfileRun(
+        pending.talentProfile!.profile_id,
+        pending.talentRun!.run_id,
+        { limit: 20 },
+      ).then((refreshed) => {
+        updateTalentProfileMessage(pending.talentProfile!, refreshed);
+      }).catch(() => {
+        // A transient poll failure should not flood the recruiter chat. The
+        // visible refresh button remains available for an explicit retry.
+      });
+    }, 4_000);
+    return () => window.clearTimeout(timer);
+  }, [isOpen, loading, messages]);
+
   const send = async (raw: string) => {
     const message = raw.trim();
     if (!message || loading) return;
@@ -4041,13 +4201,43 @@ function RecruitingAgentDrawer({
     ]);
     setLoading(true);
     try {
-      const turn = await api.runRecruitingAgentTurn({
-        message,
-        job_version_id: jobVersionId || null,
-      });
-      addAssistantReply(turn);
+      if (profileMode) {
+        const profile = activeTalentProfile
+          ? await api.refineTalentSearchProfile(activeTalentProfile.profileId, {
+            revision_id: activeTalentProfile.revisionId,
+            message,
+          })
+          : await api.generateTalentSearchProfile({
+            message,
+            job_version_id: jobVersionId || null,
+          });
+        setActiveTalentProfile({
+          profileId: profile.profile_id,
+          revisionId: profile.current_revision.revision_id,
+        });
+        rememberTalentProfile(profile);
+        appendTalentProfileReply(
+          profile,
+          activeTalentProfile
+            ? "我已根据你的补充更新人才画像。请确认，或继续补充条件。"
+            : "我先整理了一版人才画像草稿。请看硬条件和重点核验项，还想补什么吗？确认后才会开始找人。",
+        );
+      } else {
+        // Source-only JDs are intentionally usable as input for an AI talent
+        // profile, but the existing conversational assistant only understands
+        // confirmed, matchable JD versions. Do not turn selecting an original
+        // publication into a generic server error in the normal chat mode.
+        const selectedMatchableJob = jobs.some(
+          (job) => job.job_version_id === jobVersionId && job.requirements.length > 0,
+        );
+        const turn = await api.runRecruitingAgentTurn({
+          message,
+          job_version_id: selectedMatchableJob ? jobVersionId : null,
+        });
+        addAssistantReply(turn);
+      }
     } catch (error) {
-      const failureMessage = humanizeAgentError(error);
+      const failureMessage = profileMode ? humanizeError(error) : humanizeAgentError(error);
       setMessages((current) => [
         ...current,
         {
@@ -4092,23 +4282,64 @@ function RecruitingAgentDrawer({
         </button>
       </header>
       <div className="agent-context">
+        <div className="agent-mode-switch" role="group" aria-label="招聘助手模式">
+          <button
+            aria-pressed={!profileMode}
+            className={`agent-mode-button${!profileMode ? " is-active" : ""}`}
+            onClick={() => setProfileMode(false)}
+            type="button"
+          >
+            助手对话
+          </button>
+          <button
+            aria-pressed={profileMode}
+            className={`agent-mode-button${profileMode ? " is-active" : ""}`}
+            onClick={() => {
+              setActiveTalentProfile(null);
+              setProfileMode(true);
+              window.requestAnimationFrame(() => composerInputRef.current?.focus());
+            }}
+            type="button"
+          >
+            <Icon name="spark" size={13} />AI 人才画像
+          </button>
+        </div>
         <div className="select-wrap">
-          <label className="sr-only" htmlFor="agent-job-version">当前 JD</label>
+          <label className="sr-only" htmlFor="agent-job-version">关联 JD</label>
           <select
             className="select-field"
             id="agent-job-version"
             onChange={(event) => setJobVersionId(event.target.value)}
             value={jobVersionId}
           >
-            <option value="">自动选择最近可匹配的 JD</option>
+            <option value="">不关联 JD</option>
             {jobs.map((item) => (
               <option key={item.job_version_id} value={item.job_version_id}>
-                {item.title} · v{item.version}
+                {item.title} · v{item.version}{item.requirements.length ? "" : " · 原版"}
               </option>
             ))}
           </select>
           <Icon name="chevron-down" size={15} />
         </div>
+        {profileMode && !!recentTalentProfiles.length && (
+          <div className="agent-profile-history" aria-label="继续已保存的人才画像">
+            <span>继续已保存画像</span>
+            <div>
+              {recentTalentProfiles.slice(0, 4).map((profile) => (
+                <button
+                  className="button button-ghost"
+                  disabled={loading}
+                  key={profile.profile_id}
+                  onClick={() => void resumeTalentProfile(profile.profile_id)}
+                  type="button"
+                >
+                  {profile.current_revision.title}
+                  <small>{profile.status === "confirmed" ? "已确认" : "草案"}</small>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
       <div className="agent-conversation" aria-live="polite">
         {messages.map((item) => (
@@ -4135,6 +4366,28 @@ function RecruitingAgentDrawer({
               </div>
             )}
             {item.searchSummary && <AgentSearchSummaryPanel summary={item.searchSummary} />}
+            {item.talentProfile && (
+              <TalentSearchProfileCard
+                loading={loading}
+                onConfirm={() => void confirmTalentProfile(item.talentProfile!)}
+                onOpenCandidate={onOpenResume}
+                onLoadMoreRecall={() => {
+                  if (item.talentRun) {
+                    void loadMoreTalentProfileRecall(item.talentProfile!, item.talentRun);
+                  }
+                }}
+                onRefreshRun={() => {
+                  if (item.talentRun) {
+                    void refreshTalentProfileRun(item.talentProfile!, item.talentRun);
+                  }
+                }}
+                onRegenerate={() => void regenerateTalentProfile(item.talentProfile!)}
+                onStart={() => void startTalentProfileSearch(item.talentProfile!)}
+                onSupplement={() => prepareTalentProfileRefinement(item.talentProfile!)}
+                profile={item.talentProfile}
+                run={item.talentRun}
+              />
+            )}
             {!!item.candidates?.length && (
               <div className="agent-candidate-list">
                 {item.candidates.map((candidate) => (
@@ -4173,6 +4426,11 @@ function RecruitingAgentDrawer({
         )}
       </div>
       <div className="agent-composer">
+        {profileMode && (
+          <p className="agent-profile-mode-note">
+            先生成并确认人才画像，再开始找人。未确认前不会检索候选人。
+          </p>
+        )}
         <form
           className="agent-input-row"
           onSubmit={(event) => {
@@ -4184,7 +4442,12 @@ function RecruitingAgentDrawer({
           <textarea
             id="agent-message"
             onChange={(event) => setInput(event.target.value)}
-            placeholder="例如：找 985 或 211 院校、3 年以上 Python 的候选人"
+            placeholder={profileMode
+              ? (activeTalentProfile
+                ? "补充或调整条件，例如：正式工作和实习都要有，项目中重点看 RAG 落地"
+                : "描述你想找的人，例如：要招一位具备 LLM 应用经验的后端工程师")
+              : "例如：找 985 或 211 院校、3 年以上 Python 的候选人"}
+            ref={composerInputRef}
             rows={2}
             value={input}
           />
@@ -4202,14 +4465,10 @@ function FilterWorkspace({
   draft,
   filterOptions,
   onDraftChange,
-  savedFilters,
   search,
   searching,
   selectedResumeId,
   onReset,
-  onSave,
-  onApplySaved,
-  onDeleteSaved,
   onOpenCandidate,
   onScoreTemplateChange,
   onLoadMore,
@@ -4221,14 +4480,10 @@ function FilterWorkspace({
   draft: FilterDraft;
   filterOptions: FilterOptions;
   onDraftChange: (draft: FilterDraft, timing?: "immediate" | "debounced") => void;
-  savedFilters: SavedFilter[];
   search: CandidateSearchResponse;
   searching: boolean;
   selectedResumeId: string | null;
   onReset: () => void;
-  onSave: (name: string) => Promise<void>;
-  onApplySaved: (filter: SavedFilter) => boolean;
-  onDeleteSaved: (filter: SavedFilter) => Promise<void>;
   onOpenCandidate: (item: CandidateSearchItem, tab?: DrawerTab) => void;
   onScoreTemplateChange: (templateId: string | null) => void;
   onLoadMore: () => void;
@@ -4241,12 +4496,8 @@ function FilterWorkspace({
       <FilterPanel
         draft={draft}
         filterOptions={filterOptions}
-        onApplySaved={onApplySaved}
-        onDeleteSaved={onDeleteSaved}
         onDraftChange={onDraftChange}
         onReset={onReset}
-        onSave={onSave}
-        savedFilters={savedFilters}
       />
       <ResultsPane
         appliedDraft={appliedDraft}
@@ -4268,24 +4519,13 @@ function FilterPanel({
   draft,
   filterOptions,
   onDraftChange,
-  savedFilters,
   onReset,
-  onSave,
-  onApplySaved,
-  onDeleteSaved,
 }: {
   draft: FilterDraft;
   filterOptions: FilterOptions;
   onDraftChange: (draft: FilterDraft, timing?: "immediate" | "debounced") => void;
-  savedFilters: SavedFilter[];
   onReset: () => void;
-  onSave: (name: string) => Promise<void>;
-  onApplySaved: (filter: SavedFilter) => boolean;
-  onDeleteSaved: (filter: SavedFilter) => Promise<void>;
 }) {
-  const [selectedSavedId, setSelectedSavedId] = useState("");
-  const [saveName, setSaveName] = useState("");
-  const [saving, setSaving] = useState(false);
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const institutionClassifications = resolvedInstitutionClassificationOptions(filterOptions);
 
@@ -4293,21 +4533,6 @@ function FilterPanel({
     onDraftChange({ ...draft, ...patch });
   const updateAfterTyping = (patch: Partial<FilterDraft>) =>
     onDraftChange({ ...draft, ...patch }, "debounced");
-  const applySaved = (id: string) => {
-    setSelectedSavedId(id);
-    const saved = savedFilters.find((item) => item.saved_filter_id === id);
-    if (saved && !onApplySaved(saved)) setSelectedSavedId("");
-  };
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      await onSave(saveName);
-      setSaveName("");
-    } finally {
-      setSaving(false);
-    }
-  };
 
   return (
     <aside
@@ -4339,76 +4564,8 @@ function FilterPanel({
       <div className="filter-scroll" id="filter-controls">
         <section className="filter-section">
           <div className="filter-section-heading">
-            <h3>已保存的筛选</h3>
-            <span>{savedFilters.length} 组</span>
-          </div>
-          <div className="saved-filter-row">
-            <div className="select-wrap" style={{ flex: 1 }}>
-              <label className="sr-only" htmlFor="saved-filter">
-                选择已保存的筛选
-              </label>
-              <select
-                className="select-field"
-                id="saved-filter"
-                onChange={(event) => applySaved(event.target.value)}
-                value={selectedSavedId}
-              >
-                <option value="">选择一组筛选</option>
-                {savedFilters.map((item) => (
-                  <option
-                    key={item.saved_filter_id}
-                    value={item.saved_filter_id}
-                  >
-                    {item.name}
-                  </option>
-                ))}
-              </select>
-              <Icon name="chevron-down" size={16} />
-            </div>
-            {selectedSavedId && (
-              <button
-                aria-label="删除当前保存的筛选"
-                className="icon-button"
-                onClick={() => {
-                  const item = savedFilters.find(
-                    (filter) => filter.saved_filter_id === selectedSavedId,
-                  );
-                  if (!item) return;
-                  void onDeleteSaved(item).then(() => setSelectedSavedId(""));
-                }}
-                type="button"
-              >
-                <Icon name="close" size={16} />
-              </button>
-            )}
-          </div>
-          <div className="saved-filter-row">
-            <label className="sr-only" htmlFor="save-filter-name">
-              筛选名称
-            </label>
-            <input
-              className="field"
-              id="save-filter-name"
-              maxLength={120}
-              onChange={(event) => setSaveName(event.target.value)}
-              placeholder="为当前条件命名"
-              value={saveName}
-            />
-            <button
-              className="button"
-              disabled={saving}
-              onClick={() => void save()}
-              type="button"
-            >
-              保存
-            </button>
-          </div>
-        </section>
-
-        <section className="filter-section">
-          <div className="filter-section-heading">
             <h3>学历与院校</h3>
-            <span>精确筛选</span>
+            <span>任一满足</span>
           </div>
           <div className="field-stack">
             <span className="field-label">院校类型</span>
@@ -4437,6 +4594,7 @@ function FilterPanel({
                 </label>
               ))}
             </div>
+            <span className="field-hint">已选院校类型满足任一即可。</span>
           </div>
           <span className="field-label">最高学历</span>
           <div className="choice-grid" aria-label="学历条件">
@@ -4459,6 +4617,7 @@ function FilterPanel({
               </label>
             ))}
           </div>
+          <span className="field-hint">已选最高学历满足任一即可。</span>
           <div className="field-stack">
             <span className="field-label">应届状态</span>
             <div className="choice-grid choice-grid-inline" role="radiogroup">
@@ -4497,91 +4656,12 @@ function FilterPanel({
               </label>
             </div>
           )}
-          <div className="field-stack">
-            <label className="field-label" htmlFor="school-name">
-              院校名称
-            </label>
-            <input
-              className="field"
-              id="school-name"
-              onChange={(event) => updateAfterTyping({ schoolName: event.target.value })}
-              placeholder="可填全称或简称，例如：北大"
-              value={draft.schoolName}
-            />
-          </div>
-          <details className="advanced-filter">
-            <summary>成绩、绩点与排名（非必选）</summary>
-            <div className="filter-inline-fields">
-              <label className="field-stack">
-                <span className="field-label">最低平均成绩</span>
-                <input
-                  className="field"
-                  max="100"
-                  min="0"
-                  onChange={(event) => updateAfterTyping({ minAverageScore: event.target.value })}
-                  placeholder="例如：85"
-                  type="number"
-                  value={draft.minAverageScore}
-                />
-              </label>
-              <label className="field-stack">
-                <span className="field-label">最低绩点百分比</span>
-                <input
-                  className="field"
-                  max="100"
-                  min="0"
-                  onChange={(event) => updateAfterTyping({ minGpaPercent: event.target.value })}
-                  placeholder="例如：85"
-                  type="number"
-                  value={draft.minGpaPercent}
-                />
-              </label>
-              <label className="field-stack">
-                <span className="field-label">专业名次不低于</span>
-                <input
-                  className="field"
-                  min="1"
-                  onChange={(event) => updateAfterTyping({ maxRankPosition: event.target.value })}
-                  placeholder="例如：10（前 10 名）"
-                  type="number"
-                  value={draft.maxRankPosition}
-                />
-              </label>
-              <label className="field-stack">
-                <span className="field-label">排名前百分比</span>
-                <input
-                  className="field"
-                  max="100"
-                  min="1"
-                  onChange={(event) => updateAfterTyping({ maxRankPercent: event.target.value })}
-                  placeholder="例如：10"
-                  type="number"
-                  value={draft.maxRankPercent}
-                />
-              </label>
-            </div>
-            <span className="field-hint">
-              只匹配简历中有明确成绩、绩点或排名证据的同一条教育经历。
-            </span>
-          </details>
-          <div className="field-stack">
-            <label className="field-label" htmlFor="major-name">
-              专业方向
-            </label>
-            <input
-              className="field"
-              id="major-name"
-              onChange={(event) => updateAfterTyping({ major: event.target.value })}
-              placeholder="例如：计算机科学"
-              value={draft.major}
-            />
-          </div>
         </section>
 
         <section className="filter-section">
           <div className="filter-section-heading">
             <h3>经历类别</h3>
-            <span>按同一条经历匹配</span>
+            <span>全部已选类型</span>
           </div>
           <div className="field-stack">
             <label className="field-label" htmlFor="min-experience">
@@ -4602,7 +4682,7 @@ function FilterPanel({
               value={draft.minEmploymentMonths}
             />
             <div className="range-values">
-              <span>不限</span>
+              <span>{formatMinimumDuration(draft.minEmploymentMonths)}</span>
               <span>20 年</span>
             </div>
           </div>
@@ -4655,398 +4735,14 @@ function FilterPanel({
                 </label>
               ))}
             </div>
-            <span className="field-hint">不选则不限经历类型。</span>
+            <span className="field-hint">
+              已选经历类型需全部具备；学历与院校、经历类别会同时生效。不选则不限。
+            </span>
           </div>
-          <div className="field-stack">
-            <label className="field-label" htmlFor="experience-name">
-              项目 / 竞赛 / 经历名称
-            </label>
-            <input
-              className="field"
-              id="experience-name"
-              onChange={(event) => updateAfterTyping({ experienceName: event.target.value })}
-              placeholder="例如：全国大学生数学建模竞赛"
-              value={draft.experienceName}
-            />
-          </div>
-          <div className="field-stack">
-            <label className="field-label" htmlFor="company-name">
-              公司 / 组织
-            </label>
-            <input
-              className="field"
-              id="company-name"
-              onChange={(event) => updateAfterTyping({ company: event.target.value })}
-              placeholder="例如：字节跳动"
-              value={draft.company}
-            />
-          </div>
-          <div className="field-stack">
-            <label className="field-label" htmlFor="role-name">
-              职位名称
-            </label>
-            <input
-              className="field"
-              id="role-name"
-              onChange={(event) => updateAfterTyping({ title: event.target.value })}
-              placeholder="例如：后端工程师"
-              value={draft.title}
-            />
-          </div>
-          <details className="advanced-filter">
-            <summary>经历获奖情况（非必选）</summary>
-            <div className="choice-grid">
-              {filterOptions.award_levels.map((option) => (
-                <label className="choice-row" key={option.value}>
-                  <input
-                    checked={draft.experienceAwardLevels.includes(option.value)}
-                    onChange={() =>
-                      update({
-                        experienceAwardLevels: draft.experienceAwardLevels.includes(option.value)
-                          ? draft.experienceAwardLevels.filter((value) => value !== option.value)
-                          : [...draft.experienceAwardLevels, option.value],
-                      })
-                    }
-                    type="checkbox"
-                  />
-                  {option.label}
-                </label>
-              ))}
-            </div>
-            <input
-              className="field"
-              onChange={(event) => updateAfterTyping({ experienceAwardResult: event.target.value })}
-              placeholder="获奖结果，例如：一等奖"
-              value={draft.experienceAwardResult}
-            />
-          </details>
         </section>
 
-        <section className="filter-section">
-          <div className="filter-section-heading">
-            <h3>技能</h3>
-            <span>支持全部或任一</span>
-          </div>
-          <div className="field-stack">
-            <span className="field-label">技能匹配方式</span>
-            <div className="choice-grid choice-grid-inline" role="radiogroup">
-              {(
-                [
-                  ["all", "全部具备"],
-                  ["any", "任一具备"],
-                ] as Array<[MatchMode, string]>
-              ).map(([value, label]) => (
-                <label className="choice-row" key={value}>
-                  <input
-                    checked={draft.skillsMode === value}
-                    name="skills-match-mode"
-                    onChange={() => update({ skillsMode: value })}
-                    type="radio"
-                  />
-                  {label}
-                </label>
-              ))}
-            </div>
-          </div>
-          <span className="field-label">技能分类（非必选）</span>
-          <div className="choice-grid">
-            {filterOptions.skill_categories.map((option) => (
-              <label className="choice-row" key={option.value}>
-                <input
-                  checked={draft.skillCategories.includes(option.value)}
-                  onChange={() =>
-                    update({
-                      skillCategories: draft.skillCategories.includes(option.value)
-                        ? draft.skillCategories.filter((value) => value !== option.value)
-                        : [...draft.skillCategories, option.value],
-                    })
-                  }
-                  type="checkbox"
-                />
-                {option.label}
-              </label>
-            ))}
-          </div>
-          <ChipInput
-            label="核心技能"
-            onChange={(skills) => update({ skills })}
-            placeholder="输入技能后按 Enter"
-            values={draft.skills}
-          />
-        </section>
-
-        <section className="filter-section">
-          <div className="filter-section-heading">
-            <h3>英语能力</h3>
-            <span>证书之间按 OR</span>
-          </div>
-          <div className="credential-list">
-            {filterOptions.language_credentials.map((option) => {
-              const selected = draft.languageCredentials.includes(option.value);
-              return (
-                <div className="credential-row" key={option.value}>
-                  <label className="choice-row">
-                    <input
-                      checked={selected}
-                      onChange={() =>
-                        update({
-                          languageCredentials: selected
-                            ? draft.languageCredentials.filter((value) => value !== option.value)
-                            : [...draft.languageCredentials, option.value],
-                        })
-                      }
-                      type="checkbox"
-                    />
-                    {option.label}
-                  </label>
-                  {selected && option.value !== "custom" && (
-                    <input
-                      aria-label={`${option.label}最低分`}
-                      className="field score-field"
-                      min="0"
-                      onChange={(event) =>
-                        updateAfterTyping({
-                          languageScores: {
-                            ...draft.languageScores,
-                            [option.value]: event.target.value,
-                          },
-                        })
-                      }
-                      placeholder="最低分（可选）"
-                      type="number"
-                      value={draft.languageScores[option.value] ?? ""}
-                    />
-                  )}
-                </div>
-              );
-            })}
-          </div>
-          {draft.languageCredentials.includes("custom") && (
-            <input
-              className="field"
-              onChange={(event) => updateAfterTyping({ customLanguageName: event.target.value })}
-              placeholder="填写英语证书名称"
-              value={draft.customLanguageName}
-            />
-          )}
-          <span className="field-hint">
-            “四级、英语四级、CET4、CET-4”等写法均匹配大学英语四级（CET-4）。
-          </span>
-        </section>
-
-        <section className="filter-section">
-          <div className="filter-section-heading">
-            <h3>奖学金与竞赛</h3>
-            <span>均为非必选</span>
-          </div>
-          <PresenceRadio
-            label="奖学金"
-            name="scholarship-status"
-            options={filterOptions.presence_statuses}
-            value={draft.scholarshipStatus}
-            onChange={(scholarshipStatus) => update({ scholarshipStatus })}
-          />
-          {draft.scholarshipStatus === "present" && (
-            <div className="field-stack">
-              <div className="choice-grid">
-                {filterOptions.scholarship_levels.map((option) => (
-                  <label className="choice-row" key={option.value}>
-                    <input
-                      checked={draft.scholarshipLevels.includes(option.value)}
-                      onChange={() =>
-                        update({
-                          scholarshipLevels: draft.scholarshipLevels.includes(option.value)
-                            ? draft.scholarshipLevels.filter((value) => value !== option.value)
-                            : [...draft.scholarshipLevels, option.value],
-                        })
-                      }
-                      type="checkbox"
-                    />
-                    {option.label}
-                  </label>
-                ))}
-              </div>
-              <input
-                className="field"
-                onChange={(event) => updateAfterTyping({ scholarshipName: event.target.value })}
-                placeholder="奖学金名称（可选）"
-                value={draft.scholarshipName}
-              />
-            </div>
-          )}
-          <PresenceRadio
-            label="技能竞赛参赛记录"
-            name="competition-status"
-            options={filterOptions.presence_statuses}
-            value={draft.competitionStatus}
-            onChange={(competitionStatus) => update({ competitionStatus })}
-          />
-          <PresenceRadio
-            label="技能竞赛获奖记录"
-            name="competition-award-status"
-            options={filterOptions.presence_statuses}
-            value={draft.competitionAwardStatus}
-            onChange={(competitionAwardStatus) => update({ competitionAwardStatus })}
-          />
-        </section>
-
-        <section className="filter-section">
-          <div className="filter-section-heading">
-            <h3>管理与领导经历</h3>
-            <span>非必选</span>
-          </div>
-          <div className="choice-grid">
-            {filterOptions.leadership_contexts.map((option) => (
-              <label className="choice-row" key={option.value}>
-                <input
-                  checked={draft.leadershipContexts.includes(option.value)}
-                  onChange={() =>
-                    update({
-                      leadershipContexts: draft.leadershipContexts.includes(option.value)
-                        ? draft.leadershipContexts.filter((item) => item !== option.value)
-                        : [...draft.leadershipContexts, option.value],
-                    })
-                  }
-                  type="checkbox"
-                />
-                {option.label}
-              </label>
-            ))}
-          </div>
-          <ChipInput
-            label="角色名称"
-            onChange={(leadershipRoles) => update({ leadershipRoles })}
-            placeholder="例如：班干部、组长、主管、经理"
-            values={draft.leadershipRoles}
-          />
-        </section>
-
-        <section className="filter-section">
-          <div className="filter-section-heading">
-            <h3>自定义关键词</h3>
-            <span>泛匹配或精准匹配</span>
-          </div>
-          <div className="field-stack">
-            <span className="field-label">关键词匹配方式</span>
-            <div className="choice-grid choice-grid-inline" role="radiogroup">
-              {filterOptions.keyword_modes.map((option) => (
-                <label className="choice-row" key={option.value}>
-                  <input
-                    checked={draft.keywordsMode === option.value}
-                    name="keywords-match-mode"
-                    onChange={() => update({ keywordsMode: option.value })}
-                    type="radio"
-                  />
-                  {option.label}
-                </label>
-              ))}
-            </div>
-          </div>
-          <ChipInput
-            label="补充关键词"
-            onChange={(keywords) => update({ keywords })}
-            placeholder="输入关键词后按 Enter"
-            values={draft.keywords}
-          />
-        </section>
       </div>
     </aside>
-  );
-}
-
-function PresenceRadio({
-  label,
-  name,
-  options,
-  value,
-  onChange,
-}: {
-  label: string;
-  name: string;
-  options: FilterOptions["presence_statuses"];
-  value: PresenceStatus;
-  onChange: (value: PresenceStatus) => void;
-}) {
-  return (
-    <div className="field-stack">
-      <span className="field-label">{label}</span>
-      <div className="choice-grid choice-grid-inline" role="radiogroup">
-        {options.map((option) => (
-          <label className="choice-row" key={option.value}>
-            <input
-              checked={value === option.value}
-              name={name}
-              onChange={() => onChange(option.value)}
-              type="radio"
-            />
-            {option.label}
-          </label>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ChipInput({
-  label,
-  values,
-  onChange,
-  placeholder,
-}: {
-  label: string;
-  values: string[];
-  onChange: (values: string[]) => void;
-  placeholder: string;
-}) {
-  const [value, setValue] = useState("");
-  const add = () => {
-    const normalized = value.trim();
-    if (
-      !normalized ||
-      values.some(
-        (item) => item.toLocaleLowerCase() === normalized.toLocaleLowerCase(),
-      )
-    )
-      return;
-    onChange([...values, normalized]);
-    setValue("");
-  };
-  return (
-    <div className="field-stack">
-      <label className="field-label">{label}</label>
-      <div className="chip-input">
-        {values.map((item) => (
-          <span className="filter-chip" key={item}>
-            {item}
-            <button
-              aria-label={`移除 ${item}`}
-              onClick={() =>
-                onChange(values.filter((valueItem) => valueItem !== item))
-              }
-              type="button"
-            >
-              <Icon name="close" size={12} />
-            </button>
-          </span>
-        ))}
-        <input
-          onBlur={add}
-          onChange={(event) => setValue(event.target.value)}
-          onKeyDown={(event) => {
-            if (
-              event.key === "Enter" ||
-              event.key === "," ||
-              event.key === "，"
-            ) {
-              event.preventDefault();
-              add();
-            }
-          }}
-          placeholder={values.length ? "继续添加" : placeholder}
-          value={value}
-        />
-      </div>
-    </div>
   );
 }
 
@@ -5084,58 +4780,13 @@ function activeResultDisplayColumns(draft: FilterDraft): ResultDisplayColumn[] {
   };
 
   if (draft.graduationStatus !== "any") add("graduation", "毕业时间");
+  if (draft.minEmploymentMonths > 0) {
+    add("employment_months", "正式工作年限");
+  }
   if (draft.minEmploymentOrInternshipMonths > 0) {
     add("employment_or_internship_months", "工作 + 实习年限");
   }
-
-  if (draft.schoolName.trim()) add("school", "学校");
-  if (draft.major.trim()) add("major", "专业");
-  if (
-    draft.minAverageScore ||
-    draft.minGpaPercent ||
-    draft.maxRankPosition ||
-    draft.maxRankPercent
-  ) {
-    add("academic_performance", "学业表现");
-  }
-
   if (draft.experienceTypes.length) add("experience_type", "经历类型");
-  if (draft.experienceName.trim()) add("experience_name", "经历名称");
-  if (draft.company.trim()) add("organization", "公司 / 组织");
-  if (draft.title.trim()) add("title", "职位");
-  if (
-    draft.experienceAwardLevels.length ||
-    draft.experienceAwardResult.trim()
-  ) {
-    add("experience_award", "经历获奖");
-  }
-
-  if (draft.skills.length || draft.skillCategories.length) add("skills", "技能");
-  if (
-    draft.languageCredentials.some(
-      (credential) =>
-        credential !== "custom" || Boolean(draft.customLanguageName.trim()),
-    )
-  ) {
-    add("language", "语言证书");
-  }
-  if (
-    draft.scholarshipStatus !== "any" ||
-    draft.scholarshipName.trim() ||
-    draft.scholarshipLevels.length
-  ) {
-    add("scholarship", "奖学金");
-  }
-  if (
-    draft.competitionStatus !== "any" ||
-    draft.competitionAwardStatus !== "any"
-  ) {
-    add("competition", "竞赛");
-  }
-  if (draft.leadershipContexts.length || draft.leadershipRoles.length) {
-    add("leadership", "领导经历");
-  }
-  if (draft.keywords.length) add("keywords", "关键词命中");
 
   return columns;
 }

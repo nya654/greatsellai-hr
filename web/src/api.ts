@@ -65,6 +65,12 @@ import type {
   ResumeUploadResponse,
   RecruitingAgentTurn,
   RecruitingAgentTurnInput,
+  TalentSearchProfile,
+  TalentSearchProfileConfirmInput,
+  TalentSearchProfileGenerateInput,
+  TalentSearchProfileRefineInput,
+  TalentSearchProfileRunInput,
+  TalentSearchRun,
   SavedFilter,
   SavedFilterCreate,
   ScoreTemplate,
@@ -621,6 +627,71 @@ export function createApiClient(options: ApiClientOptions = {}) {
 
     searchCandidates(input: CandidateSearchRequest = {}): Promise<CandidateSearchResponse> {
       return request<CandidateSearchResponse>("/candidates/search", { method: "POST", body: input });
+    },
+
+    generateTalentSearchProfile(
+      input: TalentSearchProfileGenerateInput,
+    ): Promise<TalentSearchProfile> {
+      return request<TalentSearchProfile>("/talent-search-profiles/generate", {
+        method: "POST",
+        body: input,
+      });
+    },
+
+    getTalentSearchProfile(profileId: string): Promise<TalentSearchProfile> {
+      return request<TalentSearchProfile>(
+        `/talent-search-profiles/${resourcePath(profileId)}`,
+      );
+    },
+
+    listTalentSearchProfiles(limit = 12): Promise<{ items: TalentSearchProfile[] }> {
+      return request<{ items: TalentSearchProfile[] }>(
+        `/talent-search-profiles?${new URLSearchParams({ limit: String(limit) }).toString()}`,
+      );
+    },
+
+    refineTalentSearchProfile(
+      profileId: string,
+      input: TalentSearchProfileRefineInput,
+    ): Promise<TalentSearchProfile> {
+      return request<TalentSearchProfile>(
+        `/talent-search-profiles/${resourcePath(profileId)}/refine`,
+        { method: "POST", body: input },
+      );
+    },
+
+    confirmTalentSearchProfile(
+      profileId: string,
+      input: TalentSearchProfileConfirmInput,
+    ): Promise<TalentSearchProfile> {
+      return request<TalentSearchProfile>(
+        `/talent-search-profiles/${resourcePath(profileId)}/confirm`,
+        { method: "POST", body: input },
+      );
+    },
+
+    startTalentSearchProfileRun(
+      profileId: string,
+      input: TalentSearchProfileRunInput,
+    ): Promise<TalentSearchRun> {
+      return request<TalentSearchRun>(
+        `/talent-search-profiles/${resourcePath(profileId)}/runs`,
+        { method: "POST", body: input },
+      );
+    },
+
+    getTalentSearchProfileRun(
+      profileId: string,
+      runId: string,
+      input: Omit<TalentSearchProfileRunInput, "revision_id"> = {},
+    ): Promise<TalentSearchRun> {
+      const query = new URLSearchParams();
+      if (input.limit) query.set("limit", String(input.limit));
+      if (input.cursor) query.set("cursor", input.cursor);
+      const suffix = query.size ? `?${query.toString()}` : "";
+      return request<TalentSearchRun>(
+        `/talent-search-profiles/${resourcePath(profileId)}/runs/${resourcePath(runId)}${suffix}`,
+      );
     },
 
     getFilterOptions(): Promise<FilterOptions> {

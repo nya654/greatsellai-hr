@@ -1491,6 +1491,27 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     setLibraryRefreshToken((current) => current + 1);
   }, []);
 
+  const applyAuthSession = useCallback((session: AuthSession) => {
+    setAuthSession(session);
+    setAuthState(session.authenticated ? "authenticated" : "unauthenticated");
+  }, []);
+
+  // The verification email can be opened in another browser or device. The
+  // registration tab keeps its own signed session, so polling the current
+  // session is enough to learn that the user record was verified elsewhere.
+  const refreshAuthSession = useCallback(async (): Promise<AuthSession | null> => {
+    try {
+      const session = await api.getAuthSession();
+      applyAuthSession(session);
+      return session;
+    } catch {
+      // A transient refresh failure must not log out a person who is simply
+      // waiting for their verification email. The initial session bootstrap
+      // below still handles a genuine unauthenticated start safely.
+      return null;
+    }
+  }, [applyAuthSession]);
+
   const refreshSavedFilters = useCallback(async () => {
     try {
       setSavedFilters(await api.listSavedFilters());
@@ -1656,14 +1677,13 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     void api
       .getAuthSession()
       .then((session) => {
-        setAuthSession(session);
-        setAuthState(session.authenticated ? "authenticated" : "unauthenticated");
+        applyAuthSession(session);
       })
       .catch(() => {
         setAuthSession(null);
         setAuthState("unauthenticated");
       });
-  }, []);
+  }, [applyAuthSession]);
 
   useEffect(() => {
     if (
@@ -2164,8 +2184,7 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
   };
 
   const establishSession = (session: AuthSession) => {
-    setAuthSession(session);
-    setAuthState(session.authenticated ? "authenticated" : "unauthenticated");
+    applyAuthSession(session);
     if (session.authenticated) {
       const nextPath = new URLSearchParams(window.location.search).get("next");
       if (
@@ -2245,7 +2264,12 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     setAuthError(null);
     setAuthLoading(true);
     try {
-      return establishSession(await api.completeEmailVerification(token));
+      // Keep the verification-link tab on its explicit confirmation page.
+      // The registration tab polls its own session and is the one that enters
+      // the workspace after this server-side verification succeeds.
+      const session = await api.completeEmailVerification(token);
+      applyAuthSession(session);
+      return session;
     } catch (error) {
       setAuthError(humanizeError(error));
       return null;
@@ -2310,6 +2334,7 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
         loading={authLoading}
         session={authSession}
         onComplete={completeEmailVerification}
+        onRefreshSession={refreshAuthSession}
         onResend={resendEmailVerification}
       />
     );
@@ -2712,25 +2737,78 @@ function EmailVerificationPage({
   loading,
   session,
   onComplete,
+  onRefreshSession,
   onResend,
 }: {
   error: string | null;
   loading: boolean;
   session: AuthSession | null;
   onComplete: (token: string) => Promise<AuthSession | null>;
+  onRefreshSession: () => Promise<AuthSession | null>;
   onResend: () => Promise<{ accepted: boolean; delivery_available: boolean } | null>;
 }) {
   const token = new URLSearchParams(window.location.search).get("token");
   const completionStarted = useRef(false);
+  const [verificationState, setVerificationState] = useState<
+    "waiting" | "verifying" | "verified" | "failed"
+  >(token ? "verifying" : "waiting");
   const [resendState, setResendState] = useState<"idle" | "sent" | "unavailable">("idle");
   const email = session?.user?.email ?? null;
   const canResend = Boolean(session?.authenticated && session.email_verification_required);
+  const isWaitingForVerification = Boolean(
+    !token && session?.authenticated && session.email_verification_required,
+  );
+  const verificationSucceeded = Boolean(token && verificationState === "verified");
+  const verificationInProgress = Boolean(token && verificationState === "verifying");
 
   useEffect(() => {
     if (!token || completionStarted.current) return;
     completionStarted.current = true;
-    void onComplete(token);
+    setVerificationState("verifying");
+    void onComplete(token).then((result) => {
+      setVerificationState(
+        result?.authenticated && !result.email_verification_required
+          ? "verified"
+          : "failed",
+      );
+    });
   }, [onComplete, token]);
+
+  useEffect(() => {
+    if (!isWaitingForVerification) return;
+
+    let active = true;
+    let refreshing = false;
+    const refresh = async () => {
+      if (refreshing) return;
+      refreshing = true;
+      try {
+        await onRefreshSession();
+      } finally {
+        refreshing = false;
+      }
+    };
+    const refreshOnFocus = () => {
+      if (active) void refresh();
+    };
+
+    void refresh();
+    const intervalId = window.setInterval(refresh, 3_000);
+    window.addEventListener("focus", refreshOnFocus);
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", refreshOnFocus);
+    };
+  }, [isWaitingForVerification, onRefreshSession]);
+
+  useEffect(() => {
+    if (!token && session?.authenticated && !session.email_verification_required) {
+      // This is the original registration tab. It is the only page that
+      // automatically enters the workspace after a successful email check.
+      window.location.replace(workspaceHref());
+    }
+  }, [session?.authenticated, session?.email_verification_required, token]);
 
   const maskedEmail = email
     ? email.replace(/^(.{1,2}).*(@.*)$/, "$1•••$2")
@@ -2740,20 +2818,47 @@ function EmailVerificationPage({
     <AuthPageLayout
       description="验证工作邮箱后即可进入你的独立招聘工作区。候选人、简历、岗位和 AI 结论始终按工作区隔离。"
       eyebrow="账户验证"
-      title={token ? "正在验证邮箱" : "请验证工作邮箱"}
+      title={
+        verificationSucceeded
+          ? "邮箱验证成功"
+          : token
+            ? verificationInProgress
+              ? "正在验证邮箱"
+              : "邮箱验证未完成"
+            : "请验证工作邮箱"
+      }
     >
       <div aria-live="polite" className="auth-success-state">
         <span className="auth-success-icon">
-          <Icon name={token ? "check" : "inbox"} size={20} />
+          <Icon name={verificationSucceeded ? "check" : "inbox"} size={20} />
         </span>
-        <h2>{token ? "正在确认你的邮箱" : "请查收验证邮件"}</h2>
-        {token ? (
-          <p>{loading ? "请稍候，正在安全地验证这条链接。" : "验证链接无效或已失效时，你可以登录后重新发送邮件。"}</p>
+        <h2>
+          {verificationSucceeded
+            ? "邮箱已验证"
+            : token
+              ? verificationInProgress
+                ? "正在确认你的邮箱"
+                : "验证链接未完成验证"
+              : "请查收验证邮件"}
+        </h2>
+        {verificationSucceeded ? (
+          <p>验证已经完成。请返回发起注册的页面，系统会自动进入工作台；你可以直接关闭此页面。</p>
+        ) : token ? (
+          <p>
+            {loading || verificationInProgress
+              ? "请稍候，正在安全地验证这条链接。"
+              : "验证链接无效或已失效时，你可以登录后重新发送邮件。"}
+          </p>
         ) : (
           <p>
             {maskedEmail
               ? `请查看 ${maskedEmail} 的收件箱，并在 24 小时内打开验证链接。`
               : "请登录注册邮箱后打开验证链接，完成后即可进入工作台。"}
+          </p>
+        )}
+        {isWaitingForVerification && (
+          <p className="auth-footer-copy" role="status">
+            验证完成后，本页面会自动进入工作台。
           </p>
         )}
         {error && <p className="auth-error" role="alert">{error}</p>}
@@ -2779,7 +2884,7 @@ function EmailVerificationPage({
         {!canResend && !token && (
           <a className="button button-primary auth-submit" href={workspaceHref("/login")}>返回登录</a>
         )}
-        {token && !loading && (
+        {token && !verificationSucceeded && !loading && (
           <a className="button button-primary auth-submit" href={workspaceHref("/login")}>返回登录</a>
         )}
         <p className="auth-footer-copy">

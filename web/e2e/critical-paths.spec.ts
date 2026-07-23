@@ -4,6 +4,7 @@ import {
   e2eResumePdf,
   e2eControl,
   logout,
+  registerAndAwaitEmailVerification,
   registerAndVerify,
   seedWorkspaceFixture,
 } from "./helpers";
@@ -27,6 +28,38 @@ test.describe("招聘工作台关键路径", () => {
     await page.locator("#login-password").fill("E2E-password-2026");
     await page.getByRole("button", { name: "登录工作台" }).click();
     await expect(page.getByRole("button", { name: "退出登录" })).toBeVisible();
+  });
+
+  test("验证链接页只确认成功，原注册页自动进入工作台", async ({ page, browser }) => {
+    const { verificationPath } = await registerAndAwaitEmailVerification(
+      page,
+      "verification-return",
+    );
+    await expect(
+      page.getByText("验证完成后，本页面会自动进入工作台。"),
+    ).toBeVisible();
+
+    // Use a separate browser context to prove the registration page discovers
+    // the completed verification from its own session rather than sharing a
+    // tab, cookie, or navigation with the page that opened the email link.
+    const verificationContext = await browser.newContext();
+    try {
+      const verificationPage = await verificationContext.newPage();
+      await verificationPage.goto(new URL(verificationPath, page.url()).toString());
+
+      await expect(
+        verificationPage.getByRole("heading", { name: "邮箱已验证" }),
+      ).toBeVisible();
+      await expect(verificationPage).toHaveURL(/\/verify-email\?token=/);
+      await expect(
+        verificationPage.getByRole("button", { name: "退出登录" }),
+      ).toHaveCount(0);
+
+      await expect(page).toHaveURL(/\/$/);
+      await expect(page.getByRole("button", { name: "退出登录" })).toBeVisible();
+    } finally {
+      await verificationContext.close();
+    }
   });
 
   test("已验证用户可通过真实浏览器路径找回并使用新密码", async ({ page }) => {

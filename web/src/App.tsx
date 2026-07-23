@@ -7395,6 +7395,7 @@ function MailboxPage({
   const [history, setHistory] = useState<MailboxImportHistory | null>(null);
   const [draft, setDraft] = useState<MailboxDraft>(() => newMailboxDraft());
   const [isCreating, setIsCreating] = useState(true);
+  const [isEditingConnection, setIsEditingConnection] = useState(false);
   const [retention, setRetention] = useState<MailboxRetentionOverview | null>(null);
   const [retentionRuns, setRetentionRuns] = useState<MailboxRetentionRuns | null>(null);
   const [mailboxJobs, setMailboxJobs] = useState<MailboxBackgroundJobHistory | null>(null);
@@ -7481,12 +7482,14 @@ function MailboxPage({
     setSelectedMailboxId(config.mailbox_id);
     setDraft(mailboxDraftFromConfig(config));
     setIsCreating(false);
+    setIsEditingConnection(false);
   };
 
   const startCreatingMailbox = () => {
     setSelectedMailboxId(null);
     setDraft(newMailboxDraft());
     setIsCreating(true);
+    setIsEditingConnection(false);
   };
 
   const updateDraft = <Key extends keyof MailboxDraft>(key: Key, value: MailboxDraft[Key]) => {
@@ -7863,6 +7866,7 @@ function MailboxPage({
   ].filter((item, index, entries) => entries.findIndex((candidate) => candidate.mailboxId === item.mailboxId) === index);
   const hasMailboxChannels = mailboxes.length > 0;
   const showMailboxSetup = !loading && !hasMailboxChannels;
+  const showMailboxOverview = Boolean(selectedConfig && !isCreating && !isEditingConnection);
 
   const mailboxConnectionFields = (
     <div className="mailbox-connection-form">
@@ -7934,6 +7938,11 @@ function MailboxPage({
 
   const mailboxFormActions = (
     <div className="review-actions mailbox-form-actions">
+      {!isCreating && selectedConfig && isEditingConnection && (
+        <button className="button button-ghost" disabled={saving || archiving || selectedSyncInProgress} onClick={() => selectMailbox(selectedConfig)} type="button">
+          <Icon name="arrow-left" size={16} />返回概览
+        </button>
+      )}
       {!isCreating && selectedConfig && (
         <button className="button button-ghost" disabled={archiving || saving || selectedSyncInProgress || !selectedConfig.enabled || Boolean(selectedConfig.archived_at)} onClick={() => void syncMailbox(selectedConfig)} type="button">
           {enqueuingMailboxId === selectedConfig.mailbox_id ? <><i className="spinner" />正在加入队列</> : selectedSyncJob ? <><i className="spinner" />后台同步中</> : <><Icon name="refresh" size={16} />同步此通道</>}
@@ -7948,6 +7957,62 @@ function MailboxPage({
         {saving ? <><i className="spinner" />正在保存</> : <><Icon name="check" size={16} />{isCreating ? "创建并开始接收" : selectedMailboxArchived ? "已归档" : "保存通道"}</>}
       </button>
     </div>
+  );
+
+  const mailboxOperationalOverview = selectedConfig && (
+    <section className="panel mailbox-operation-overview" aria-label={`${selectedConfig.display_name} 收件概览`}>
+      <div className="mailbox-operation-heading">
+        <div className="mailbox-operation-identity">
+          <span className="mailbox-operation-icon"><Icon name="inbox" size={20} /></span>
+          <div>
+            <div className="mailbox-operation-title-row">
+              <h2>{selectedConfig.display_name}</h2>
+              <span className={`status-pill${mailboxChannelStatusClass(selectedConfig)}`}>{mailboxChannelStatus(selectedConfig)}</span>
+            </div>
+            <p>{selectedConfig.email_address || "尚未配置接收邮箱"} · {selectedConfig.mailbox || "INBOX"}</p>
+          </div>
+        </div>
+        <div className="mailbox-operation-actions">
+          <button
+            className="button button-primary"
+            disabled={!selectedConfig.enabled || Boolean(selectedConfig.archived_at) || selectedSyncInProgress}
+            onClick={() => void syncMailbox(selectedConfig)}
+            type="button"
+          >
+            {selectedSyncInProgress ? <><i className="spinner" />后台同步中</> : <><Icon name="refresh" size={16} />同步此通道</>}
+          </button>
+          <button className="button" disabled={Boolean(selectedConfig.archived_at) || selectedSyncInProgress} onClick={() => setIsEditingConnection(true)} type="button">
+            <Icon name="gear" size={16} />编辑连接
+          </button>
+        </div>
+      </div>
+
+      <div className="mailbox-operation-facts">
+        <div>
+          <span>开始接收</span>
+          <strong>{selectedConfig.import_started_at ? formatLibraryDate(selectedConfig.import_started_at) : "正在初始化"}</strong>
+        </div>
+        <div>
+          <span>最近同步</span>
+          <strong>{selectedConfig.last_synced_at ? formatLibraryDate(selectedConfig.last_synced_at) : "尚未同步"}</strong>
+        </div>
+        <div>
+          <span>后台同步</span>
+          <strong>{selectedSyncJob ? mailboxBackgroundJobStatusLabel(selectedSyncJob) : selectedConfig.enabled ? "已启用" : "已暂停"}</strong>
+        </div>
+        <div>
+          <span>内容保留</span>
+          <strong>{retention ? mailboxRetentionPolicyLabel(retention.retention_policy) : "正在读取"}</strong>
+        </div>
+      </div>
+
+      {selectedConfig.active_sync_alert && (
+        <div className="mailbox-operation-alert" role="alert">
+          <Icon name="activity" size={16} />
+          <span>{mailboxSyncAlertTitle(selectedConfig)}，连续失败 {selectedConfig.active_sync_alert.consecutive_failures} 次。{mailboxImportErrorLabel(selectedConfig.active_sync_alert.last_error_code)}</span>
+        </div>
+      )}
+    </section>
   );
 
   return (
@@ -8090,7 +8155,8 @@ function MailboxPage({
           </button>
         </aside>
 
-        <div className="mailbox-detail">
+        <div className={`mailbox-detail${showMailboxOverview ? " is-overview" : ""}`}>
+          {showMailboxOverview ? mailboxOperationalOverview : (
           <div className="mailbox-detail-grid">
             <section className="panel mailbox-config-panel">
               <div className="panel-heading">
@@ -8147,15 +8213,16 @@ function MailboxPage({
               )}
             </aside>
           </div>
+          )}
 
-          <section className="panel mailbox-retention-panel">
-            <div className="panel-heading">
+          <details className="panel mailbox-retention-panel">
+            <summary className="panel-heading mailbox-disclosure-heading">
               <div>
                 <h2>内容保留</h2>
                 <p>只清理当前通道的系统邮件正文与附件副本，不会删除源邮件或候选人原始简历。</p>
               </div>
               {retention && <span className="status-pill">{mailboxRetentionPolicyLabel(retention.retention_policy)}</span>}
-            </div>
+            </summary>
             {loading ? <TableSkeleton /> : !selectedConfig?.configured ? (
               <div className="mailbox-retention-empty">
                 <strong>先保存收件通道</strong>
@@ -8226,7 +8293,7 @@ function MailboxPage({
                 )}
               </>
             )}
-          </section>
+          </details>
 
           <section className="panel mailbox-history">
             <div className="panel-heading mailbox-history-heading">
@@ -8299,17 +8366,17 @@ function MailboxPage({
                   </tbody>
                 </table>
               </div>
-            ) : <div className="empty-state"><div className="empty-state-inner"><span className="empty-glyph"><Icon name="inbox" size={23} /></span><h2>还没有附件入库记录</h2><p>绑定后收到的附件会在这里显示，历史邮件不会入库。</p></div></div>}
+            ) : <div className="mailbox-history-empty"><span className="empty-glyph"><Icon name="inbox" size={21} /></span><div><h3>还没有附件入库记录</h3><p>绑定后收到的附件会显示在这里，历史邮件不会入库。</p></div></div>}
           </section>
 
-          <section className="panel mailbox-retention-history">
-            <div className="panel-heading">
+          <details className="panel mailbox-retention-history">
+            <summary className="panel-heading mailbox-disclosure-heading">
               <div>
                 <h2>清理记录</h2>
                 <p>仅保留安全统计与任务状态，不展示邮件正文、邮箱地址或附件内容。</p>
               </div>
               {retentionHasActiveRun && <span className="status-pill is-progress"><i className="spinner" />正在更新</span>}
-            </div>
+            </summary>
             <span aria-live="polite" className="sr-only">{retentionHasActiveRun ? "正在更新当前收件通道的内容清理任务状态。" : ""}</span>
             {loading ? <TableSkeleton /> : !selectedConfig?.configured ? (
               <div className="mailbox-retention-empty">
@@ -8352,7 +8419,7 @@ function MailboxPage({
                 <span>系统会每日检查当前通道的到期副本；管理员也可先预览后手动执行。</span>
               </div>
             )}
-          </section>
+          </details>
         </div>
       </div>
       )}

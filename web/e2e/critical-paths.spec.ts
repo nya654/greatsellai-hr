@@ -425,6 +425,10 @@ test.describe("招聘工作台关键路径", () => {
     await page.locator("#imap-password").fill("e2e-local-imap-authorization-code");
     await page.getByRole("button", { name: /^(保存收件通道|创建并开始接收)$/ }).click();
     await expect(page.getByText("收件通道已创建，只会入库从现在起收到的附件。")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "E2E 收件通道" })).toBeVisible();
+    await page.getByRole("button", { name: "编辑连接" }).click();
+    await expect(page.getByRole("button", { name: "返回概览" })).toBeVisible();
+    await page.getByRole("button", { name: "返回概览" }).click();
     await page.getByRole("button", { name: "同步此通道" }).click();
     await expect(page.getByText("已加入后台同步队列。")).toBeVisible();
   });

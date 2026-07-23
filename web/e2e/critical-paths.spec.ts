@@ -118,10 +118,45 @@ test.describe("招聘工作台关键路径", () => {
     await expect(institutionTypes).toBeVisible();
     await expect(page.getByLabel("院校类型快捷筛选")).toHaveCount(0);
     const institution985 = institutionTypes.getByRole("checkbox", { name: "985" });
+    const searchFor985 = page.waitForResponse((response) => {
+      if (
+        response.request().method() !== "POST" ||
+        new URL(response.url()).pathname !== "/v1/candidates/search"
+      ) {
+        return false;
+      }
+      const request = response.request().postDataJSON() as {
+        education_any_of?: Array<{
+          institution_classifications_any_of?: string[];
+        }>;
+      };
+      return request.education_any_of?.some((condition) =>
+        condition.institution_classifications_any_of?.includes("985"),
+      ) ?? false;
+    });
     await institution985.check();
+    await searchFor985;
     await expect(institution985).toBeChecked();
+    await expect(page.getByRole("button", { name: "应用筛选条件" })).toHaveCount(0);
+
+    const searchForTsinghua = page.waitForResponse((response) => {
+      if (
+        response.request().method() !== "POST" ||
+        new URL(response.url()).pathname !== "/v1/candidates/search"
+      ) {
+        return false;
+      }
+      const request = response.request().postDataJSON() as {
+        education_any_of?: Array<{
+          school_name_contains?: string[];
+        }>;
+      };
+      return request.education_any_of?.some((condition) =>
+        condition.school_name_contains?.includes("清华"),
+      ) ?? false;
+    });
     await page.locator("#school-name").fill("清华");
-    await page.getByRole("button", { name: "应用筛选条件" }).click();
+    await searchForTsinghua;
     await expect(page.getByText("E2E 推荐候选人")).toBeVisible();
     await expect(page.getByRole("columnheader", { name: "学历 / 院校", exact: true })).toBeVisible();
     await expect(page.getByRole("columnheader", { name: "经历", exact: true })).toBeVisible();
@@ -202,7 +237,7 @@ test.describe("招聘工作台关键路径", () => {
 
     await page.getByRole("button", { name: "筛选工作台", exact: true }).click();
     await page.locator("#school-name").fill("清华");
-    await page.getByRole("button", { name: "应用筛选条件" }).click();
+    await expect(page.getByRole("button", { name: "查看 E2E 推荐候选人 的评分详情" })).toBeVisible();
     await page.getByRole("button", { name: "查看 E2E 推荐候选人 的评分详情" }).click();
 
     const drawer = page.getByRole("dialog", { name: "E2E 推荐候选人 的简历详情" });
@@ -231,7 +266,7 @@ test.describe("招聘工作台关键路径", () => {
     await expect(drawer).toBeHidden();
   });
 
-  test("窄屏仍可展开筛选条件并应用", async ({ page }) => {
+  test("窄屏仍可展开筛选条件并自动应用", async ({ page }) => {
     await registerAndVerify(page, "mobile-filter");
     await page.setViewportSize({ width: 390, height: 844 });
 
@@ -243,8 +278,8 @@ test.describe("招聘工作台关键路径", () => {
     await toggle.click();
     await expect(page.locator("#school-name")).toBeVisible();
     await page.locator("#school-name").fill("清华");
-    await page.getByRole("button", { name: "应用筛选条件", exact: true }).click();
-    await expect(page.getByRole("button", { name: "展开筛选", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "应用筛选条件" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "收起筛选", exact: true })).toBeVisible();
   });
 
   test("招聘助手打开后聚焦关闭键，关闭后返回触发按钮", async ({ page }) => {

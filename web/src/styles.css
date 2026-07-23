@@ -746,14 +746,6 @@ button {
   font-variant-numeric: tabular-nums;
 }
 
-.filter-actions {
-  display: grid;
-  gap: 0.625rem;
-  padding: var(--space-md) var(--space-lg) var(--space-lg);
-  margin-top: auto;
-  border-top: 1px solid var(--line);
-}
-
 .button {
   display: inline-flex;
   min-height: 2.625rem;
@@ -5586,10 +5578,6 @@ button {
     padding: var(--space-md);
   }
 
-  .filter-actions {
-    padding: var(--space-md);
-  }
-
   .candidate-drawer {
     width: calc(100vw - 4.75rem);
     min-width: 0;
@@ -5840,22 +5828,6 @@ button {
 
   .filter-panel-header {
     min-height: 3.5rem;
-  }
-
-  .filter-actions {
-    display: none;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0.5rem var(--space-md);
-    border-top: 0;
-  }
-
-  .filter-panel.is-mobile-open .filter-actions {
-    display: flex;
-  }
-
-  .filter-actions .button {
-    min-height: 2.375rem;
   }
 
   .results-pane {

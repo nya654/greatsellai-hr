@@ -51,6 +51,7 @@ from app.models import (
     utcnow,
 )
 from app.tenant_scope import clear_organization_context, organization_context_id, set_organization_context
+from app.services.trial_quota_service import TrialQuotaError, reserve_trial_llm_call
 
 
 LEGACY_RUNTIME_CREDENTIAL_REF = "legacy-runtime-credential"
@@ -712,6 +713,15 @@ def _execute_completion(handle: _ExecutionHandle, request: CompletionRequest) ->
         max_attempts = _target_max_attempts(target_data)
         for attempt_index in range(max_attempts):
             handle.next_attempt_no += 1
+            adapter = _adapter_for_driver(route.driver)
+            try:
+                # Run all deterministic adapter work before recording an
+                # external attempt or reserving trial quota.  A malformed
+                # route/defaults payload must not consume an allowance.
+                adapter.preflight(request, route)
+            except ProviderError as exc:
+                raise AiGatewayError(f"ai_provider_{exc.category.value}") from exc
+
             invocation = _start_invocation(
                 handle,
                 route=route,
@@ -721,7 +731,6 @@ def _execute_completion(handle: _ExecutionHandle, request: CompletionRequest) ->
             )
             started = time.perf_counter()
             try:
-                adapter = _adapter_for_driver(route.driver)
                 result = adapter.complete(request, route)
             except ProviderError as exc:
                 _finish_failed_invocation(
@@ -921,6 +930,20 @@ def _start_invocation(
     target_index: int,
     fallback_of_id: str | None,
 ) -> ApiInvocation:
+    # This is the last point before an external provider request. Reserving
+    # here, rather than in a feature endpoint, means every real model attempt
+    # is covered: normal calls, Agent tool loops, retries, and fallbacks.  This
+    # gateway is the model-provider boundary, so ``service_kind`` remains
+    # reporting metadata and can never opt an invocation out of the allowance.
+    # A future non-LLM OCR transport must use a separate transport boundary.
+    try:
+        reserve_trial_llm_call(
+            handle.session,
+            organization_id=handle.organization_id,
+        )
+    except TrialQuotaError as exc:
+        raise AiGatewayError(str(exc)) from exc
+
     invocation = ApiInvocation(
         organization_id=handle.organization_id,
         ai_run_id=handle.run_id,

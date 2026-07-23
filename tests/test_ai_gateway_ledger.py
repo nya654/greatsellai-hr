@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -20,15 +21,19 @@ from app.models import (
     AiRoutePolicyVersion,
     AiRun,
     ApiInvocation,
+    Organization,
     utcnow,
 )
 from app.services.ai_gateway_service import (
+    AiGatewayError,
     AiExecutionSpec,
     _bootstrap_legacy_route_if_available,
     ai_gateway_execution,
     resolve_active_route_policy_version_id,
 )
 from app.services.deepseek_provider import DeepSeekProviderError, call_strict_function
+from app.services.trial_quota_service import TRIAL_LLM_CALL_QUOTA_EXHAUSTED_CODE
+from app.tenant_scope import clear_organization_context, set_organization_context
 
 
 def _gateway_tool_result(*, include_usage: bool = True) -> CompletionResult:
@@ -190,6 +195,24 @@ def _seed_two_target_route(
     session.commit()
 
 
+def _set_legacy_trial_llm_usage(
+    session: Session,
+    *,
+    used: int,
+    limit: int = 1000,
+) -> Organization:
+    organization = session.scalar(select(Organization).order_by(Organization.created_at))
+    assert organization is not None
+    now = utcnow()
+    organization.plan_status = "trial"
+    organization.trial_started_at = now
+    organization.trial_ends_at = now + timedelta(days=30)
+    organization.trial_llm_call_limit = limit
+    organization.trial_llm_call_used = used
+    session.commit()
+    return organization
+
+
 def test_legacy_bootstrap_uses_operator_facing_deepseek_and_route_labels(
     ai_client,
 ) -> None:
@@ -274,6 +297,239 @@ def test_gateway_writes_cost_ledger_without_persisting_prompt_or_output(
         assert not hasattr(invocation, "prompt")
         assert not hasattr(invocation, "response")
         assert not hasattr(invocation, "api_key")
+
+
+def test_gateway_enforces_trial_llm_call_cap_before_a_second_provider_attempt(
+    ai_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = ai_client.app.state.database
+    settings = ai_client.app.state.settings
+    provider_calls = 0
+
+    def succeed(self: OpenAICompatibleAdapter, request: object, route: object) -> CompletionResult:
+        nonlocal provider_calls
+        provider_calls += 1
+        return _gateway_tool_result()
+
+    monkeypatch.setattr(OpenAICompatibleAdapter, "complete", succeed)
+    with database.session_factory() as session:
+        organization = _set_legacy_trial_llm_usage(session, used=999)
+        _seed_legacy_route_price(session, settings)
+
+        with ai_gateway_execution(
+            session,
+            settings=settings,
+            spec=AiExecutionSpec(
+                feature="resume_extract_rich",
+                business_ref_type="test_resume",
+                business_ref_id="trial-quota-last-call",
+            ),
+        ):
+            assert _call_strict_tool(settings) == {"ok": True}
+
+        session.expire_all()
+        persisted = session.get(Organization, organization.id)
+        assert persisted is not None
+        assert persisted.trial_llm_call_used == 1000
+        assert provider_calls == 1
+        assert session.scalars(select(ApiInvocation)).all()
+
+        with pytest.raises(AiGatewayError, match=TRIAL_LLM_CALL_QUOTA_EXHAUSTED_CODE):
+            with ai_gateway_execution(
+                session,
+                settings=settings,
+                spec=AiExecutionSpec(
+                    feature="resume_extract_rich",
+                    business_ref_type="test_resume",
+                    business_ref_id="trial-quota-blocked-call",
+                ),
+            ):
+                _call_strict_tool(settings)
+
+        session.expire_all()
+        persisted = session.get(Organization, organization.id)
+        assert persisted is not None
+        assert persisted.trial_llm_call_used == 1000
+        assert provider_calls == 1
+        assert len(session.scalars(select(ApiInvocation)).all()) == 1
+
+
+def test_gateway_trial_quota_is_workspace_scoped(
+    ai_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = ai_client.app.state.database
+    settings = ai_client.app.state.settings
+    monkeypatch.setattr(
+        OpenAICompatibleAdapter,
+        "complete",
+        lambda self, request, route: _gateway_tool_result(),
+    )
+
+    with database.session_factory() as session:
+        legacy = _set_legacy_trial_llm_usage(session, used=1000)
+        other = Organization(
+            name="Independent quota workspace",
+            plan_status="trial",
+            trial_started_at=utcnow(),
+            trial_ends_at=utcnow() + timedelta(days=30),
+            trial_llm_call_limit=1000,
+            trial_llm_call_used=0,
+        )
+        session.add(other)
+        session.commit()
+        _seed_legacy_route_price(session, settings)
+
+        set_organization_context(session, other.id)
+        try:
+            with ai_gateway_execution(
+                session,
+                settings=settings,
+                spec=AiExecutionSpec(
+                    feature="resume_extract_rich",
+                    business_ref_type="test_resume",
+                    business_ref_id="other-workspace-first-call",
+                ),
+            ):
+                assert _call_strict_tool(settings) == {"ok": True}
+        finally:
+            clear_organization_context(session)
+
+        session.expire_all()
+        persisted_legacy = session.get(Organization, legacy.id)
+        persisted_other = session.get(Organization, other.id)
+        assert persisted_legacy is not None
+        assert persisted_other is not None
+        assert persisted_legacy.trial_llm_call_used == 1000
+        assert persisted_other.trial_llm_call_used == 1
+
+
+def test_gateway_service_kind_cannot_bypass_trial_quota(
+    ai_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = ai_client.app.state.database
+    settings = ai_client.app.state.settings
+    monkeypatch.setattr(
+        OpenAICompatibleAdapter,
+        "complete",
+        lambda self, request, route: _gateway_tool_result(),
+    )
+
+    with database.session_factory() as session:
+        organization = _set_legacy_trial_llm_usage(session, used=999)
+        _seed_legacy_route_price(session, settings)
+        with ai_gateway_execution(
+            session,
+            settings=settings,
+            spec=AiExecutionSpec(
+                feature="resume_extract_rich",
+                business_ref_type="test_ocr",
+                business_ref_id="non-llm-service",
+                service_kind="ocr",
+            ),
+        ):
+            assert _call_strict_tool(settings) == {"ok": True}
+
+        session.expire_all()
+        persisted = session.get(Organization, organization.id)
+        assert persisted is not None
+        assert persisted.trial_llm_call_used == 1000
+
+
+def test_gateway_does_not_apply_trial_cap_to_an_active_workspace(
+    ai_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = ai_client.app.state.database
+    settings = ai_client.app.state.settings
+    monkeypatch.setattr(
+        OpenAICompatibleAdapter,
+        "complete",
+        lambda self, request, route: _gateway_tool_result(),
+    )
+
+    with database.session_factory() as session:
+        organization = _set_legacy_trial_llm_usage(session, used=1000)
+        organization.plan_status = "active"
+        session.commit()
+        _seed_legacy_route_price(session, settings)
+
+        with ai_gateway_execution(
+            session,
+            settings=settings,
+            spec=AiExecutionSpec(
+                feature="resume_extract_rich",
+                business_ref_type="test_resume",
+                business_ref_id="active-workspace-unlimited",
+            ),
+        ):
+            assert _call_strict_tool(settings) == {"ok": True}
+
+        session.expire_all()
+        persisted = session.get(Organization, organization.id)
+        assert persisted is not None
+        assert persisted.plan_status == "active"
+        assert persisted.trial_llm_call_used == 1000
+
+
+def test_gateway_preflight_rejects_invalid_route_without_charging_trial_quota(
+    ai_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = ai_client.app.state.database
+    settings = ai_client.app.state.settings
+    provider_calls = 0
+
+    def should_not_call_provider(
+        self: OpenAICompatibleAdapter,
+        request: object,
+        route: object,
+    ) -> CompletionResult:
+        nonlocal provider_calls
+        provider_calls += 1
+        raise AssertionError("invalid local route must not reach a provider")
+
+    monkeypatch.setattr(OpenAICompatibleAdapter, "complete", should_not_call_provider)
+    with database.session_factory() as session:
+        organization = _set_legacy_trial_llm_usage(session, used=999)
+        _seed_legacy_route_price(session, settings)
+        provider = session.scalar(
+            select(AiProviderProfile).where(
+                AiProviderProfile.slug == "legacy-runtime-openai-compatible"
+            )
+        )
+        assert provider is not None
+        # ``model`` is provider-controlled request data, so this route is
+        # malformed before any network request can be constructed.
+        provider.request_defaults_json = {"model": "must-not-override"}
+        session.commit()
+
+        with pytest.raises(DeepSeekProviderError, match="ai_provider_configuration"):
+            with ai_gateway_execution(
+                session,
+                settings=settings,
+                spec=AiExecutionSpec(
+                    feature="resume_extract_rich",
+                    business_ref_type="test_resume",
+                    business_ref_id="trial-quota-invalid-route",
+                ),
+            ):
+                _call_strict_tool(settings)
+
+        session.expire_all()
+        persisted = session.get(Organization, organization.id)
+        assert persisted is not None
+        assert persisted.trial_llm_call_used == 999
+        assert provider_calls == 0
+        assert session.scalars(select(ApiInvocation)).all() == []
+        run = session.scalar(
+            select(AiRun).where(AiRun.business_ref_id == "trial-quota-invalid-route")
+        )
+        assert run is not None
+        assert run.status == "failed"
+        assert run.failure_code == "ai_provider_configuration"
 
 
 def test_gateway_keeps_successful_attempt_when_local_validation_fails(
@@ -418,6 +674,7 @@ def test_gateway_crosses_targets_only_for_an_allowlisted_failure(
 
     monkeypatch.setattr(OpenAICompatibleAdapter, "complete", timeout_then_succeed)
     with database.session_factory() as session:
+        organization = _set_legacy_trial_llm_usage(session, used=998)
         _seed_two_target_route(
             session,
             feature="resume_summary",
@@ -433,6 +690,11 @@ def test_gateway_crosses_targets_only_for_an_allowlisted_failure(
             ),
         ):
             assert _call_strict_tool(settings) == {"ok": True}
+
+        session.expire_all()
+        persisted = session.get(Organization, organization.id)
+        assert persisted is not None
+        assert persisted.trial_llm_call_used == 1000
 
     assert calls == ["provider-model-1", "provider-model-2"]
 

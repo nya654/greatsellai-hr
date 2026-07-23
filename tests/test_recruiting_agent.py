@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.ai import CompletionResult, NormalizedUsage, ToolCall
-from app.models import AiRun, ApiInvocation
+from app.models import AiRun, ApiInvocation, Organization, utcnow
 from app.services.ai_gateway_service import AiGatewayError
 from app.services.recruiting_agent_service import ResolvedJob, _TOOLS, _resolve_job
+from app.services.trial_quota_service import TRIAL_LLM_CALL_QUOTA_EXHAUSTED_CODE
 from test_score_service import _template_payload
 from test_resume_flow import create_candidate, replace_page_evidence, upload_text_resume
 
@@ -362,6 +364,18 @@ def test_agent_tool_loop_records_one_gateway_run_with_one_invocation_per_model_s
         fake_complete,
     )
 
+    database = ai_client.app.state.database
+    with database.session_factory() as session:
+        organization = session.scalar(select(Organization).order_by(Organization.created_at))
+        assert organization is not None
+        organization.plan_status = "trial"
+        now = utcnow()
+        organization.trial_started_at = now
+        organization.trial_ends_at = now + timedelta(days=30)
+        organization.trial_llm_call_limit = 1000
+        organization.trial_llm_call_used = 998
+        session.commit()
+
     response = ai_client.post(
         "/v1/recruiting-agent/turns",
         json={"message": "筛选 985/211 候选人"},
@@ -370,7 +384,6 @@ def test_agent_tool_loop_records_one_gateway_run_with_one_invocation_per_model_s
     assert response.status_code == 200, response.text
     assert response.json()["message"] == "## 筛选结果\n\n已按 985/211 条件检索。"
     assert completion_calls == 2
-    database = ai_client.app.state.database
     with database.session_factory() as session:
         runs = list(
             session.scalars(
@@ -378,11 +391,47 @@ def test_agent_tool_loop_records_one_gateway_run_with_one_invocation_per_model_s
             )
         )
         invocations = list(session.scalars(select(ApiInvocation)))
+        organization = session.scalar(select(Organization).order_by(Organization.created_at))
     assert len(runs) == 1
     assert runs[0].status == "succeeded"
     assert len(invocations) == 2
     assert {item.ai_run_id for item in invocations} == {runs[0].id}
     assert [item.attempt_no for item in invocations] == [1, 2]
+    assert organization is not None
+    assert organization.trial_llm_call_used == 1000
+
+
+def test_agent_returns_trial_quota_error_without_calling_a_provider(
+    ai_client: TestClient,
+    monkeypatch,
+) -> None:
+    database = ai_client.app.state.database
+    with database.session_factory() as session:
+        organization = session.scalar(select(Organization).order_by(Organization.created_at))
+        assert organization is not None
+        organization.plan_status = "trial"
+        now = utcnow()
+        organization.trial_started_at = now
+        organization.trial_ends_at = now + timedelta(days=30)
+        organization.trial_llm_call_limit = 1000
+        organization.trial_llm_call_used = 1000
+        session.commit()
+
+    def provider_must_not_run(*args, **kwargs):
+        raise AssertionError("provider must not be called after trial quota is exhausted")
+
+    monkeypatch.setattr(
+        "app.services.ai_gateway_service.OpenAICompatibleAdapter.complete",
+        provider_must_not_run,
+    )
+
+    response = ai_client.post(
+        "/v1/recruiting-agent/turns",
+        json={"message": "筛选 985/211 候选人"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == TRIAL_LLM_CALL_QUOTA_EXHAUSTED_CODE
 
 
 def test_agent_unexpected_exception_never_becomes_raw_internal_server_error(

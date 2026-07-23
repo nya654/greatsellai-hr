@@ -29,6 +29,7 @@ from app.services.ai_gateway_service import (
     ai_gateway_credentials_configured,
     ai_gateway_execution,
 )
+from app.services.trial_quota_service import TRIAL_LLM_CALL_QUOTA_EXHAUSTED_CODE
 from app.services.job_match_batch_service import enqueue_job_version_match_batch
 from app.services.job_service import (
     JobServiceError,
@@ -483,6 +484,8 @@ def _gateway_error_as_agent_error(exc: AiGatewayError) -> RecruitingAgentService
     """Preserve the Agent's stable, non-sensitive public failure vocabulary."""
 
     code = str(exc)
+    if code == TRIAL_LLM_CALL_QUOTA_EXHAUSTED_CODE:
+        return RecruitingAgentServiceError(code)
     if code == "ai_provider_timeout":
         return RecruitingAgentServiceError("agent_model_timeout")
     if code == "ai_provider_network":

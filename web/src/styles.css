@@ -6001,7 +6001,8 @@ details[open] > .mailbox-disclosure-heading::after {
   border-bottom: 1px solid #efcf93;
 }
 
-.trial-banner.is-expired {
+.trial-banner.is-expired,
+.trial-banner.is-quota-exhausted {
   color: #871719;
   background: #fff4f4;
   border-bottom-color: #efc2c2;
@@ -6036,7 +6037,8 @@ details[open] > .mailbox-disclosure-heading::after {
   border-radius: 999px;
 }
 
-.trial-banner.is-expired > span {
+.trial-banner.is-expired > span,
+.trial-banner.is-quota-exhausted > span {
   background: rgb(215 22 24 / 0.08);
   border-color: rgb(215 22 24 / 0.16);
 }

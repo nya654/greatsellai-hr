@@ -65,6 +65,9 @@ def test_new_registration_uses_advanced_30_day_trial_and_cannot_manage_platform_
     assert registered["trial"]["plan_status"] == "trial"
     assert registered["trial"]["access_enabled"] is True
     assert registered["trial"]["trial_days_remaining"] == 30
+    assert registered["trial"]["llm_call_limit"] == 1000
+    assert registered["trial"]["llm_call_used"] == 0
+    assert registered["trial"]["llm_call_remaining"] == 1000
 
     current_plan = identity_client.get("/v1/organization/plan")
     assert current_plan.status_code == 200, current_plan.text
@@ -91,6 +94,7 @@ def test_legacy_platform_admin_can_list_and_update_product_plans(
         "plan_code": "advanced",
         "plan_name": "进阶版",
         "trial_days": 30,
+        "llm_call_limit": 1000,
     }
 
     legacy_login = identity_client.post(
@@ -129,6 +133,7 @@ def test_legacy_platform_admin_can_list_and_update_product_plans(
     assert updated_offer.status_code == 200, updated_offer.text
     assert updated_offer.json()["plan_code"] == "advanced"
     assert updated_offer.json()["trial_days"] == 21
+    assert updated_offer.json()["llm_call_limit"] == 1000
 
 
 def test_platform_admin_alone_can_publish_ai_model_route(

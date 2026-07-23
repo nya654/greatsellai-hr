@@ -185,7 +185,16 @@ const fallbackRegistrationOffer: RegistrationOffer = {
   plan_code: "advanced",
   plan_name: "进阶版",
   trial_days: 30,
+  llm_call_limit: 1000,
 };
+
+const wholeNumberFormatter = new Intl.NumberFormat("zh-CN", {
+  maximumFractionDigits: 0,
+});
+
+function formatWholeNumber(value: number): string {
+  return wholeNumberFormatter.format(Math.max(0, Math.trunc(value)));
+}
 
 const defaultFilterDraft: FilterDraft = {
   minEmploymentMonths: 0,
@@ -776,6 +785,8 @@ function humanizeError(error: unknown): string {
       password_too_short: "密码至少需要 8 个字符。",
       password_reset_invalid_or_expired: "这条重置链接无效、已过期或已被使用。请重新申请新的链接。",
       trial_expired: "试用期已结束。数据已保留，请联系 GreatSell AI 团队继续使用。",
+      trial_llm_call_quota_exhausted:
+        "本工作区的 1,000 次试用大模型调用已用完。数据仍会保留，请联系 GreatSell AI 团队继续使用。",
       organization_access_suspended: "当前工作区暂不可用，请联系 GreatSell AI 团队。",
       invalid_admin_token: "管理口令无效。请在右上角连接配置中更新后重试。",
       server_missing_admin_token: "服务器尚未配置管理口令，暂时无法访问。",
@@ -1804,6 +1815,35 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
         setAuthState("unauthenticated");
       });
   }, [applyAuthSession]);
+
+  // Large-model usage can change in a background worker, an Agent turn, or a
+  // second browser tab. Refresh the small server-owned trial snapshot while
+  // the workspace is open so the visible allowance does not drift for long.
+  useEffect(() => {
+    if (
+      authState !== "authenticated" ||
+      authRoute ||
+      authSession?.email_verification_required ||
+      authSession?.trial?.plan_status !== "trial"
+    ) {
+      return;
+    }
+    const refreshOnFocus = () => {
+      if (document.visibilityState === "visible") void refreshAuthSession();
+    };
+    const intervalId = window.setInterval(refreshOnFocus, 60_000);
+    window.addEventListener("focus", refreshOnFocus);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", refreshOnFocus);
+    };
+  }, [
+    authRoute,
+    authSession?.email_verification_required,
+    authSession?.trial?.plan_status,
+    authState,
+    refreshAuthSession,
+  ]);
 
   useEffect(() => {
     if (
@@ -2835,8 +2875,8 @@ function RegistrationPage({
     <AuthPageLayout
       description="注册后即可使用大卖数智 AI 招聘工作台。上传简历，快速筛选、统一评分并查看 JD 匹配依据，把时间留给真正需要你判断的人。"
       eyebrow={offerLoading
-        ? "30 天免费体验"
-        : `${registrationOffer.trial_days} 天${registrationOffer.plan_name}免费体验`}
+        ? "30 天免费体验，含 1,000 次大模型调用"
+        : `${registrationOffer.trial_days} 天${registrationOffer.plan_name}免费体验，含 ${formatWholeNumber(registrationOffer.llm_call_limit)} 次大模型调用`}
       title="让招聘判断，从第一份简历开始更快"
       variant="registration"
     >
@@ -2852,7 +2892,7 @@ function RegistrationPage({
           <div className="auth-registration-heading">
             <p>免费创建团队工作台</p>
             <h2>开始 {registrationOffer.trial_days} 天{registrationOffer.plan_name}体验</h2>
-            <span>完成邮箱验证后，即可上传第一份简历。</span>
+            <span>试用期内最多 {formatWholeNumber(registrationOffer.llm_call_limit)} 次大模型调用，简历提取、评分、JD 处理和招聘助手统一计入。</span>
           </div>
           <form
             className="auth-form auth-registration-form"
@@ -3268,13 +3308,58 @@ function TrialStatusBanner({
   if (!isExpired && !isTrial) return null;
   const days = trial.trial_days_remaining;
   const remaining = typeof days === "number" ? Math.max(0, days) : null;
+  const llmCallLimit =
+    typeof trial.llm_call_limit === "number"
+      ? Math.max(0, trial.llm_call_limit)
+      : null;
+  const llmCallUsed =
+    typeof trial.llm_call_used === "number"
+      ? Math.max(0, trial.llm_call_used)
+      : null;
+  const llmCallRemaining =
+    typeof trial.llm_call_remaining === "number"
+      ? Math.max(0, trial.llm_call_remaining)
+      : null;
+  const hasLlmCallUsage =
+    llmCallLimit !== null &&
+    llmCallUsed !== null &&
+    llmCallRemaining !== null;
+  const isQuotaExhausted = isTrial && llmCallRemaining === 0;
+  const bannerStateClass = isExpired
+    ? " is-expired"
+    : isQuotaExhausted
+      ? " is-quota-exhausted"
+      : "";
+  const statusRole = isExpired || isQuotaExhausted ? "alert" : "status";
   return (
-    <section className={`trial-banner${isExpired ? " is-expired" : ""}`} role={isExpired ? "alert" : "status"}>
+    <section className={`trial-banner${bannerStateClass}`} role={statusRole}>
       <div>
-        <strong>{isExpired ? "试用期已结束" : `免费试用还剩 ${remaining ?? "—"} 天`}</strong>
-        <p>{isExpired ? "你的工作区数据已保留。续费入口开放前，请联系 GreatSell AI 团队继续使用。" : `${planName ?? "进阶版"}试用中，已实现功能可正常体验。`}</p>
+        <strong>
+          {isExpired
+            ? "试用期已结束"
+            : isQuotaExhausted
+              ? "试用 AI 调用额度已用完"
+              : `免费试用还剩 ${remaining ?? "—"} 天`}
+        </strong>
+        <p>
+          {isExpired
+            ? "你的工作区数据已保留。续费入口开放前，请联系 GreatSell AI 团队继续使用。"
+            : isQuotaExhausted
+              ? "你仍可查看和管理已有数据。继续使用 AI 功能请联系 GreatSell AI 团队。"
+              : hasLlmCallUsage
+                ? `${planName ?? "进阶版"}试用中，AI 调用已用 ${formatWholeNumber(llmCallUsed ?? 0)} / ${formatWholeNumber(llmCallLimit ?? 0)}，剩余 ${formatWholeNumber(llmCallRemaining ?? 0)} 次。`
+                : `${planName ?? "进阶版"}试用中，已实现功能可正常体验。`}
+        </p>
       </div>
-      <span>{isExpired ? "数据已保留" : "30 天试用"}</span>
+      <span>
+        {isExpired
+          ? "数据已保留"
+          : hasLlmCallUsage
+            ? isQuotaExhausted
+              ? `${formatWholeNumber(llmCallUsed ?? 0)} / ${formatWholeNumber(llmCallLimit ?? 0)} 次`
+              : `AI 剩余 ${formatWholeNumber(llmCallRemaining ?? 0)} 次`
+            : "30 天试用"}
+      </span>
     </section>
   );
 }

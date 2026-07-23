@@ -80,6 +80,10 @@ export interface TrialAccess {
   trial_ends_at: string | null;
   /** Server-calculated whole calendar days, never computed from browser time. */
   trial_days_remaining: number | null;
+  /** The workspace-owned allowance, shared by every configured LLM provider. */
+  llm_call_limit: number | null;
+  llm_call_used: number | null;
+  llm_call_remaining: number | null;
   access_enabled: boolean;
 }
 
@@ -113,6 +117,7 @@ export interface RegistrationOffer {
   plan_code: string;
   plan_name: string;
   trial_days: number;
+  llm_call_limit: number;
 }
 
 export interface EmailVerificationResendResult {

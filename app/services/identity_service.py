@@ -47,6 +47,7 @@ from app.tenant_scope import (
     clear_organization_context,
     set_organization_context,
 )
+from app.services.trial_quota_service import TRIAL_LLM_CALL_LIMIT, trial_llm_call_snapshot
 
 
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000002"
@@ -470,6 +471,8 @@ def create_registration(session: Session, payload: AuthRegistration) -> AuthPrin
         plan_status="trial",
         trial_started_at=now,
         trial_ends_at=now + timedelta(days=max(0, plan.trial_days)),
+        trial_llm_call_limit=TRIAL_LLM_CALL_LIMIT,
+        trial_llm_call_used=0,
     )
     user = UserAccount(
         email=email,
@@ -527,6 +530,7 @@ def registration_offer(session: Session) -> RegistrationOfferResponse:
         plan_code=plan.code,
         plan_name=plan.name,
         trial_days=max(0, plan.trial_days),
+        llm_call_limit=TRIAL_LLM_CALL_LIMIT,
     )
 
 
@@ -583,11 +587,18 @@ def trial_access(principal: AuthPrincipal, *, now: datetime | None = None) -> Tr
     days_remaining: int | None = None
     if status == "trial" and ends_at is not None:
         days_remaining = max(0, (ends_at.date() - now.date()).days)
+    llm_call_limit, llm_call_used, llm_call_remaining = trial_llm_call_snapshot(
+        organization,
+        plan_status=status,
+    )
     return TrialAccessResponse(
         plan_status=status if status in {"trial", "active", "expired", "suspended"} else "suspended",
         trial_started_at=starts_at,
         trial_ends_at=ends_at,
         trial_days_remaining=days_remaining,
+        llm_call_limit=llm_call_limit,
+        llm_call_used=llm_call_used,
+        llm_call_remaining=llm_call_remaining,
         access_enabled=access_enabled,
     )
 

@@ -56,6 +56,9 @@ export async function registerAndAwaitEmailVerification(
 ): Promise<PendingEmailVerification> {
   const email = uniqueTestEmail(label);
   await page.goto("/register");
+  await expect(
+    page.getByText("试用期内最多 1,000 次大模型调用", { exact: false }),
+  ).toBeVisible();
   await page.locator("#register-organization").fill(`E2E 工作区 ${label}`);
   await page.locator("#register-name").fill("E2E 管理员");
   await page.locator("#register-email").fill(email);
@@ -89,6 +92,9 @@ export async function registerAndVerify(page: Page, label: string): Promise<stri
   await expect(page.getByRole("heading", { name: "邮箱已验证" })).toBeVisible();
   await page.goto("/");
   await expect(page.getByRole("button", { name: "退出登录" })).toBeVisible();
+  await expect(
+    page.getByText("AI 调用已用 0 / 1,000，剩余 1,000 次。"),
+  ).toBeVisible();
   return email;
 }
 

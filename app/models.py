@@ -154,6 +154,20 @@ class Organization(Base):
     plan_status: Mapped[str] = mapped_column(String(32), default="trial", index=True)
     trial_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     trial_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # These values are copied onto a workspace when it enters self-service
+    # trial. They deliberately do not live on ``ProductPlan.feature_flags``:
+    # a later catalogue edit must not retroactively change an existing
+    # workspace's already-consumed trial allowance.
+    trial_llm_call_limit: Mapped[int] = mapped_column(
+        Integer,
+        default=1000,
+        server_default=text("1000"),
+    )
+    trial_llm_call_used: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default=text("0"),
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

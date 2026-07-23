@@ -13,6 +13,19 @@ class CompletionAdapter(ABC):
     driver: str
 
     @abstractmethod
+    def preflight(
+        self,
+        request: CompletionRequest,
+        route: RouteTarget,
+    ) -> None:
+        """Validate local request/route preparation without contacting a provider.
+
+        The gateway calls this before it records a billable attempt.  An adapter
+        must therefore raise here for every deterministic configuration or
+        serialization error that would otherwise happen before network I/O.
+        """
+
+    @abstractmethod
     def complete(
         self,
         request: CompletionRequest,

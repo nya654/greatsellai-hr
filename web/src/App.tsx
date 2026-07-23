@@ -7359,6 +7359,26 @@ function mailboxDraftFromConfig(config: MailboxConfig): MailboxDraft {
   };
 }
 
+function mailboxDraftIsDirty(
+  draft: MailboxDraft,
+  config: MailboxConfig | null,
+  isCreating: boolean,
+): boolean {
+  const baseline = isCreating || !config
+    ? newMailboxDraft()
+    : mailboxDraftFromConfig(config);
+
+  return (
+    draft.displayName !== baseline.displayName
+    || draft.imapHost !== baseline.imapHost
+    || draft.imapPort !== baseline.imapPort
+    || draft.emailAddress !== baseline.emailAddress
+    || draft.mailbox !== baseline.mailbox
+    || draft.enabled !== baseline.enabled
+    || Boolean(draft.password.trim())
+  );
+}
+
 function mailboxChannelStatus(config: MailboxConfig): string {
   if (config.active_sync_alert) return "需处理";
   if (config.archived_at) return "已归档";
@@ -7412,6 +7432,7 @@ function MailboxPage({
   const [retentionPreview, setRetentionPreview] = useState<MailboxRetentionPreview | null>(null);
   const [retentionPolicy, setRetentionPolicy] = useState<MailboxRetentionPolicy>("standard");
   const retentionRequestRef = useRef(0);
+  const historyRequestRef = useRef(0);
   const mailboxJobPollInFlightRef = useRef(false);
   const manualMailboxJobIdsRef = useRef(new Set<string>());
   const handledMailboxJobIdsRef = useRef(new Set<string>());
@@ -7478,18 +7499,47 @@ function MailboxPage({
     setRetentionPolicy("standard");
   }, []);
 
-  const selectMailbox = (config: MailboxConfig) => {
+  const loadHistory = useCallback(async (mailboxId: string | null = historyFilterMailboxId) => {
+    const requestId = ++historyRequestRef.current;
+    setHistoryLoading(true);
+    try {
+      const nextHistory = await api.listMailboxImports(mailboxId);
+      if (historyRequestRef.current !== requestId) return;
+      setHistory(nextHistory);
+    } catch (error) {
+      if (historyRequestRef.current === requestId) {
+        notify("error", humanizeError(error));
+      }
+    } finally {
+      if (historyRequestRef.current === requestId) {
+        setHistoryLoading(false);
+      }
+    }
+  }, [historyFilterMailboxId, notify]);
+
+  const confirmDiscardMailboxDraft = () => {
+    if (!mailboxDraftIsDirty(draft, selectedConfig, isCreating)) return true;
+    return window.confirm("尚未保存的收件通道设置会丢失，仍要离开吗？");
+  };
+
+  const selectMailbox = (config: MailboxConfig, force = false) => {
+    if (!force && !confirmDiscardMailboxDraft()) return false;
     setSelectedMailboxId(config.mailbox_id);
     setDraft(mailboxDraftFromConfig(config));
     setIsCreating(false);
     setIsEditingConnection(false);
+    setHistoryFilterMailboxId(config.mailbox_id);
+    void loadHistory(config.mailbox_id);
+    return true;
   };
 
-  const startCreatingMailbox = () => {
+  const startCreatingMailbox = (force = false) => {
+    if (!force && !confirmDiscardMailboxDraft()) return false;
     setSelectedMailboxId(null);
     setDraft(newMailboxDraft());
     setIsCreating(true);
     setIsEditingConnection(false);
+    return true;
   };
 
   const updateDraft = <Key extends keyof MailboxDraft>(key: Key, value: MailboxDraft[Key]) => {
@@ -7504,22 +7554,11 @@ function MailboxPage({
       ?? items[0]
       ?? null;
     if (nextConfig) {
-      selectMailbox(nextConfig);
+      selectMailbox(nextConfig, true);
     } else {
-      startCreatingMailbox();
+      startCreatingMailbox(true);
     }
   };
-
-  const loadHistory = useCallback(async (mailboxId: string | null = historyFilterMailboxId) => {
-    setHistoryLoading(true);
-    try {
-      setHistory(await api.listMailboxImports(mailboxId));
-    } catch (error) {
-      notify("error", humanizeError(error));
-    } finally {
-      setHistoryLoading(false);
-    }
-  }, [historyFilterMailboxId, notify]);
 
   const upsertMailboxJobs = useCallback((jobs: MailboxBackgroundJob[]) => {
     setMailboxJobs((current) => {
@@ -7701,7 +7740,7 @@ function MailboxPage({
         saved,
         ...current.filter((item) => item.mailbox_id !== saved.mailbox_id),
       ]);
-      selectMailbox(saved);
+      selectMailbox(saved, true);
       notify("success", isCreating ? "收件通道已创建，只会入库从现在起收到的附件。" : "收件通道已保存。");
     } catch (error) {
       notify("error", humanizeError(error));
@@ -7759,7 +7798,7 @@ function MailboxPage({
       setMailboxes((current) => current.map((item) => (
         item.mailbox_id === archived.mailbox_id ? archived : item
       )));
-      selectMailbox(archived);
+      selectMailbox(archived, true);
       notify("success", "收件通道已归档，历史入库、内容保留与清理记录仍可查看。");
     } catch (error) {
       notify("error", humanizeError(error));
@@ -7938,6 +7977,19 @@ function MailboxPage({
 
   const mailboxFormActions = (
     <div className="review-actions mailbox-form-actions">
+      {isCreating && hasMailboxChannels && (
+        <button
+          className="button button-ghost"
+          disabled={saving || archiving}
+          onClick={() => {
+            const fallback = mailboxes.find((item) => !item.archived_at) ?? mailboxes[0];
+            if (fallback) selectMailbox(fallback);
+          }}
+          type="button"
+        >
+          <Icon name="arrow-left" size={16} />取消新建
+        </button>
+      )}
       {!isCreating && selectedConfig && isEditingConnection && (
         <button className="button button-ghost" disabled={saving || archiving || selectedSyncInProgress} onClick={() => selectMailbox(selectedConfig)} type="button">
           <Icon name="arrow-left" size={16} />返回概览
@@ -7984,6 +8036,16 @@ function MailboxPage({
           <button className="button" disabled={Boolean(selectedConfig.archived_at) || selectedSyncInProgress} onClick={() => setIsEditingConnection(true)} type="button">
             <Icon name="gear" size={16} />编辑连接
           </button>
+          {!selectedConfig.archived_at && (
+            <button
+              className="button button-danger-ghost"
+              disabled={archiving || selectedSyncInProgress}
+              onClick={() => void archiveMailbox()}
+              type="button"
+            >
+              {archiving ? <><i className="spinner" />正在归档</> : "归档通道"}
+            </button>
+          )}
         </div>
       </div>
 
@@ -8024,7 +8086,7 @@ function MailboxPage({
         </div>
         {hasMailboxChannels && (
           <div className="mailbox-heading-actions">
-            <button className="button" disabled={loading || saving || enqueuingAll} onClick={startCreatingMailbox} type="button">
+            <button className="button" disabled={loading || saving || enqueuingAll} onClick={() => void startCreatingMailbox()} type="button">
               <Icon name="plus" size={16} />新建收件通道
             </button>
             <button
@@ -8150,7 +8212,7 @@ function MailboxPage({
               <span>新建后，系统从当前邮箱位置开始接收附件。</span>
             </div>
           )}
-          <button className="button button-ghost mailbox-add-channel" onClick={startCreatingMailbox} type="button">
+          <button className="button button-ghost mailbox-add-channel" onClick={() => void startCreatingMailbox()} type="button">
             <Icon name="plus" size={16} />新建收件通道
           </button>
         </aside>

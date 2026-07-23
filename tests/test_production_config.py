@@ -134,6 +134,36 @@ def test_compose_injects_generic_provider_credential_map_into_api_and_worker() -
         assert "    environment: *app-environment" in match.group("body")
 
 
+def test_compose_injects_tencent_ses_templates_into_api_and_worker() -> None:
+    """SES configuration must reach both synchronous and durable send paths."""
+
+    root = Path(__file__).resolve().parents[1]
+    compose = (root / "compose.yml").read_text(encoding="utf-8")
+    production_example = (root / ".env.production.example").read_text(
+        encoding="utf-8"
+    )
+
+    assert "TENCENT_SES_REGION: ${TENCENT_SES_REGION:-ap-guangzhou}" in compose
+    assert (
+        "TENCENT_SES_VERIFICATION_TEMPLATE_ID: "
+        "${TENCENT_SES_VERIFICATION_TEMPLATE_ID:-}"
+    ) in compose
+    assert (
+        "TENCENT_SES_PASSWORD_RESET_TEMPLATE_ID: "
+        "${TENCENT_SES_PASSWORD_RESET_TEMPLATE_ID:-}"
+    ) in compose
+    assert "TENCENT_SES_REGION=ap-guangzhou" in production_example
+    assert "TENCENT_SES_VERIFICATION_TEMPLATE_ID=" in production_example
+    assert "TENCENT_SES_PASSWORD_RESET_TEMPLATE_ID=" in production_example
+
+    for service in ("migrate", "api", "worker"):
+        match = re.search(
+            rf"(?ms)^  {service}:\n(?P<body>.*?)(?=^  [a-z][a-z_]*:|\Z)", compose
+        )
+        assert match is not None
+        assert "    environment: *app-environment" in match.group("body")
+
+
 def test_compose_explicitly_wires_the_opt_in_legacy_admin_entry_flag() -> None:
     """A configured compatibility login flag must reach the API process.
 

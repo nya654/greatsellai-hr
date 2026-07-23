@@ -817,10 +817,14 @@ export interface CandidateSearchRequest {
   min_employment_or_internship_months?: number | null;
   education_any_of?: EducationFilter[];
   experience_any_of?: ExperienceFilter[];
+  /** Every selected experience category must have evidence on the resume. */
+  experience_types_all_of?: ExperienceType[];
   skill_categories_any_of?: string[];
   skills_all_of?: string[];
   skills_any_of?: string[];
   language_credentials_any_of?: LanguageCredentialFilter[];
+  /** Every selected language credential must have explicit resume evidence. */
+  language_credentials_all_of?: LanguageCredentialFilter[];
   scholarship_status?: PresenceStatus;
   scholarship_levels_any_of?: ScholarshipLevel[];
   scholarship_name_contains?: string[];
@@ -908,6 +912,118 @@ export interface CandidateSearchResponse {
   next_cursor: string | null;
   needs_review_count: number;
   total_count: number;
+}
+
+/** The small, HR-visible hard-filter subset an AI search profile may use. */
+export interface TalentSearchHardFilters {
+  institution_classifications_any_of: InstitutionClassification[];
+  highest_degree_in: DegreeLevel[];
+  graduation_status: "any" | "fresh" | "previous";
+  fresh_graduate_start_month: string | null;
+  fresh_graduate_end_month: string | null;
+  min_employment_months: number | null;
+  min_employment_or_internship_months: number | null;
+  experience_types_all_of: ExperienceType[];
+  skills_all_of: string[];
+  language_credentials_all_of: LanguageCredentialFilter[];
+}
+
+export interface TalentSearchProfileRequirement {
+  key: string;
+  label: string;
+  evidence_hint: string;
+}
+
+export interface TalentSearchProfileRevision {
+  revision_id: string;
+  revision_number: number;
+  source: "ai_generated" | "ai_refined";
+  status: "draft" | "confirmed" | "superseded";
+  title: string;
+  summary: string;
+  hard_filters: TalentSearchHardFilters;
+  verification_requirements: TalentSearchProfileRequirement[];
+  preferred_requirements: TalentSearchProfileRequirement[];
+  aliases: string[];
+  clarifying_questions: string[];
+  created_at: string;
+  confirmed_at: string | null;
+}
+
+export interface TalentSearchProfile {
+  profile_id: string;
+  source_type: "freeform" | "job";
+  source_job_version_id: string | null;
+  original_request: string;
+  status: "draft" | "confirmed";
+  current_revision: TalentSearchProfileRevision;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TalentSearchProfileGenerateInput {
+  message: string;
+  job_version_id?: string | null;
+}
+
+export interface TalentSearchProfileRefineInput {
+  revision_id: string;
+  message: string;
+}
+
+export interface TalentSearchProfileConfirmInput {
+  revision_id: string;
+}
+
+export interface TalentSearchProfileRunInput {
+  revision_id: string;
+  limit?: number;
+  cursor?: string | null;
+}
+
+export interface TalentSearchProfileMatchRequirement {
+  requirement_id: string;
+  requirement_key: string;
+  priority: "must_have" | "preferred";
+  requirement_text: string;
+  clause_ids: string[];
+  outcome: "met" | "partial" | "not_met" | "unknown";
+  reason: string;
+  fact_ids: string[];
+  missing_or_uncertain: string | null;
+  score_contribution: number;
+}
+
+export interface TalentSearchProfileMatchResult {
+  match_id: string;
+  resume_id: string;
+  candidate_id: string;
+  candidate_display_name: string | null;
+  facts_version: number;
+  match_score: number;
+  match_confidence: number | null;
+  match_lane: "recommended" | "pending" | "unmet";
+  hard_requirement_status: string | null;
+  analysis: Record<string, unknown>;
+  requirement_results: TalentSearchProfileMatchRequirement[];
+  status: string;
+  created_at: string;
+}
+
+export interface TalentSearchRun {
+  run_id: string;
+  profile_id: string;
+  revision_id: string;
+  status: "queued" | "running" | "completed" | "partial";
+  total_recalled_count: number;
+  job_match_batch_id: string | null;
+  match_total_count: number;
+  match_completed_count: number;
+  match_failed_count: number;
+  match_results: TalentSearchProfileMatchResult[];
+  created_at: string;
+  updated_at: string;
+  candidate_recall: CandidateSearchResponse;
 }
 
 export interface ResumeLibraryItem {

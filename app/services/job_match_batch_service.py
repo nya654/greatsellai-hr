@@ -3,14 +3,14 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Iterator
+from typing import Iterator, Sequence
 
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.config import AppSettings
 from app.database import Database
-from app.models import JobMatch, JobMatchBatch, JobMatchBatchItem, JobVersion, Resume, ResumeFactSnapshot
+from app.models import Job, JobMatch, JobMatchBatch, JobMatchBatchItem, JobVersion, Resume, ResumeFactSnapshot
 from app.schemas import JobMatchBatchItemResponse, JobMatchBatchResponse, JobMatchCreate
 from app.tenant_scope import clear_organization_context, set_organization_context
 from app.services.ai_gateway_service import (
@@ -77,6 +77,20 @@ def _batch_response(batch: JobMatchBatch) -> JobMatchBatchResponse:
         completed_at=batch.completed_at.isoformat() if batch.completed_at else None,
         last_error=batch.last_error,
     )
+
+
+def _public_batch_or_not_found(session: Session, *, batch_id: str) -> JobMatchBatch:
+    """Return a normal JD batch without exposing internal profile batches."""
+
+    batch = session.scalar(
+        select(JobMatchBatch)
+        .join(JobVersion, JobVersion.id == JobMatchBatch.job_version_id)
+        .join(Job, Job.id == JobVersion.job_id)
+        .where(JobMatchBatch.id == batch_id, Job.kind == "job")
+    )
+    if batch is None:
+        raise JobServiceError("job_match_batch_not_found")
+    return batch
 
 
 def _require_ai_gateway_credentials(settings: AppSettings) -> None:
@@ -146,13 +160,17 @@ def enqueue_job_version_match_batch(
     *,
     job_version_id: str,
     settings: AppSettings,
+    resume_ids: Sequence[str] | None = None,
+    allow_internal_job: bool = False,
 ) -> JobMatchBatchResponse:
     """Persist one full N×M side of the matrix without calling the model in HTTP."""
 
-    _require_ai_gateway_credentials(settings)
     job_version = session.get(JobVersion, job_version_id)
-    if job_version is None:
+    if job_version is None or (
+        job_version.job.kind != "job" and not allow_internal_job
+    ):
         raise JobVersionNotFoundError("job_version_not_found")
+    _require_ai_gateway_credentials(settings)
     if job_version.status != "confirmed":
         raise JobServiceError("job_version_must_be_confirmed_for_matching")
     if not job_version.requirements:
@@ -178,7 +196,7 @@ def enqueue_job_version_match_batch(
     route_policy_version_id = _route_pin_for_new_batch(session, settings=settings)
 
     now = _utcnow()
-    snapshot_rows = session.execute(
+    snapshot_statement = (
         select(
             Resume.id,
             ResumeFactSnapshot.id,
@@ -198,7 +216,21 @@ def enqueue_job_version_match_batch(
             ResumeFactSnapshot.organization_id == organization_id,
         )
         .order_by(Resume.created_at.asc(), Resume.id.asc())
-    ).all()
+    )
+    # A confirmed talent-search profile performs its costly semantic pass only
+    # for the server-derived hard-filter recall set.  ``resume_ids`` is an
+    # internal service argument, never browser input; the organization filters
+    # above remain in force as defence in depth.
+    if resume_ids is not None:
+        normalized_resume_ids = sorted({value for value in resume_ids if value})
+        if not normalized_resume_ids:
+            snapshot_rows = []
+        else:
+            snapshot_rows = session.execute(
+                snapshot_statement.where(Resume.id.in_(normalized_resume_ids))
+            ).all()
+    else:
+        snapshot_rows = session.execute(snapshot_statement).all()
     # Do not queue a model call when the parser has declared the source text
     # untrustworthy.  This also prevents a cached old match from re-entering a
     # new recruiter-facing batch.
@@ -264,10 +296,7 @@ def enqueue_job_version_match_batch(
 
 
 def get_job_match_batch(session: Session, *, batch_id: str) -> JobMatchBatchResponse:
-    batch = session.get(JobMatchBatch, batch_id)
-    if batch is None:
-        raise JobServiceError("job_match_batch_not_found")
-    return _batch_response(batch)
+    return _batch_response(_public_batch_or_not_found(session, batch_id=batch_id))
 
 
 def list_job_match_batch_items(
@@ -277,8 +306,7 @@ def list_job_match_batch_items(
 ) -> list[JobMatchBatchItemResponse]:
     """Expose durable per-resume progress so a recruiter can inspect failures."""
 
-    if session.get(JobMatchBatch, batch_id) is None:
-        raise JobServiceError("job_match_batch_not_found")
+    _public_batch_or_not_found(session, batch_id=batch_id)
     items = session.scalars(
         select(JobMatchBatchItem)
         .join(Resume, Resume.id == JobMatchBatchItem.resume_id)
@@ -533,6 +561,7 @@ def _process_claimed_item(
                         pinned_route_policy_version_id=claimed.ai_route_policy_version_id,
                         ai_run_business_ref_type="job_match_batch_item",
                         ai_run_business_ref_id=item.id,
+                        allow_internal_job=True,
                     )
                     match_id = matched.match_id
                 _require_unchanged_resume_snapshot(

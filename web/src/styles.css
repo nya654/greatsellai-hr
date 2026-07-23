@@ -1893,6 +1893,79 @@ button {
   background: var(--surface);
 }
 
+.agent-mode-switch {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0.1875rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.agent-mode-button {
+  display: inline-flex;
+  min-height: 1.875rem;
+  gap: 0.25rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0.25rem 0.5rem;
+  color: var(--ink-muted);
+  font-size: 0.6875rem;
+  font-weight: 680;
+  background: transparent;
+  border: 0;
+  border-radius: calc(var(--radius-sm) - 0.125rem);
+  box-shadow: none;
+}
+
+.agent-mode-button:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--surface-muted);
+  box-shadow: none;
+}
+
+.agent-mode-button.is-active {
+  color: var(--red-pressed);
+  background: var(--red-tint);
+}
+
+.agent-profile-history {
+  display: grid;
+  gap: 0.3125rem;
+  min-width: 0;
+}
+
+.agent-profile-history > span {
+  color: var(--ink-muted);
+  font-size: 0.625rem;
+  font-weight: 700;
+}
+
+.agent-profile-history > div {
+  display: flex;
+  gap: 0.3125rem;
+  overflow-x: auto;
+  padding-bottom: 0.0625rem;
+}
+
+.agent-profile-history .button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-height: 2.25rem;
+  gap: 0.3125rem;
+  align-items: center;
+  max-width: 13rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.6875rem;
+}
+
+.agent-profile-history .button small {
+  flex: 0 0 auto;
+  color: var(--ink-muted);
+  font-size: 0.5625rem;
+}
+
 .agent-conversation {
   display: flex;
   min-height: 0;
@@ -2144,6 +2217,320 @@ button {
   font-weight: 650;
 }
 
+.talent-profile-card {
+  display: grid;
+  gap: 0.6875rem;
+  padding: 0.75rem;
+  margin-top: 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+}
+
+.talent-profile-card-heading,
+.talent-profile-run-heading {
+  display: flex;
+  gap: 0.625rem;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.talent-profile-card-heading > div,
+.talent-profile-run-heading > div {
+  display: grid;
+  min-width: 0;
+  gap: 0.125rem;
+}
+
+.talent-profile-card-heading span,
+.talent-profile-section > span {
+  color: var(--ink-muted);
+  font-size: 0.625rem;
+  font-weight: 700;
+}
+
+.talent-profile-card-heading strong,
+.talent-profile-run-heading strong {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 0.875rem;
+  font-weight: 720;
+  line-height: 1.35;
+}
+
+.talent-profile-card-heading small {
+  flex: 0 0 auto;
+  padding: 0.125rem 0.375rem;
+  font-size: 0.625rem;
+  font-weight: 700;
+  line-height: 1.35;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.talent-profile-status.is-draft {
+  color: #7d410b;
+  background: var(--amber-tint);
+  border-color: #f1d7bb;
+}
+
+.talent-profile-status.is-confirmed {
+  color: #287144;
+  background: #f2faf5;
+  border-color: #cde8d5;
+}
+
+.talent-profile-summary {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+  line-height: 1.55;
+}
+
+.talent-profile-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.5rem;
+  color: var(--ink-muted);
+  font-size: 0.625rem;
+  line-height: 1.4;
+}
+
+.talent-profile-section {
+  display: grid;
+  gap: 0.375rem;
+  padding-top: 0.625rem;
+  border-top: 1px solid var(--line);
+}
+
+.talent-profile-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3125rem;
+}
+
+.talent-profile-chips small {
+  padding: 0.1875rem 0.375rem;
+  color: var(--ink-soft);
+  font-size: 0.625rem;
+  line-height: 1.35;
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.talent-profile-chips.is-muted small {
+  color: var(--ink-muted);
+  background: transparent;
+}
+
+.talent-profile-requirements {
+  display: grid;
+  gap: 0.375rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.talent-profile-requirements li {
+  display: grid;
+  gap: 0.125rem;
+}
+
+.talent-profile-requirements strong {
+  color: var(--ink-soft);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.talent-profile-requirements small,
+.talent-profile-run-heading small,
+.talent-profile-run-note {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.6875rem;
+  line-height: 1.45;
+}
+
+.talent-profile-question {
+  display: flex;
+  gap: 0.375rem;
+  align-items: flex-start;
+  padding: 0.5rem 0.5625rem;
+  color: var(--ink-soft);
+  font-size: 0.6875rem;
+  line-height: 1.45;
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+}
+
+.talent-profile-question svg {
+  flex: 0 0 auto;
+  margin-top: 0.0625rem;
+  color: var(--red-pressed);
+}
+
+.talent-profile-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  align-items: center;
+  padding-top: 0.125rem;
+}
+
+.talent-profile-actions .button {
+  min-height: 2.5rem;
+  padding: 0.3125rem 0.5rem;
+  font-size: 0.6875rem;
+}
+
+.talent-profile-run {
+  display: grid;
+  gap: 0.625rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line-strong);
+}
+
+.talent-profile-refresh {
+  min-height: 2.5rem;
+  padding: 0.25rem 0.4375rem;
+  font-size: 0.625rem;
+}
+
+.talent-profile-match-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.talent-profile-match-card {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.625rem;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xs);
+}
+
+.talent-profile-match-heading,
+.talent-profile-match-metrics {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.talent-profile-match-heading > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 0.125rem;
+}
+
+.talent-profile-match-heading > div:first-child strong {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 0.75rem;
+}
+
+.talent-profile-match-heading > div:first-child small,
+.talent-profile-match-note {
+  color: var(--ink-muted);
+  font-size: 0.625rem;
+  line-height: 1.4;
+}
+
+.talent-profile-match-metrics {
+  flex: 0 0 auto;
+  gap: 0.375rem;
+}
+
+.talent-profile-match-metrics > span {
+  display: grid;
+  gap: 0.0625rem;
+  color: var(--ink-muted);
+  font-size: 0.5625rem;
+  text-align: right;
+}
+
+.talent-profile-match-metrics b {
+  color: var(--ink);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.talent-profile-match-requirements {
+  display: grid;
+  gap: 0.375rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.talent-profile-match-requirements li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.375rem;
+  align-items: start;
+}
+
+.talent-profile-match-requirements li > span {
+  padding: 0.125rem 0.25rem;
+  color: #7d410b;
+  font-size: 0.5625rem;
+  font-weight: 700;
+  line-height: 1.25;
+  background: var(--amber-tint);
+  border: 1px solid #f1d7bb;
+  border-radius: 999px;
+}
+
+.talent-profile-match-requirements li > span.is-met {
+  color: #287144;
+  background: #f2faf5;
+  border-color: #cde8d5;
+}
+
+.talent-profile-match-requirements li > span.is-not_met {
+  color: var(--red-pressed);
+  background: var(--red-tint);
+  border-color: #f5c7c7;
+}
+
+.talent-profile-match-requirements li > div {
+  display: grid;
+  gap: 0.0625rem;
+}
+
+.talent-profile-match-requirements strong,
+.talent-profile-match-requirements small {
+  overflow-wrap: anywhere;
+}
+
+.talent-profile-match-requirements strong {
+  color: var(--ink-soft);
+  font-size: 0.625rem;
+  line-height: 1.35;
+}
+
+.talent-profile-match-requirements small {
+  color: var(--ink-muted);
+  font-size: 0.625rem;
+  line-height: 1.4;
+}
+
+.talent-profile-match-note {
+  padding-top: 0.5rem;
+  margin: 0;
+  border-top: 1px solid var(--line);
+}
+
+.talent-profile-load-more {
+  min-height: 2.5rem;
+  justify-self: start;
+  font-size: 0.6875rem;
+}
+
 .agent-candidate-list {
   display: grid;
   margin-top: 0.75rem;
@@ -2300,6 +2687,13 @@ button {
   padding: 0.75rem var(--space-lg) var(--space-md);
   background: var(--surface);
   border-top: 1px solid var(--line);
+}
+
+.agent-profile-mode-note {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.6875rem;
+  line-height: 1.4;
 }
 
 .agent-input-row {

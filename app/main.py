@@ -106,6 +106,14 @@ from app.schemas import (
     CandidateDataRetentionPreviewResponse,
     CandidateSearchRequest,
     CandidateSearchResponse,
+    TalentSearchProfileConfirmRequest,
+    TalentSearchProfileGenerateRequest,
+    TalentSearchProfileListResponse,
+    TalentSearchProfileRefineRequest,
+    TalentSearchProfileResponse,
+    TalentSearchProfileRunRequest,
+    TalentSearchProfileSearchRequest,
+    TalentSearchRunResponse,
     JobCreate,
     JobGenerationRequest,
     JobGenerationResponse,
@@ -277,6 +285,19 @@ from app.services.resume_library_service import list_resume_library
 from app.services.recruiting_agent_service import (
     RecruitingAgentServiceError,
     run_recruiting_agent_turn,
+)
+from app.services.talent_search_profile_service import (
+    DeepSeekProviderError as TalentProfileDeepSeekProviderError,
+    JobServiceError as TalentProfileJobServiceError,
+    TalentSearchProfileNotFoundError,
+    TalentSearchProfileServiceError,
+    confirm_profile,
+    generate_profile,
+    get_profile,
+    get_profile_run,
+    list_profiles as list_talent_search_profiles,
+    refine_profile,
+    start_profile_search,
 )
 from app.services.score_service import (
     DeepSeekProviderError,
@@ -774,7 +795,7 @@ def _raise_job_service_error(exc: JobServiceError) -> None:
     """Translate predictable JD workflow failures into stable HTTP results."""
 
     code = str(exc)
-    if code in {"resume_not_found"}:
+    if code in {"resume_not_found", "job_match_batch_not_found"}:
         response_status = status.HTTP_404_NOT_FOUND
     elif code == "deepseek_api_key_not_configured":
         response_status = status.HTTP_503_SERVICE_UNAVAILABLE
@@ -788,6 +809,37 @@ def _raise_job_service_error(exc: JobServiceError) -> None:
         response_status = status.HTTP_422_UNPROCESSABLE_CONTENT
     else:
         response_status = status.HTTP_409_CONFLICT
+    raise HTTPException(status_code=response_status, detail=code) from exc
+
+
+def _raise_talent_search_profile_error(exc: TalentSearchProfileServiceError) -> None:
+    """Map profile errors without exposing another workspace or provider detail."""
+
+    code = str(exc)
+    if code in {
+        "talent_search_profile_not_found",
+        "talent_search_run_not_found",
+        "job_version_not_found",
+    }:
+        response_status = status.HTTP_404_NOT_FOUND
+    elif code in {
+        "deepseek_api_key_not_configured",
+        "ai_route_not_configured",
+        "ai_route_not_published",
+        "ai_route_disabled",
+    }:
+        response_status = status.HTTP_503_SERVICE_UNAVAILABLE
+    elif code in {
+        "talent_search_profile_not_confirmed",
+        "talent_search_profile_not_draft",
+        "talent_search_profile_revision_not_current",
+        "talent_search_profile_revision_superseded",
+        "talent_search_profile_revision_missing",
+        "talent_search_profile_search_in_progress",
+    }:
+        response_status = status.HTTP_409_CONFLICT
+    else:
+        response_status = status.HTTP_422_UNPROCESSABLE_CONTENT
     raise HTTPException(status_code=response_status, detail=code) from exc
 
 
@@ -2653,6 +2705,241 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                 detail="agent_service_unavailable",
             ) from exc
         return response
+
+    @app.post(
+        "/v1/talent-search-profiles/generate",
+        response_model=TalentSearchProfileResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def post_generate_talent_search_profile(
+        payload: TalentSearchProfileGenerateRequest,
+        principal: AuthPrincipal = Depends(require_single_admin),
+        session: Session = Depends(get_session),
+    ) -> TalentSearchProfileResponse:
+        """Ask AI for a draft only; candidate recall begins after HR confirmation."""
+
+        try:
+            response = generate_profile(
+                session,
+                payload=payload,
+                settings=settings,
+                actor_user_id=principal.user.id,
+            )
+            _commit_or_raise(session)
+        except TalentSearchProfileNotFoundError as exc:
+            session.rollback()
+            _raise_talent_search_profile_error(exc)
+        except TalentSearchProfileServiceError as exc:
+            session.rollback()
+            _raise_talent_search_profile_error(exc)
+        except TalentProfileDeepSeekProviderError as exc:
+            session.rollback()
+            logger.warning("Talent-search profile provider failed: %s", exc)
+            detail = (
+                "talent_search_profile_response_truncated"
+                if str(exc) == "deepseek_response_truncated"
+                else "talent_search_profile_provider_failed"
+            )
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail) from exc
+        except Exception as exc:
+            session.rollback()
+            logger.exception("Talent-search profile generation failed")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="talent_search_profile_service_unavailable",
+            ) from exc
+        return response
+
+    @app.get(
+        "/v1/talent-search-profiles",
+        response_model=TalentSearchProfileListResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def get_talent_search_profiles(
+        limit: int = Query(default=12, ge=1, le=50),
+        session: Session = Depends(get_session),
+    ) -> TalentSearchProfileListResponse:
+        try:
+            return TalentSearchProfileListResponse(
+                items=list_talent_search_profiles(session, limit=limit)
+            )
+        except TalentSearchProfileServiceError as exc:
+            _raise_talent_search_profile_error(exc)
+        except Exception as exc:
+            logger.exception("Talent-search profile read failed")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="talent_search_profile_service_unavailable",
+            ) from exc
+
+    @app.get(
+        "/v1/talent-search-profiles/{profile_id}",
+        response_model=TalentSearchProfileResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def get_talent_search_profile(
+        profile_id: str,
+        session: Session = Depends(get_session),
+    ) -> TalentSearchProfileResponse:
+        try:
+            return get_profile(session, profile_id=profile_id)
+        except TalentSearchProfileNotFoundError as exc:
+            _raise_talent_search_profile_error(exc)
+        except TalentSearchProfileServiceError as exc:
+            _raise_talent_search_profile_error(exc)
+        except Exception as exc:
+            logger.exception("Talent-search profile read failed")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="talent_search_profile_service_unavailable",
+            ) from exc
+
+    @app.post(
+        "/v1/talent-search-profiles/{profile_id}/refine",
+        response_model=TalentSearchProfileResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def post_refine_talent_search_profile(
+        profile_id: str,
+        payload: TalentSearchProfileRefineRequest,
+        principal: AuthPrincipal = Depends(require_single_admin),
+        session: Session = Depends(get_session),
+    ) -> TalentSearchProfileResponse:
+        try:
+            response = refine_profile(
+                session,
+                profile_id=profile_id,
+                payload=payload,
+                settings=settings,
+                actor_user_id=principal.user.id,
+            )
+            _commit_or_raise(session)
+        except TalentSearchProfileNotFoundError as exc:
+            session.rollback()
+            _raise_talent_search_profile_error(exc)
+        except TalentSearchProfileServiceError as exc:
+            session.rollback()
+            _raise_talent_search_profile_error(exc)
+        except TalentProfileDeepSeekProviderError as exc:
+            session.rollback()
+            logger.warning("Talent-search profile refinement provider failed: %s", exc)
+            detail = (
+                "talent_search_profile_response_truncated"
+                if str(exc) == "deepseek_response_truncated"
+                else "talent_search_profile_provider_failed"
+            )
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail) from exc
+        except Exception as exc:
+            session.rollback()
+            logger.exception("Talent-search profile refinement failed")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="talent_search_profile_service_unavailable",
+            ) from exc
+        return response
+
+    @app.post(
+        "/v1/talent-search-profiles/{profile_id}/confirm",
+        response_model=TalentSearchProfileResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def post_confirm_talent_search_profile(
+        profile_id: str,
+        payload: TalentSearchProfileConfirmRequest,
+        principal: AuthPrincipal = Depends(require_single_admin),
+        session: Session = Depends(get_session),
+    ) -> TalentSearchProfileResponse:
+        try:
+            response = confirm_profile(
+                session,
+                profile_id=profile_id,
+                payload=payload,
+                actor_user_id=principal.user.id,
+            )
+            _commit_or_raise(session)
+        except TalentSearchProfileNotFoundError as exc:
+            session.rollback()
+            _raise_talent_search_profile_error(exc)
+        except TalentSearchProfileServiceError as exc:
+            session.rollback()
+            _raise_talent_search_profile_error(exc)
+        except TalentProfileJobServiceError as exc:
+            session.rollback()
+            _raise_job_service_error(exc)
+        except Exception as exc:
+            session.rollback()
+            logger.exception("Talent-search profile confirmation failed")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="talent_search_profile_service_unavailable",
+            ) from exc
+        return response
+
+    @app.post(
+        "/v1/talent-search-profiles/{profile_id}/runs",
+        response_model=TalentSearchRunResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def post_talent_search_profile_run(
+        profile_id: str,
+        payload: TalentSearchProfileRunRequest,
+        session: Session = Depends(get_session),
+    ) -> TalentSearchRunResponse:
+        try:
+            response = start_profile_search(
+                session,
+                profile_id=profile_id,
+                payload=payload,
+                settings=settings,
+            )
+            _commit_or_raise(session)
+        except TalentSearchProfileNotFoundError as exc:
+            session.rollback()
+            _raise_talent_search_profile_error(exc)
+        except TalentSearchProfileServiceError as exc:
+            session.rollback()
+            _raise_talent_search_profile_error(exc)
+        except TalentProfileJobServiceError as exc:
+            session.rollback()
+            _raise_job_service_error(exc)
+        except Exception as exc:
+            session.rollback()
+            logger.exception("Talent-search profile run failed")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="talent_search_profile_service_unavailable",
+            ) from exc
+        return response
+
+    @app.get(
+        "/v1/talent-search-profiles/{profile_id}/runs/{run_id}",
+        response_model=TalentSearchRunResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def get_talent_search_profile_run(
+        profile_id: str,
+        run_id: str,
+        limit: int = Query(default=20, ge=1, le=100),
+        cursor: str | None = Query(default=None, min_length=1, max_length=200),
+        session: Session = Depends(get_session),
+    ) -> TalentSearchRunResponse:
+        try:
+            return get_profile_run(
+                session,
+                profile_id=profile_id,
+                run_id=run_id,
+                payload=TalentSearchProfileSearchRequest(limit=limit, cursor=cursor),
+            )
+        except TalentSearchProfileNotFoundError as exc:
+            _raise_talent_search_profile_error(exc)
+        except TalentSearchProfileServiceError as exc:
+            _raise_talent_search_profile_error(exc)
+        except Exception as exc:
+            logger.exception("Talent-search profile run read failed")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="talent_search_profile_service_unavailable",
+            ) from exc
 
     @app.post(
         "/v1/candidates",

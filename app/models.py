@@ -1898,6 +1898,170 @@ class SavedFilter(OrganizationScoped, Base):
     )
 
 
+class TalentSearchProfile(OrganizationScoped, Base):
+    """A recruiter-confirmed, versioned AI talent-search brief.
+
+    This is deliberately distinct from a published JD.  A confirmed revision
+    may point to an internal ``JobVersion`` solely so the established,
+    evidence-grounded JD matching worker can perform the expensive precision
+    evaluation after deterministic candidate recall.
+    """
+
+    __tablename__ = "talent_search_profiles"
+    __table_args__ = (
+        Index(
+            "ix_talent_search_profiles_organization_updated",
+            "organization_id",
+            "updated_at",
+        ),
+        Index(
+            "ix_talent_search_profiles_organization_status",
+            "organization_id",
+            "status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    title: Mapped[str] = mapped_column(String(200))
+    source_type: Mapped[str] = mapped_column(String(32), default="freeform", index=True)
+    source_job_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("job_versions.id"),
+        nullable=True,
+        index=True,
+    )
+    original_request: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    current_revision_number: Mapped[int] = mapped_column(Integer, default=1)
+    confirmed_revision_number: Mapped[int | None] = mapped_column(Integer)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("user_accounts.id"),
+        nullable=True,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+    revisions: Mapped[list["TalentSearchProfileRevision"]] = relationship(
+        back_populates="profile",
+        cascade="all, delete-orphan",
+    )
+    runs: Mapped[list["TalentSearchRun"]] = relationship(
+        back_populates="profile",
+        cascade="all, delete-orphan",
+    )
+
+
+class TalentSearchProfileRevision(OrganizationScoped, Base):
+    """An immutable AI- or recruiter-refined version of one search brief."""
+
+    __tablename__ = "talent_search_profile_revisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_id",
+            "revision_number",
+            name="uq_talent_search_profile_revision_number",
+        ),
+        Index(
+            "ix_talent_search_profile_revisions_organization_profile",
+            "organization_id",
+            "profile_id",
+            "revision_number",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    profile_id: Mapped[str] = mapped_column(
+        ForeignKey("talent_search_profiles.id", ondelete="CASCADE"),
+        index=True,
+    )
+    revision_number: Mapped[int] = mapped_column(Integer)
+    source: Mapped[str] = mapped_column(String(32), default="ai_generated")
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    summary: Mapped[str] = mapped_column(Text)
+    hard_filters: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    verification_requirements: Mapped[list[dict[str, object]]] = mapped_column(
+        JSON,
+        default=list,
+    )
+    preferred_requirements: Mapped[list[dict[str, object]]] = mapped_column(
+        JSON,
+        default=list,
+    )
+    aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
+    clarifying_questions: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # The private job version is never included in normal JD lists.  It only
+    # carries confirmed, source-readable requirements into the existing
+    # evidence-based precision matching worker.
+    match_job_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("job_versions.id"),
+        nullable=True,
+        index=True,
+    )
+    model_name: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("user_accounts.id"),
+        nullable=True,
+        index=True,
+    )
+
+    profile: Mapped[TalentSearchProfile] = relationship(back_populates="revisions")
+
+
+class TalentSearchRun(OrganizationScoped, Base):
+    """One confirmed talent-profile recall plus optional precision batch."""
+
+    __tablename__ = "talent_search_runs"
+    __table_args__ = (
+        Index(
+            "ix_talent_search_runs_organization_profile_created",
+            "organization_id",
+            "profile_id",
+            "created_at",
+        ),
+        Index(
+            "ix_talent_search_runs_organization_status",
+            "organization_id",
+            "status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    profile_id: Mapped[str] = mapped_column(
+        ForeignKey("talent_search_profiles.id", ondelete="CASCADE"),
+        index=True,
+    )
+    revision_id: Mapped[str] = mapped_column(
+        ForeignKey("talent_search_profile_revisions.id"),
+        index=True,
+    )
+    hard_filter_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    # This is the server-derived strict-recall target set used to constrain the
+    # later semantic match batch.  It is never accepted from the browser.
+    recalled_resume_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    total_recalled_count: Mapped[int] = mapped_column(Integer, default=0)
+    job_match_batch_id: Mapped[str | None] = mapped_column(
+        ForeignKey("job_match_batches.id"),
+        nullable=True,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+    profile: Mapped[TalentSearchProfile] = relationship(back_populates="runs")
+
+
 class ScoreTemplate(OrganizationScoped, Base):
     __tablename__ = "score_templates"
     __table_args__ = (
@@ -2121,9 +2285,18 @@ class Job(OrganizationScoped, Base):
     __tablename__ = "jobs"
     __table_args__ = (
         Index("ix_jobs_organization_updated", "organization_id", "updated_at"),
+        Index("ix_jobs_organization_kind_updated", "organization_id", "kind", "updated_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    # ``talent_search_profile`` rows are internal requirement carriers. They
+    # never appear in the normal JD workspace, even though they deliberately
+    # reuse the same evidence-grounded matching engine.
+    kind: Mapped[str] = mapped_column(
+        String(32),
+        default="job",
+        server_default=text("'job'"),
+    )
     title: Mapped[str] = mapped_column(String(200))
     jd_text: Mapped[str] = mapped_column(Text)
     requirements: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)

@@ -53,6 +53,7 @@ def _verification_delivery() -> VerificationDelivery:
     return VerificationDelivery(
         recipient="candidate@example.test",
         verification_url="https://hr.example.test/verify-email?token=fixture-token",
+        verification_token="fixture-token",
         expires_minutes=60,
     )
 
@@ -61,6 +62,7 @@ def _password_reset_delivery() -> PasswordResetDelivery:
     return PasswordResetDelivery(
         recipient="candidate@example.test",
         reset_url="https://hr.example.test/reset-password?token=fixture-token",
+        reset_token="fixture-token",
         expires_minutes=30,
     )
 
@@ -89,9 +91,10 @@ def test_tencent_ses_verification_uses_the_approved_template_contract(
     assert request.TriggerType == 1
     assert request.Template.TemplateID == 101
     assert json.loads(request.Template.TemplateData) == {
-        "verify_url": "https://hr.example.test/verify-email?token=fixture-token",
+        "token": "fixture-token",
         "expires_minutes": "60",
     }
+    assert "https://" not in request.Template.TemplateData
 
 
 def test_tencent_ses_password_reset_uses_a_different_approved_template(
@@ -114,9 +117,10 @@ def test_tencent_ses_password_reset_uses_a_different_approved_template(
     assert request.TriggerType == 1
     assert request.Template.TemplateID == 202
     assert json.loads(request.Template.TemplateData) == {
-        "reset_url": "https://hr.example.test/reset-password?token=fixture-token",
+        "token": "fixture-token",
         "expires_minutes": "30",
     }
+    assert "https://" not in request.Template.TemplateData
 
 
 def test_tencent_ses_requires_a_dedicated_password_reset_template(tmp_path: Path) -> None:

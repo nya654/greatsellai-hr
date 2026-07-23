@@ -31,6 +31,10 @@ class TransactionalEmailError(RuntimeError):
 class VerificationDelivery:
     recipient: str
     verification_url: str
+    # Tencent SES templates must keep their destination domain fixed for
+    # review.  The provider therefore receives only this query token, while
+    # SMTP and test providers continue to use the complete URL above.
+    verification_token: str
     expires_minutes: int
 
 
@@ -40,6 +44,9 @@ class PasswordResetDelivery:
 
     recipient: str
     reset_url: str
+    # See ``VerificationDelivery.verification_token``.  This value is used
+    # only for the approved SES template variable and must never be logged.
+    reset_token: str
     expires_minutes: int
 
 
@@ -137,7 +144,7 @@ class TencentSesTransactionalEmailProvider:
             template.TemplateID = self._settings.tencent_ses_verification_template_id
             template.TemplateData = json.dumps(
                 {
-                    "verify_url": delivery.verification_url,
+                    "token": delivery.verification_token,
                     "expires_minutes": str(delivery.expires_minutes),
                 },
                 ensure_ascii=False,
@@ -192,7 +199,7 @@ class TencentSesTransactionalEmailProvider:
             template.TemplateID = self._settings.tencent_ses_password_reset_template_id
             template.TemplateData = json.dumps(
                 {
-                    "reset_url": delivery.reset_url,
+                    "token": delivery.reset_token,
                     "expires_minutes": str(delivery.expires_minutes),
                 },
                 ensure_ascii=False,

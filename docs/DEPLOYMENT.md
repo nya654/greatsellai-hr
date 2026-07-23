@@ -44,8 +44,7 @@ Compose 将 Caddy 固定在专用 `proxy` 网络的 `172.30.0.2`，API 同时连
 
 注册验证和找回密码使用腾讯云 SES API，不使用简历收件邮箱的 IMAP 凭据。切换前先在腾讯云完成发件域/地址验证并创建两份已审核的事务模板：
 
-- 验证邮件模板变量：`verify_url`、`expires_minutes`；
-- 重置密码模板变量：`reset_url`、`expires_minutes`。
+- 验证和重置模板变量均为：`token`、`expires_minutes`。模板中不得把变量作为整条 URL；必须写死规范入口域名和路由，例如验证模板使用 `https://hr.greatsellai.net/verify-email?token={{token}}`，重置模板使用 `https://hr.greatsellai.net/reset-password?token={{token}}`。该固定域名必须与 `RESUME_V3_PUBLIC_APP_URL` 保持一致。可直接使用仓库的 [验证模板](templates/tencent-ses-email-verification.html) 和 [重置模板](templates/tencent-ses-password-reset.html)。
 
 在服务器已有的、被 Git 忽略的 `.env.production` 中设置 `RESUME_V3_TRANSACTIONAL_EMAIL_PROVIDER=tencent_ses`、已验证的 `RESUME_V3_TRANSACTIONAL_EMAIL_FROM`、规范入口 `RESUME_V3_PUBLIC_APP_URL=https://hr.greatsellai.net`、`TENCENT_SECRET_ID`、`TENCENT_SECRET_KEY`、`TENCENT_SES_REGION=ap-guangzhou`、两个模板 ID，以及独立的 `RESUME_V3_EMAIL_CREDENTIALS_KEY`。不要把这些值提交到仓库、写入前端或放进 PR。
 

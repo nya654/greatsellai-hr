@@ -198,7 +198,36 @@ test.describe("招聘工作台关键路径", () => {
     await expect(detailsButton).toBeVisible();
     await detailsButton.focus();
     await page.keyboard.press("Enter");
-    await expect(page.getByRole("dialog", { name: "E2E 推荐候选人 的简历详情" })).toBeVisible();
+    const drawer = page.getByRole("dialog", { name: "E2E 推荐候选人 的简历详情" });
+    await expect(drawer).toBeVisible();
+
+    const summaryTab = drawer.getByRole("tab", { name: "AI 总结" });
+    await summaryTab.click();
+    await expect(summaryTab).toHaveAttribute("aria-selected", "true");
+    await expect(summaryTab).toHaveAttribute(
+      "aria-controls",
+      "candidate-drawer-panel-summary",
+    );
+    const summaryPanel = drawer.getByRole("tabpanel");
+    await expect(summaryPanel).toHaveAttribute(
+      "aria-labelledby",
+      "candidate-drawer-tab-summary",
+    );
+    await expect(
+      summaryPanel.getByRole("heading", { name: "还没有 AI 总结" }),
+    ).toBeVisible();
+
+    const evidenceTab = drawer.getByRole("tab", { name: "提取依据" });
+    await evidenceTab.click();
+    await expect(evidenceTab).toHaveAttribute("aria-selected", "true");
+    const evidencePanel = drawer.getByRole("tabpanel");
+    await expect(
+      evidencePanel.getByRole("heading", { name: "已提取的简历事实" }),
+    ).toBeVisible();
+    await expect(
+      evidencePanel.getByRole("heading", { name: "原文证据块" }),
+    ).toBeVisible();
+    await expect(evidencePanel.getByText("Python · 原文依据：page-001")).toBeVisible();
   });
 
   test("简历库窄屏保留查看入口且表格只在自身区域横向滚动", async ({ page }) => {
@@ -282,15 +311,17 @@ test.describe("招聘工作台关键路径", () => {
     await expect(page.getByText("未设门槛")).toHaveCount(0);
 
     await page.getByRole("button", { name: "查看 E2E 推荐候选人 的评分详情" }).click();
-    await expect(page.getByRole("tab", { name: "评分详情" })).toHaveAttribute(
+    const drawer = page.getByRole("dialog", { name: "E2E 推荐候选人 的简历详情" });
+    await expect(drawer.getByRole("tab", { name: "评分详情" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
-    await expect(page.getByRole("heading", { name: "评分详情", exact: true })).toBeVisible();
-    await expect(page.getByText("AI 评分理由", { exact: true }).first()).toBeVisible();
-    await expect(page.getByText("简历事实依据", { exact: true }).first()).toBeVisible();
-    await expect(page.getByText("待确认项", { exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "关闭简历详情" }).click();
+    await expect(drawer.getByRole("heading", { name: "评分详情", exact: true })).toBeVisible();
+    await expect(drawer.getByText("AI 评分理由", { exact: true }).first()).toBeVisible();
+    await expect(drawer.getByText("简历事实依据", { exact: true }).first()).toBeVisible();
+    await expect(drawer.getByText("待确认项", { exact: true })).toBeVisible();
+    await drawer.getByRole("button", { name: "关闭简历详情" }).click();
+    await expect(drawer).toBeHidden();
 
     await page.getByRole("button", { name: "评分模板", exact: true }).click();
     await expect(page.getByRole("heading", { name: "通用评分模板", exact: true })).toBeVisible();

@@ -1,0 +1,1168 @@
+import {
+  useEffect,
+  useState,
+  type CSSProperties,
+} from "react";
+import { api } from "../../api";
+import type {
+  JobMatch,
+  JobMatchBatch,
+  JobMatchBatchItem,
+  JobRequirements,
+  JobVersion,
+} from "../../types";
+import { Icon, type IconName } from "../../icons";
+import { BackofficeButton } from "../../backoffice/ui/BackofficeButton";
+import { BackofficeSelect } from "../../backoffice/ui/BackofficeSelect";
+
+type ToastKind = "success" | "error";
+type JobWorkspaceMode = "create" | "view";
+
+export function MatchWorkspace({
+  canGenerateAiJd,
+  formatError,
+  notify,
+  onOpenMatchedResume,
+}: {
+  canGenerateAiJd: boolean;
+  formatError: (error: unknown) => string;
+  notify: (kind: ToastKind, message: string) => void;
+  onOpenMatchedResume: (match: JobMatch) => void;
+}) {
+  const [title, setTitle] = useState("");
+  const [jobBrief, setJobBrief] = useState("");
+  const [jdText, setJdText] = useState("");
+  const [editedGeneratedJd, setEditedGeneratedJd] = useState(false);
+  const [generatedRequirements, setGeneratedRequirements] =
+    useState<JobRequirements | null>(null);
+  const [generationError, setGenerationError] = useState<string | null>(null);
+  const [jobWorkspaceMode, setJobWorkspaceMode] =
+    useState<JobWorkspaceMode>("create");
+  const [jobVersion, setJobVersion] = useState<JobVersion | null>(null);
+  const [versioningJobId, setVersioningJobId] = useState<string | null>(null);
+  const [confirmedJobVersions, setConfirmedJobVersions] = useState<JobVersion[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [matchBatch, setMatchBatch] = useState<JobMatchBatch | null>(null);
+  const [batchItems, setBatchItems] = useState<JobMatchBatchItem[]>([]);
+  const [jobMatches, setJobMatches] = useState<JobMatch[]>([]);
+  const [matchesLoading, setMatchesLoading] = useState(false);
+  const resetJobAuthoring = () => {
+    setTitle("");
+    setJobBrief("");
+    setJdText("");
+    setEditedGeneratedJd(false);
+    setGeneratedRequirements(null);
+    setGenerationError(null);
+  };
+  const selectJobVersion = (next: JobVersion) => {
+    resetJobAuthoring();
+    setJobWorkspaceMode("view");
+    setJobVersion(next);
+    setVersioningJobId(null);
+    setMatchBatch(null);
+    setBatchItems([]);
+  };
+  const beginNewJob = () => {
+    resetJobAuthoring();
+    setJobWorkspaceMode("create");
+    setJobVersion(null);
+    setVersioningJobId(null);
+    setMatchBatch(null);
+    setBatchItems([]);
+    setJobMatches([]);
+  };
+  const beginNextJobVersion = () => {
+    if (!jobVersion) return;
+    setJobWorkspaceMode("create");
+    setVersioningJobId(jobVersion.job_id);
+    setTitle(jobVersion.title);
+    setJobBrief(jobVersion.raw_text);
+    setJdText("");
+    setEditedGeneratedJd(false);
+    setGeneratedRequirements(null);
+    setGenerationError(null);
+    setMatchBatch(null);
+    setBatchItems([]);
+  };
+  const requirementsAreReady = (requirements: JobRequirements | null) =>
+    Boolean(
+      requirements &&
+        ((requirements.must_have?.some((item) => item.trim()) ?? false) ||
+          (requirements.preferred?.some((item) => item.trim()) ?? false)),
+    );
+  const updateGeneratedRequirement = (
+    priority: "must_have" | "preferred",
+    index: number,
+    value: string,
+  ) => {
+    setGeneratedRequirements((current) => {
+      const next = {
+        must_have: [...(current?.must_have ?? [])],
+        preferred: [...(current?.preferred ?? [])],
+      };
+      next[priority][index] = value;
+      return next;
+    });
+  };
+  const addGeneratedRequirement = (priority: "must_have" | "preferred") => {
+    setGeneratedRequirements((current) => ({
+      must_have: [...(current?.must_have ?? [])],
+      preferred: [...(current?.preferred ?? [])],
+      [priority]: [...(current?.[priority] ?? []), ""],
+    }));
+  };
+  const removeGeneratedRequirement = (
+    priority: "must_have" | "preferred",
+    index: number,
+  ) => {
+    setGeneratedRequirements((current) => ({
+      must_have: (current?.must_have ?? []).filter((_, itemIndex) => itemIndex !== (priority === "must_have" ? index : -1)),
+      preferred: (current?.preferred ?? []).filter((_, itemIndex) => itemIndex !== (priority === "preferred" ? index : -1)),
+    }));
+  };
+  const invalidateGeneratedRequirements = () => {
+    if (!generatedRequirements) return;
+    setGeneratedRequirements(null);
+    setGenerationError("JD 已修改，请重新运行 AI 生成后再启用岗位。");
+  };
+  const generateJobDescription = async () => {
+    if (!canGenerateAiJd) {
+      notify("error", "当前套餐未开通 AI 生成 JD。你仍可直接发布原版 JD。");
+      return;
+    }
+    const sourceText =
+      (editedGeneratedJd && jdText.trim()) || jobBrief.trim();
+    if (!title.trim() || !sourceText) {
+      notify("error", "请填写岗位名称和岗位需求后再生成 JD。");
+      return;
+    }
+    setGenerationError(null);
+    setLoading(true);
+    try {
+      const generated = await api.generateJobDescription({
+        title: title.trim(),
+        brief: sourceText,
+      });
+      const generatedJd = generated.jd_text?.trim();
+      if (!generatedJd) {
+        throw new Error("AI 未返回可编辑的 JD");
+      }
+      setTitle(generated.title?.trim() || title.trim());
+      setJdText(generatedJd);
+      setEditedGeneratedJd(false);
+      setGeneratedRequirements(generated.requirements ?? null);
+      if (!requirementsAreReady(generated.requirements ?? null)) {
+        setGenerationError(
+          "AI 已生成 JD，但没有返回可用于匹配的条件。请补充岗位需求后重新生成。",
+        );
+        notify("error", "AI 未生成可用的匹配条件，请补充需求后重试。");
+        return;
+      }
+      notify("success", "AI 已生成 JD 和匹配条件。确认内容后即可启用岗位。");
+    } catch (error) {
+      const message = formatError(error);
+      setGenerationError(message);
+      notify("error", message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  const enableJob = async () => {
+    if (!title.trim() || !jdText.trim()) {
+      notify("error", "请先生成或粘贴完整 JD。");
+      return;
+    }
+    if (!requirementsAreReady(generatedRequirements)) {
+      const message = "JD 已修改或匹配条件不完整，请先重新运行 AI 生成。";
+      setGenerationError(message);
+      notify("error", message);
+      return;
+    }
+    setGenerationError(null);
+    setLoading(true);
+    try {
+      const requirements = generatedRequirements
+        ? {
+            must_have: (generatedRequirements.must_have ?? [])
+              .map((item) => item.trim())
+              .filter(Boolean),
+            preferred: (generatedRequirements.preferred ?? [])
+              .map((item) => item.trim())
+              .filter(Boolean),
+          }
+        : undefined;
+      const payload = {
+        title: title.trim(),
+        jd_text: jdText.trim(),
+        requirements,
+      };
+      const created = versioningJobId
+        ? await api.createJobVersion(versioningJobId, payload)
+        : await api.createJob(payload);
+      if (created.status !== "confirmed") {
+        const message =
+          "岗位已保存，但服务尚未返回可启用版本。请重新生成 JD 后再试。";
+        setGenerationError(message);
+        notify("error", message);
+        return;
+      }
+      setConfirmedJobVersions((current) => [
+        created,
+        ...current.filter((item) => item.job_version_id !== created.job_version_id),
+      ]);
+      selectJobVersion(created);
+      notify("success", "岗位已启用，现在可以开始匹配简历。");
+    } catch (error) {
+      const message = formatError(error);
+      setGenerationError(message);
+      notify("error", message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  const publishOriginalJob = async () => {
+    if (!title.trim() || !jobBrief.trim()) {
+      notify("error", "请填写岗位名称和完整原版 JD 后再发布。");
+      return;
+    }
+    setGenerationError(null);
+    setLoading(true);
+    try {
+      const published = await api.publishOriginalJob({
+        title: title.trim(),
+        // This deliberately retains every valid character entered in the JD.
+        // The endpoint performs validation without normalizing the source text.
+        jd_text: jobBrief,
+      });
+      setConfirmedJobVersions((current) => [
+        published,
+        ...current.filter(
+          (item) => item.job_version_id !== published.job_version_id,
+        ),
+      ]);
+      selectJobVersion(published);
+      notify("success", "原版 JD 已发布，内容未经过 AI 处理。");
+    } catch (error) {
+      const message = formatError(error);
+      setGenerationError(message);
+      notify("error", message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  const runAllMatches = async () => {
+    if (!jobVersion || jobVersion.status !== "confirmed") {
+      notify("error", "请先启用岗位，再批量匹配简历。");
+      return;
+    }
+    if (!jobVersion.requirements.length) {
+      notify("error", "原版 JD 未生成匹配条件，不能批量运行 AI 匹配。");
+      return;
+    }
+    setLoading(true);
+    try {
+      const response = await api.enqueueAllJobMatches(
+        jobVersion.job_version_id,
+      );
+      setMatchBatch(response);
+      setBatchItems([]);
+      notify(
+        "success",
+        `已将 ${response.total_count} 份简历加入岗位评估队列。`,
+      );
+    } catch (error) {
+      notify("error", formatError(error));
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    if (!matchBatch) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const [next, items] = await Promise.all([
+          api.getJobMatchBatch(matchBatch.batch_id),
+          api.listJobMatchBatchItems(matchBatch.batch_id),
+        ]);
+        if (!cancelled) {
+          setMatchBatch(next);
+          setBatchItems(items);
+        }
+      } catch {
+        // Keep the last durable status visible; the next manual action can retry.
+      }
+    };
+    void refresh();
+    if (["completed", "partial"].includes(matchBatch.status)) {
+      return () => {
+        cancelled = true;
+      };
+    }
+    const timer = window.setInterval(() => void refresh(), 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [matchBatch?.batch_id, matchBatch?.status]);
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .listConfirmedJobVersions()
+      .then((versions) => {
+        if (cancelled) return;
+        setConfirmedJobVersions(versions);
+        if (versions[0]) selectJobVersion(versions[0]);
+      })
+      .catch(() => {
+        // A new workspace has no confirmed JD yet. The creation form remains usable.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  useEffect(() => {
+    if (
+      !jobVersion ||
+      jobVersion.status !== "confirmed" ||
+      !jobVersion.requirements.length
+    ) {
+      setJobMatches([]);
+      return;
+    }
+    let cancelled = false;
+    setMatchesLoading(true);
+    void api
+      .listJobVersionMatches(jobVersion.job_version_id)
+      .then((items) => {
+        if (!cancelled) setJobMatches(items);
+      })
+      .catch((error) => {
+        if (!cancelled) notify("error", formatError(error));
+      })
+      .finally(() => {
+        if (!cancelled) setMatchesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [jobVersion?.job_version_id, jobVersion?.status, matchBatch?.completed_count, notify]);
+  const jobIsEnabled =
+    jobWorkspaceMode === "view" && jobVersion?.status === "confirmed";
+  const jobIsOriginal = Boolean(
+    jobIsEnabled && jobVersion && jobVersion.requirements.length === 0,
+  );
+  const jobCanMatch = Boolean(
+    jobIsEnabled && jobVersion && jobVersion.requirements.length > 0,
+  );
+  const generatedJobIsReady = requirementsAreReady(generatedRequirements);
+  return (
+    <div className="page-frame">
+      <header className="page-heading">
+        <div>
+          <h1>招聘详情</h1>
+          <p>
+            {canGenerateAiJd
+              ? "管理岗位 JD、匹配条件与候选人评估；启用后可直接对该岗位的全部可匹配简历运行评估。"
+              : "可直接发布原版 JD；AI 生成 JD 与候选人匹配需要开通相应套餐。"}
+          </p>
+        </div>
+      </header>
+      <div className="page-layout">
+        <div>
+          <section className="panel">
+            {confirmedJobVersions.length > 0 && (
+              <div className="jd-switcher">
+                <div>
+                  <span className="field-label">已保存的岗位 JD</span>
+                  <p>切换后将显示该岗位自己的候选人匹配结果。</p>
+                </div>
+                <div className="jd-switcher-select">
+                  <BackofficeSelect
+                    ariaLabel="切换已保存的岗位 JD"
+                    onChange={(value) => {
+                      if (!value) {
+                        beginNewJob();
+                        return;
+                      }
+                      const next = confirmedJobVersions.find(
+                        (item) => item.job_version_id === value,
+                      );
+                      if (next) selectJobVersion(next);
+                    }}
+                    options={[
+                      { label: "新建岗位 JD", value: "" },
+                      ...confirmedJobVersions.map((item) => ({
+                        label: `${item.title} · v${item.version}${!item.requirements.length ? " · 原版" : ""}`,
+                        value: item.job_version_id,
+                      })),
+                    ]}
+                    value={
+                      jobWorkspaceMode === "view"
+                        ? (jobVersion?.job_version_id ?? "")
+                        : ""
+                    }
+                  />
+                </div>
+              </div>
+            )}
+            {jobWorkspaceMode === "view" && jobVersion ? (
+              <div className="field-stack">
+                <div className="panel-heading">
+                  <div>
+                    <h2>{jobVersion.title}</h2>
+                    <p>
+                      {jobIsOriginal
+                        ? "原版内容已发布，未调用 AI，也不包含用于简历匹配的条件。"
+                        : "已启用，当前匹配结果仅基于这份岗位 JD。"}
+                    </p>
+                  </div>
+                  <div className="jd-view-actions">
+                    <span className="status-pill">
+                      {jobIsOriginal ? "原版已发布" : "已启用"}
+                    </span>
+                    <button
+                      className="button button-ghost"
+                      onClick={beginNextJobVersion}
+                      type="button"
+                    >
+                      <Icon name="plus" size={15} />
+                      基于此新建版本
+                    </button>
+                  </div>
+                </div>
+                <label className="field-label" htmlFor="active-job-text">
+                  岗位 JD 原文
+                </label>
+                <textarea
+                  aria-label="当前已启用岗位的 JD 原文"
+                  className="textarea-field"
+                  id="active-job-text"
+                  readOnly
+                  value={jobVersion.raw_text}
+                />
+              </div>
+            ) : (
+              <>
+                {versioningJobId && (
+                  <p className="version-context" role="status">
+                    正在基于当前岗位创建新版本。原版本和已有匹配结果会完整保留。
+                  </p>
+                )}
+                <div className="jd-publish-guide" role="note">
+                  <Icon aria-hidden="true" name="briefcase" size={18} />
+                  <div>
+                    <strong>发布方式</strong>
+                    <span>
+                      原样发布只保存下方输入，不调用 AI；AI 版会生成可编辑的 JD 和匹配条件。
+                    </span>
+                  </div>
+                </div>
+                <div className="form-grid">
+                  <div className="field-stack span-full">
+                    <label className="field-label" htmlFor="job-title">
+                      岗位名称
+                    </label>
+                    <input
+                      className="field"
+                      id="job-title"
+                      onChange={(event) => {
+                        invalidateGeneratedRequirements();
+                        setTitle(event.target.value);
+                      }}
+                      placeholder="例如：大模型应用架构师"
+                      value={title}
+                    />
+                  </div>
+                  <div className="field-stack span-full">
+                    <label className="field-label" htmlFor="job-brief">
+                      岗位需求或完整 JD
+                    </label>
+                    <textarea
+                      className="textarea-field"
+                      id="job-brief"
+                      onChange={(event) => {
+                        setJobBrief(event.target.value);
+                        setGenerationError(null);
+                        if (jdText) {
+                          setJdText("");
+                          setEditedGeneratedJd(false);
+                          setGeneratedRequirements(null);
+                        }
+                      }}
+                      placeholder={
+                        canGenerateAiJd
+                          ? "填写岗位需求后点击「AI 生成 JD」；已有完整 JD 可直接粘贴后点击「原版发布」。"
+                          : "粘贴完整原版 JD 后点击「原版发布」，内容会按原样保存。"
+                      }
+                      value={jobBrief}
+                    />
+                    <p className="candidate-meta">
+                      {canGenerateAiJd
+                        ? "AI 生成 JD 会提取匹配条件；原样发布始终只保存这里的输入，不会使用 AI 生成内容。"
+                        : "原版发布不会调用 AI，内容会按当前输入原样保存。"}
+                    </p>
+                  </div>
+                  {jdText && (
+                    <div className="field-stack span-full">
+                      <label className="field-label" htmlFor="job-text">
+                        AI 生成的 JD
+                      </label>
+                      <textarea
+                        className="textarea-field"
+                        id="job-text"
+                        onChange={(event) => {
+                          invalidateGeneratedRequirements();
+                          setEditedGeneratedJd(true);
+                          setJdText(event.target.value);
+                        }}
+                        value={jdText}
+                      />
+                      <p className="candidate-meta">
+                        可以直接编辑。编辑后请重新生成，以同步用于匹配的 AI 条件。
+                      </p>
+                    </div>
+                  )}
+                </div>
+                {generationError && (
+                  <p className="library-error" role="alert">
+                    {generationError}
+                  </p>
+                )}
+                <div className="review-actions jd-authoring-actions">
+                  <BackofficeButton
+                    disabled={loading}
+                    icon={<Icon name="briefcase" size={16} />}
+                    onClick={() => void publishOriginalJob()}
+                    tone={canGenerateAiJd ? "default" : "primary"}
+                  >
+                    原样发布 JD
+                  </BackofficeButton>
+                  {canGenerateAiJd && (
+                    <BackofficeButton
+                      disabled={loading}
+                      icon={<Icon name="spark" size={16} />}
+                      onClick={() => void generateJobDescription()}
+                      tone="primary"
+                    >
+                      {jdText ? "重新生成 AI JD" : "AI 生成 JD"}
+                    </BackofficeButton>
+                  )}
+                  {jdText && (
+                    <BackofficeButton
+                      disabled={loading || !generatedJobIsReady}
+                      icon={<Icon name="check" size={16} />}
+                      onClick={() => void enableJob()}
+                      tone="primary"
+                    >
+                      {versioningJobId ? "发布新版本" : "启用岗位"}
+                    </BackofficeButton>
+                  )}
+                </div>
+              </>
+            )}
+          </section>
+          {jobWorkspaceMode === "create" && generatedJobIsReady && (
+            <section className="panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>AI 识别的匹配条件</h2>
+                  <p>可以直接修订条件与优先级，发布后会固化为该 JD 版本的匹配依据。</p>
+                </div>
+              </div>
+              <div className="requirements-list">
+                {(generatedRequirements?.must_have ?? []).map((requirement, index) => (
+                  <div className="requirement-row" key={`must-${index}-${requirement}`}>
+                    <span className="priority-must">必须</span>
+                    <input
+                      aria-label={`第 ${index + 1} 条必须条件`}
+                      className="field requirement-input"
+                      onChange={(event) => updateGeneratedRequirement("must_have", index, event.target.value)}
+                      value={requirement}
+                    />
+                    <button
+                      aria-label={`删除第 ${index + 1} 条必须条件`}
+                      className="icon-button requirement-remove"
+                      onClick={() => removeGeneratedRequirement("must_have", index)}
+                      type="button"
+                    >
+                      <Icon name="close" size={15} />
+                    </button>
+                  </div>
+                ))}
+                {(generatedRequirements?.preferred ?? []).map((requirement, index) => (
+                  <div className="requirement-row" key={`preferred-${index}-${requirement}`}>
+                    <span className="priority-preferred">优先</span>
+                    <input
+                      aria-label={`第 ${index + 1} 条优先条件`}
+                      className="field requirement-input"
+                      onChange={(event) => updateGeneratedRequirement("preferred", index, event.target.value)}
+                      value={requirement}
+                    />
+                    <button
+                      aria-label={`删除第 ${index + 1} 条优先条件`}
+                      className="icon-button requirement-remove"
+                      onClick={() => removeGeneratedRequirement("preferred", index)}
+                      type="button"
+                    >
+                      <Icon name="close" size={15} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <div className="requirement-actions">
+                <button className="button button-ghost" onClick={() => addGeneratedRequirement("must_have")} type="button">
+                  <Icon name="plus" size={15} /> 添加必须条件
+                </button>
+                <button className="button button-ghost" onClick={() => addGeneratedRequirement("preferred")} type="button">
+                  <Icon name="plus" size={15} /> 添加优先条件
+                </button>
+              </div>
+            </section>
+          )}
+          {jobIsOriginal && (
+            <section className="panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>原版发布</h2>
+                  <p>已按原文发布，未调用 AI，未生成用于简历匹配的条件。</p>
+                </div>
+              </div>
+            </section>
+          )}
+          {jobCanMatch && jobVersion && (
+            <section className="panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>当前岗位的匹配条件</h2>
+                  <p>这些条件已随岗位启用，并用于当前的简历匹配。</p>
+                </div>
+              </div>
+              <div className="requirements-list">
+                {jobVersion.requirements.map((requirement) => (
+                  <div className="requirement-row" key={requirement.requirement_id}>
+                    <span
+                      className={
+                        requirement.priority === "must_have"
+                          ? "priority-must"
+                          : "priority-preferred"
+                      }
+                    >
+                      {requirement.priority === "must_have" ? "必须" : "优先"}
+                    </span>
+                    <p>{requirement.raw_requirement}</p>
+                    <span className="candidate-meta">{requirement.category}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+          {matchBatch && (
+            <MatchBatchDetails batch={matchBatch} items={batchItems} />
+          )}
+          {jobCanMatch && (
+            <MatchLeaderboard
+              loading={matchesLoading}
+              matches={jobMatches}
+              onOpenResume={onOpenMatchedResume}
+            />
+          )}
+        </div>
+        <aside className="panel">
+          <div className="panel-heading">
+            <div>
+              <h2>岗位评估</h2>
+              <p>
+                {jobIsOriginal
+                  ? "原版发布未生成匹配条件，因此不会调用 AI 匹配。"
+                  : "根据当前 JD，对全部可匹配简历生成匹配度、可信度与待核实项。"}
+              </p>
+            </div>
+          </div>
+          <div className="fact-list">
+            <div className="fact-row">
+              <strong>当前岗位</strong>
+              <span>
+                {jobIsEnabled && jobVersion
+                  ? `${jobVersion.title} · v${jobVersion.version} · ${jobIsOriginal ? "原版已发布" : "已启用"}`
+                  : "尚未启用"}
+              </span>
+            </div>
+          </div>
+          {matchBatch && (
+            <div className="fact-row">
+              <strong>AI 批量进度</strong>
+              <span>
+                {matchBatch.completed_count + matchBatch.failed_count} / {matchBatch.total_count}
+                {matchBatch.failed_count ? ` · 失败 ${matchBatch.failed_count}` : ""}
+              </span>
+            </div>
+          )}
+          <div className="review-actions">
+            <button
+              className="button button-primary"
+              disabled={!jobCanMatch || loading}
+              onClick={() => void runAllMatches()}
+              type="button"
+            >
+              {loading ? (
+                <>
+                  <i className="spinner" />
+                  正在创建评估任务…
+                </>
+              ) : (
+                <>
+                  <Icon name="match" size={16} />
+                  开始岗位评分（全部可匹配简历）
+                </>
+              )}
+            </button>
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+type MatchLane = "recommended" | "pending" | "unmet";
+
+const hardRequirementLabel: Record<string, string> = {
+  partial: "硬条件部分满足",
+  pass: "硬条件通过",
+  unmet: "硬条件未满足",
+  information_insufficient: "硬条件待核实",
+  not_applicable: "无硬条件",
+};
+
+function clampMatchPercent(value: number): number {
+  return Math.max(0, Math.min(100, value));
+}
+
+/**
+ * A completed match may have been created before the server returned the
+ * evidence-normalized score. Keep old results readable while never presenting
+ * their legacy, coverage-weighted total as a JD match percentage.
+ */
+function matchConfidence(match: JobMatch): number {
+  const value = match.match_confidence ?? match.evidence_coverage ?? 0;
+  return typeof value === "number" && Number.isFinite(value)
+    ? clampMatchPercent(value)
+    : 0;
+}
+
+function matchScore(match: JobMatch): number {
+  if (
+    typeof match.match_score === "number" &&
+    Number.isFinite(match.match_score)
+  ) {
+    return clampMatchPercent(match.match_score);
+  }
+
+  const confidence = matchConfidence(match);
+  if (!confidence || !Number.isFinite(match.total_score)) return 0;
+  return clampMatchPercent((match.total_score / confidence) * 100);
+}
+
+function matchLane(match: JobMatch): MatchLane {
+  if (
+    match.match_lane === "recommended" ||
+    match.match_lane === "pending" ||
+    match.match_lane === "unmet"
+  ) {
+    return match.match_lane;
+  }
+
+  if (match.hard_requirement_status === "unmet") return "unmet";
+  if (
+    matchConfidence(match) >= 60 &&
+    (match.hard_requirement_status === "pass" ||
+      match.hard_requirement_status === "not_applicable")
+  ) {
+    return "recommended";
+  }
+  return "pending";
+}
+
+function compareMatchesByNewest(left: JobMatch, right: JobMatch): number {
+  const leftTime = Date.parse(left.created_at);
+  const rightTime = Date.parse(right.created_at);
+  const timeDifference =
+    (Number.isFinite(rightTime) ? rightTime : 0) -
+    (Number.isFinite(leftTime) ? leftTime : 0);
+  if (timeDifference) return timeDifference;
+  return right.match_id.localeCompare(left.match_id);
+}
+
+function MatchResult({ match }: { match: JobMatch }) {
+  const jdMatchScore = matchScore(match);
+  const confidence = matchConfidence(match);
+  const hardStatus = match.hard_requirement_status ?? "unknown";
+  const scoreStyle = {
+    "--score": jdMatchScore,
+  } as CSSProperties;
+  return (
+    <section className="panel">
+      <div className="panel-heading">
+        <div>
+          <h2>匹配结果</h2>
+          <p>
+            岗位版本 {match.job_version} · 简历事实版本 {match.facts_version} ·{" "}
+            {hardRequirementLabel[hardStatus] ?? "待检查硬性要求"}
+          </p>
+        </div>
+      </div>
+      <div className="score-result match-result-layout">
+        <div className="match-result-score-panel">
+          <div
+            aria-label={`JD 匹配度 ${jdMatchScore.toFixed(1)}%，匹配可信度 ${confidence.toFixed(1)}%`}
+            className="score-number"
+            data-value={`${jdMatchScore.toFixed(1)}%`}
+            style={scoreStyle}
+          >
+            <span>{jdMatchScore.toFixed(1)}%</span>
+          </div>
+          <p className="match-result-score-label">JD 匹配度</p>
+          <div className="match-result-confidence">
+            <span>匹配可信度</span>
+            <strong>{confidence.toFixed(1)}%</strong>
+          </div>
+          <span className={`match-hard-status is-${hardStatus}`}>
+            {hardRequirementLabel[hardStatus] ?? "待确认"}
+          </span>
+        </div>
+        <div className="requirements-list">
+          {match.requirement_results.map((item) => (
+            <div className="requirement-row" key={item.requirement_id}>
+              <span className={`outcome-${item.outcome.replace("_", "-")}`}>
+                {item.outcome === "met"
+                  ? "已满足"
+                  : item.outcome === "partial"
+                    ? "部分满足"
+                    : item.outcome === "not_met"
+                      ? "未满足"
+                      : "待确认"}
+              </span>
+              <p>
+                <b>{item.requirement_text}</b>
+                <br />
+                {item.reason}
+                {item.missing_or_uncertain
+                  ? ` · ${item.missing_or_uncertain}`
+                  : ""}
+                <small className="match-fact-reference">
+                  {item.fact_ids.length
+                    ? `事实依据：${item.fact_ids.join("、")}`
+                    : "未发现可验证的简历事实"}
+                </small>
+              </p>
+              <span
+                className={
+                  item.priority === "must_have"
+                    ? "priority-must"
+                    : "priority-preferred"
+                }
+              >
+                {item.priority === "must_have" ? "必须" : "优先"}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function MatchBatchDetails({
+  batch,
+  items,
+}: {
+  batch: JobMatchBatch;
+  items: JobMatchBatchItem[];
+}) {
+  const failed = items.filter((item) => item.status === "failed");
+  const inProgress = items.filter(
+    (item) => item.status === "queued" || item.status === "running",
+  );
+  return (
+    <section className="panel match-batch-details">
+      <div className="panel-heading">
+        <div>
+          <h2>岗位评估任务</h2>
+          <p>
+            {batch.completed_count + batch.failed_count} / {batch.total_count} 已结束
+            {inProgress.length ? `，仍有 ${inProgress.length} 份在队列中` : ""}。
+          </p>
+        </div>
+        <span className={`status-pill${batch.failed_count ? " is-warning" : ""}`}>
+          {batch.status === "partial" ? "部分完成" : batch.status === "completed" ? "已完成" : "运行中"}
+        </span>
+      </div>
+      {failed.length ? (
+        <div className="table-scroll">
+          <table className="candidate-table batch-failure-table">
+            <thead>
+              <tr>
+                <th scope="col">候选人</th>
+                <th scope="col">事实版本</th>
+                <th scope="col">尝试次数</th>
+                <th scope="col">失败原因</th>
+              </tr>
+            </thead>
+            <tbody>
+              {failed.map((item) => (
+                <tr key={item.item_id}>
+                  <td>{item.candidate_display_name?.trim() || "未命名候选人"}</td>
+                  <td>v{item.facts_version}</td>
+                  <td>{item.attempt_count}</td>
+                  <td>{item.last_error || "未知错误"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : batch.failed_count ? (
+        <p className="library-error">任务报告了失败项，正在读取具体原因。</p>
+      ) : (
+        <p className="candidate-meta">
+          {batch.status === "completed"
+            ? "本批简历均已完成匹配。"
+            : "失败项会在任务结束后显示具体原因。"}
+        </p>
+      )}
+    </section>
+  );
+}
+
+function MatchLeaderboard({
+  matches,
+  loading,
+  onOpenResume,
+}: {
+  matches: JobMatch[];
+  loading: boolean;
+  onOpenResume: (match: JobMatch) => void;
+}) {
+  const [collapsedLanes, setCollapsedLanes] = useState<Record<MatchLane, boolean>>({
+    recommended: false,
+    pending: false,
+    unmet: false,
+  });
+  const latestByResume = new Map<string, JobMatch>();
+  const newestFirst = [...matches].sort(compareMatchesByNewest);
+  for (const match of newestFirst) {
+    if (!latestByResume.has(match.resume_id)) latestByResume.set(match.resume_id, match);
+  }
+  const ranked = [...latestByResume.values()].sort((left, right) => {
+    const scoreDifference = matchScore(right) - matchScore(left);
+    if (scoreDifference) return scoreDifference;
+    const confidenceDifference = matchConfidence(right) - matchConfidence(left);
+    if (confidenceDifference) return confidenceDifference;
+    return compareMatchesByNewest(left, right);
+  });
+  const lanes: Record<MatchLane, JobMatch[]> = {
+    recommended: [],
+    pending: [],
+    unmet: [],
+  };
+  for (const item of ranked) lanes[matchLane(item)].push(item);
+  const laneDefinitions: Array<{
+    key: MatchLane;
+    title: string;
+    description: string;
+    empty: string;
+    icon: IconName;
+  }> = [
+    {
+      key: "recommended",
+      title: "推荐候选人",
+      description: "可信度 ≥ 60%，硬性条件已通过或不适用",
+      empty: "暂无满足推荐条件的候选人。",
+      icon: "check",
+    },
+    {
+      key: "pending",
+      title: "待核实候选人",
+      description: "关键项待核实，或匹配可信度不足 60%",
+      empty: "暂无需要补充核实的候选人。",
+      icon: "match",
+    },
+    {
+      key: "unmet",
+      title: "明确不匹配",
+      description: "至少一项硬性条件已有明确不满足的证据",
+      empty: "暂无明确不满足硬性条件的候选人。",
+      icon: "close",
+    },
+  ];
+  return (
+    <section className="panel match-leaderboard">
+      <div className="panel-heading">
+        <div>
+          <h2>候选人评估结果</h2>
+          <p>JD 匹配度仅按已确认信息计算，匹配可信度表示可验证条件的覆盖程度。</p>
+        </div>
+        <span className="status-pill">{ranked.length} 份已完成</span>
+      </div>
+      {loading ? (
+        <div
+          aria-busy="true"
+          aria-label="正在加载候选人匹配结果"
+          className="match-lanes match-lanes-loading"
+        >
+          {laneDefinitions.map((lane) => (
+            <div className="match-lane" key={lane.key}>
+              <div className="match-lane-heading">
+                <div className="match-lane-title">
+                  <span className="skeleton match-lane-icon-skeleton" />
+                  <div>
+                    <div className="skeleton match-lane-title-skeleton" />
+                    <div className="skeleton match-lane-description-skeleton" />
+                  </div>
+                </div>
+              </div>
+              <div className="match-lane-skeleton-list">
+                <span className="skeleton" />
+                <span className="skeleton" />
+                <span className="skeleton" />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : ranked.length ? (
+        <div className="match-lanes">
+          {laneDefinitions.map((lane) => {
+            const items = lanes[lane.key];
+            const isCollapsed = collapsedLanes[lane.key];
+            const laneContentId = `match-lane-${lane.key}-content`;
+            return (
+              <section
+                aria-labelledby={`match-lane-${lane.key}-heading`}
+                className={`match-lane is-${lane.key}`}
+                key={lane.key}
+              >
+                <div className="match-lane-heading">
+                  <div className="match-lane-title">
+                    <span className="match-lane-icon">
+                      <Icon name={lane.icon} size={16} />
+                    </span>
+                    <div>
+                      <h3 id={`match-lane-${lane.key}-heading`}>{lane.title}</h3>
+                      <p>{lane.description}</p>
+                    </div>
+                  </div>
+                  <div className="match-lane-actions">
+                    <span aria-label={`${lane.title} ${items.length} 份`} className="match-lane-count">
+                      {items.length}
+                    </span>
+                    <button
+                      aria-controls={laneContentId}
+                      aria-expanded={!isCollapsed}
+                      className="text-button match-lane-collapse"
+                      onClick={() =>
+                        setCollapsedLanes((current) => ({
+                          ...current,
+                          [lane.key]: !current[lane.key],
+                        }))
+                      }
+                      type="button"
+                    >
+                      <span>{isCollapsed ? "展开" : "收起"}</span>
+                      <Icon name="chevron-down" size={14} />
+                    </button>
+                  </div>
+                </div>
+                {!isCollapsed && (
+                  <div
+                    aria-live="polite"
+                    className="match-lane-content"
+                    id={laneContentId}
+                  >
+                    {items.length ? (
+                      <ol className="match-candidate-list">
+                        {items.map((item) => (
+                          <li key={item.match_id}>
+                            <MatchLaneCandidate
+                              match={item}
+                              onOpenResume={onOpenResume}
+                            />
+                          </li>
+                        ))}
+                      </ol>
+                    ) : (
+                      <p className="match-lane-empty">{lane.empty}</p>
+                    )}
+                  </div>
+                )}
+              </section>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="empty-state match-empty-state">
+          <div className="empty-state-inner">
+            <span className="empty-glyph"><Icon name="match" size={23} /></span>
+            <h2>尚未生成岗位评估</h2>
+            <p>确认 JD 后，点击“开始岗位评分（全部可匹配简历）”即可在此查看排序结果。</p>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function MatchLaneCandidate({
+  match,
+  onOpenResume,
+}: {
+  match: JobMatch;
+  onOpenResume: (match: JobMatch) => void;
+}) {
+  const jdMatchScore = matchScore(match);
+  const confidence = matchConfidence(match);
+  const hardStatus = match.hard_requirement_status ?? "unknown";
+  const met = match.requirement_results.filter(
+    (result) => result.outcome === "met",
+  ).length;
+  const partial = match.requirement_results.filter(
+    (result) => result.outcome === "partial",
+  ).length;
+  const unknown = match.requirement_results.filter(
+    (result) => result.outcome === "unknown",
+  ).length;
+  return (
+    <article className="match-candidate-card">
+      <div className="match-candidate-heading">
+        <div>
+          <strong>{match.candidate_display_name?.trim() || "未命名候选人"}</strong>
+          <small>简历事实 v{match.facts_version}</small>
+        </div>
+        <span className={`match-hard-status is-${hardStatus}`}>
+          {hardRequirementLabel[hardStatus] ?? "待确认"}
+        </span>
+      </div>
+      <dl className="match-candidate-metrics">
+        <div>
+          <dt>JD 匹配度</dt>
+          <dd>{jdMatchScore.toFixed(1)}%</dd>
+        </div>
+        <div>
+          <dt>匹配可信度</dt>
+          <dd>{confidence.toFixed(1)}%</dd>
+        </div>
+      </dl>
+      <div className="match-candidate-overview">
+        <span>满足 {met}</span>
+        <span>部分满足 {partial}</span>
+        {unknown > 0 && <span>待核实 {unknown}</span>}
+      </div>
+      <button
+        className="button button-ghost match-open-button"
+        onClick={() => onOpenResume(match)}
+        type="button"
+      >
+        <Icon name="document" size={15} />
+        查看简历
+      </button>
+    </article>
+  );
+}

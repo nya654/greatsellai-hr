@@ -250,6 +250,44 @@ test.describe("招聘工作台关键路径", () => {
     await expect(page.getByRole("dialog", { name: "E2E 推荐候选人 的简历详情" })).toBeVisible();
   });
 
+  test("岗位原样发布只提交原始输入，不调用 AI", async ({ page }) => {
+    await registerAndVerify(page, "publish-original-job");
+    await page.getByRole("button", { name: "招聘详情", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "招聘详情", exact: true })).toBeVisible();
+
+    const title = "E2E 原样发布岗位";
+    const originalJd = "负责招聘工作台内测。\n\n任职要求：能独立完成招聘流程。";
+    await page.locator("#job-title").fill(title);
+    await page.locator("#job-brief").fill(originalJd);
+
+    const originalPublishButton = page.getByRole("button", { name: "原样发布 JD" });
+    await expect(originalPublishButton).toBeVisible();
+    await expect(page.getByRole("button", { name: "AI 生成 JD" })).toBeVisible();
+
+    let generateRequests = 0;
+    page.on("request", (request) => {
+      if (
+        request.method() === "POST" &&
+        new URL(request.url()).pathname === "/v1/jobs/generate-jd"
+      ) {
+        generateRequests += 1;
+      }
+    });
+    const publishRequest = page.waitForRequest((request) =>
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/v1/jobs/publish-original",
+    );
+
+    await originalPublishButton.click();
+    const request = await publishRequest;
+    expect(request.postDataJSON()).toEqual({
+      jd_text: originalJd,
+      title,
+    });
+    await expect.poll(() => generateRequests).toBe(0);
+    await expect(page.getByText("原版已发布", { exact: true })).toBeVisible();
+  });
+
   test("评分不继承候选人，招聘详情按 JD 批量评估", async ({ page }) => {
     await registerAndVerify(page, "screen-score-match");
     const fixture = await seedWorkspaceFixture(page);

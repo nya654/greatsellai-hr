@@ -13,6 +13,7 @@ import type {
 import { Icon } from "../../icons";
 import { TableSkeleton } from "../../backoffice/ui/TableSkeleton";
 import { formatLibraryDate } from "../../backoffice/utils/formatters";
+import "./candidate-data.css";
 
 type ToastKind = "success" | "error";
 

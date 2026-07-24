@@ -108,7 +108,18 @@ jobs:
         run: npx playwright install chromium
       - name: Run Playwright critical paths
         working-directory: web
-        run: npm run e2e
+        shell: bash
+        run: |
+          # A self-hosted runner can retain a failed Playwright web server.
+          # Give each workflow attempt isolated loopback ports and test data
+          # instead of colliding with the local defaults (8012/5176).
+          port_offset=$(( (GITHUB_RUN_ID + GITHUB_RUN_ATTEMPT) % 5000 ))
+          export E2E_API_PORT=$(( 20000 + port_offset ))
+          export E2E_WEB_PORT=$(( 26000 + port_offset ))
+          export E2E_DATA_DIR="$GITHUB_WORKSPACE/data/e2e-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          trap 'rm -rf -- "$E2E_DATA_DIR"' EXIT
+          echo "Running isolated Playwright servers on $E2E_API_PORT and $E2E_WEB_PORT."
+          npm run e2e
 
   production-images:
     name: Production image builds

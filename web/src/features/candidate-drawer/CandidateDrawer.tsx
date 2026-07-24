@@ -28,6 +28,7 @@ import type {
   CandidateDrawerTab,
   SelectedResume,
 } from "./candidate-drawer-types";
+import "./candidate-drawer.css";
 
 export function CandidateDrawer({
   candidate,

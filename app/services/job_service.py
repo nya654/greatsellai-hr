@@ -840,8 +840,9 @@ def classify_job_match_lane(
     """Assign a match to one of the three HR review lanes.
 
     An explicit failed hard requirement is the only route to the last lane.
-    An unproven hard requirement is *not* a rejection: it stays in the review
-    lane even when other evidence coverage is high.
+    A partially evidenced or unproven hard requirement is *not* a rejection,
+    but it also is not a recommendation. It stays in the review lane even
+    when other evidence coverage is high.
     """
 
     if hard_requirement_status == "unmet":
@@ -1062,6 +1063,13 @@ def run_job_match(
     elif any(outcome == "unknown" for outcome in must_outcomes):
         hard_requirement_status = "information_insufficient"
         must_have_passed = None
+    elif any(outcome == "partial" for outcome in must_outcomes):
+        # Partial evidence is a useful recruiter lead, but not proof that a
+        # mandatory requirement is met. Keeping it distinct from both
+        # ``unmet`` and ``information_insufficient`` lets the UI put it in
+        # the review lane without silently treating it as a pass.
+        hard_requirement_status = "partial"
+        must_have_passed = None
     else:
         hard_requirement_status = "pass"
         must_have_passed = True
@@ -1070,7 +1078,7 @@ def run_job_match(
     job_match.hard_requirement_status = hard_requirement_status
     job_match.must_have_passed = must_have_passed
     if provider_result["needs_human_review"] or any(
-        outcome == "unknown"
+        outcome in {"unknown", "partial"}
         for outcomes in outcomes_by_priority.values()
         for outcome in outcomes
     ):

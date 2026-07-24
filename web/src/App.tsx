@@ -11724,6 +11724,7 @@ function MatchPage({
 type MatchLane = "recommended" | "pending" | "unmet";
 
 const hardRequirementLabel: Record<string, string> = {
+  partial: "硬条件部分满足",
   pass: "硬条件通过",
   unmet: "硬条件未满足",
   information_insufficient: "硬条件待核实",

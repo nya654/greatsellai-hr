@@ -5965,6 +5965,11 @@ details[open] > .mailbox-disclosure-heading::after {
   background: var(--green-tint);
 }
 
+.match-hard-status.is-partial {
+  color: var(--amber);
+  background: var(--amber-tint);
+}
+
 .match-hard-status.is-unmet {
   color: var(--red-pressed);
   background: var(--red-tint);

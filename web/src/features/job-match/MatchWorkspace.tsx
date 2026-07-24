@@ -14,6 +14,7 @@ import type {
 import { Icon, type IconName } from "../../icons";
 import { BackofficeButton } from "../../backoffice/ui/BackofficeButton";
 import { BackofficeSelect } from "../../backoffice/ui/BackofficeSelect";
+import "./job-match.css";
 
 type ToastKind = "success" | "error";
 type JobWorkspaceMode = "create" | "view";
@@ -357,7 +358,7 @@ export function MatchWorkspace({
   );
   const generatedJobIsReady = requirementsAreReady(generatedRequirements);
   return (
-    <div className="page-frame">
+    <div className="page-frame job-match-workspace">
       <header className="page-heading">
         <div>
           <h1>招聘详情</h1>

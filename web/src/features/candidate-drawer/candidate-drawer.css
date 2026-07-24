@@ -760,6 +760,7 @@
 .backoffice-ui-root .candidate-drawer .summary-evidence-link:hover {
   color: var(--red);
   text-decoration: underline;
+}
 
 @media (max-width: 75rem) {
 .backoffice-ui-root .candidate-drawer {

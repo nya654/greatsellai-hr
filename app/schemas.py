@@ -1180,6 +1180,34 @@ class CandidateDataAuditEventListResponse(ApiModel):
     total: int
 
 
+class RecruitingAgentContextReference(ApiModel):
+    """A browser-selectable *source*, never a browser-supplied candidate set.
+
+    The server loads and freezes the referenced run under the authenticated
+    workspace before the Agent can use it.  Resume IDs, candidate IDs, source
+    text, and arbitrary conversation history are intentionally not accepted.
+    """
+
+    kind: Literal["talent_search_run"]
+    run_id: str = Field(min_length=1, max_length=64)
+
+
+class RecruitingAgentActiveContext(ApiModel):
+    """Safe, recruiter-visible status for the current work-session scope."""
+
+    candidate_set_source: Literal["agent_search", "talent_search_run"] | None = None
+    candidate_count: int = Field(default=0, ge=0)
+    active_job_version_id: str | None = None
+    active_job_title: str | None = None
+    expires_at: datetime
+
+
+class RecruitingAgentConversationResponse(ApiModel):
+    conversation_id: str
+    context_version: int = Field(ge=1)
+    active_context: RecruitingAgentActiveContext
+
+
 class RecruitingAgentRequest(ApiModel):
     """One bounded recruiting-assistant turn.
 
@@ -1191,6 +1219,19 @@ class RecruitingAgentRequest(ApiModel):
 
     message: str = Field(min_length=1, max_length=2000)
     job_version_id: str | None = Field(default=None, max_length=64)
+    conversation_id: str | None = Field(default=None, min_length=1, max_length=64)
+    context_version: int | None = Field(default=None, ge=1)
+    context_ref: RecruitingAgentContextReference | None = None
+
+    @model_validator(mode="after")
+    def require_version_for_existing_conversation(self) -> "RecruitingAgentRequest":
+        """Make stale-tab protection mandatory after a session has been created."""
+
+        if self.conversation_id is not None and self.context_version is None:
+            raise ValueError("context_version_required_for_conversation")
+        if self.conversation_id is None and self.context_version is not None:
+            raise ValueError("context_version_requires_conversation")
+        return self
 
 
 class RecruitingAgentCandidate(ApiModel):
@@ -1252,6 +1293,9 @@ class RecruitingAgentToolTrace(ApiModel):
 
 
 class RecruitingAgentResponse(ApiModel):
+    conversation_id: str
+    context_version: int = Field(ge=1)
+    active_context: RecruitingAgentActiveContext
     message: str
     intent: Literal[
         "search_candidates",

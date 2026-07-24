@@ -27,6 +27,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm.exc import StaleDataError
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import AppSettings
@@ -140,6 +141,7 @@ from app.schemas import (
     ResumeScholarshipResponse,
     ResumeSkillResponse,
     ResumeUploadResponse,
+    RecruitingAgentConversationResponse,
     RecruitingAgentRequest,
     RecruitingAgentResponse,
     ResumeScoreCreate,
@@ -283,7 +285,12 @@ from app.services.saved_filter_service import (
 from app.services.search_service import SearchValidationError, search_candidates
 from app.services.resume_library_service import list_resume_library
 from app.services.recruiting_agent_service import (
+    RecruitingAgentConversationConflictError,
+    RecruitingAgentConversationNotFoundError,
+    RecruitingAgentContextReferenceNotFoundError,
     RecruitingAgentServiceError,
+    delete_recruiting_agent_conversation,
+    get_recruiting_agent_conversation,
     run_recruiting_agent_turn,
 )
 from app.services.talent_search_profile_service import (
@@ -2678,6 +2685,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                 session,
                 payload=payload,
                 settings=settings,
+                actor_user_id=principal.user.id,
                 # Core recruiting tools remain available to an active
                 # recruiter. Mailbox operations use the same entitlement and
                 # organization-admin boundary as the dedicated mailbox APIs.
@@ -2687,6 +2695,34 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                 ),
             )
             _commit_or_raise(session)
+        except (
+            RecruitingAgentConversationNotFoundError,
+            RecruitingAgentContextReferenceNotFoundError,
+        ) as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    "agent_context_reference_not_found"
+                    if isinstance(exc, RecruitingAgentContextReferenceNotFoundError)
+                    else "agent_conversation_not_found"
+                ),
+            ) from exc
+        except RecruitingAgentConversationConflictError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="agent_conversation_stale",
+            ) from exc
+        except StaleDataError as exc:
+            # A row-version conflict can be raised by the final request
+            # commit, after the graph has finished. Preserve the same public
+            # stale-session contract as an early conflict.
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="agent_conversation_stale",
+            ) from exc
         except RecruitingAgentServiceError as exc:
             session.rollback()
             raise HTTPException(
@@ -2706,6 +2742,63 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                 detail="agent_service_unavailable",
             ) from exc
         return response
+
+    @app.get(
+        "/v1/recruiting-agent/conversations/{conversation_id}",
+        response_model=RecruitingAgentConversationResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def get_recruiting_agent_work_session(
+        conversation_id: str,
+        principal: AuthPrincipal = Depends(require_single_admin),
+        session: Session = Depends(get_session),
+    ) -> RecruitingAgentConversationResponse:
+        """Restore only the caller's safe Agent work-state summary."""
+
+        try:
+            return get_recruiting_agent_conversation(
+                session,
+                conversation_id=conversation_id,
+                actor_user_id=principal.user.id,
+            )
+        except RecruitingAgentConversationNotFoundError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="agent_conversation_not_found",
+            ) from exc
+
+    @app.delete(
+        "/v1/recruiting-agent/conversations/{conversation_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def delete_recruiting_agent_work_session(
+        conversation_id: str,
+        principal: AuthPrincipal = Depends(require_single_admin),
+        session: Session = Depends(get_session),
+    ) -> None:
+        """Forget the caller's private Agent work-state immediately."""
+
+        try:
+            delete_recruiting_agent_conversation(
+                session,
+                conversation_id=conversation_id,
+                actor_user_id=principal.user.id,
+            )
+            _commit_or_raise(session)
+        except RecruitingAgentConversationNotFoundError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="agent_conversation_not_found",
+            ) from exc
+        except StaleDataError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="agent_conversation_stale",
+            ) from exc
 
     @app.post(
         "/v1/talent-search-profiles/generate",

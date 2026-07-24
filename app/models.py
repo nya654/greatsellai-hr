@@ -1898,6 +1898,195 @@ class SavedFilter(OrganizationScoped, Base):
     )
 
 
+class RecruitingAgentConversation(OrganizationScoped, Base):
+    """One private, short-lived recruiting-Agent work session.
+
+    The conversation deliberately keeps only controlled work state: the
+    selected JD and a server-created candidate-set reference.  It never stores
+    chat transcripts, prompts, model output, candidate names, source blocks,
+    or resume text.  Candidate membership lives in the normalized child table
+    below so a browser can never submit an arbitrary set of resume IDs.
+    """
+
+    __tablename__ = "recruiting_agent_conversations"
+    __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            name="uq_recruiting_agent_conversation_id_organization",
+        ),
+        Index(
+            "ix_recruiting_agent_conversations_organization_owner_updated",
+            "organization_id",
+            "owner_user_id",
+            "updated_at",
+        ),
+        Index(
+            "ix_recruiting_agent_conversations_organization_expiry",
+            "organization_id",
+            "expires_at",
+        ),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    # A workspace can eventually support shared Agent conversations through an
+    # explicit ACL.  Until then, a conversation remains private to the user
+    # who started it even when multiple recruiters share one organization.
+    owner_user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id"),
+        index=True,
+    )
+    active_job_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("job_versions.id"),
+        nullable=True,
+        index=True,
+    )
+    # The reference is verified against ``id + organization + conversation``
+    # whenever it is read.  Keeping it as a scalar avoids a circular foreign
+    # key while the candidate-set table still has a composite tenant FK back
+    # to this conversation.
+    active_candidate_set_id: Mapped[str | None] = mapped_column(
+        String(36),
+        nullable=True,
+        index=True,
+    )
+    # Protect two browser tabs from silently replacing each other's "just now"
+    # candidate scope.  The client returns this value on the next turn.
+    context_version: Mapped[int] = mapped_column(
+        Integer,
+        default=1,
+        server_default=text("1"),
+    )
+    # ``context_version`` is both the recruiter-visible optimistic-concurrency
+    # token and SQLAlchemy's row version. Every turn advances it, so a stale
+    # browser tab cannot silently replace another tab's saved candidate scope.
+    # The service owns the increment explicitly to keep the returned token
+    # deterministic and to avoid a hidden ORM-generated value.
+    __mapper_args__ = {
+        "version_id_col": context_version,
+        "version_id_generator": False,
+    }
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+    candidate_sets: Mapped[list["RecruitingAgentCandidateSet"]] = relationship(
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        foreign_keys="RecruitingAgentCandidateSet.conversation_id",
+    )
+
+
+class RecruitingAgentCandidateSet(OrganizationScoped, Base):
+    """A frozen, server-derived candidate scope for one Agent conversation."""
+
+    __tablename__ = "recruiting_agent_candidate_sets"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["conversation_id", "organization_id"],
+            [
+                "recruiting_agent_conversations.id",
+                "recruiting_agent_conversations.organization_id",
+            ],
+            name="fk_recruiting_agent_candidate_set_conversation_organization",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            name="uq_recruiting_agent_candidate_set_id_organization",
+        ),
+        Index(
+            "ix_agent_sets_org_conv_created",
+            "organization_id",
+            "conversation_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    conversation_id: Mapped[str] = mapped_column(String(36), index=True)
+    # ``agent_search`` means the visible result cards from a normal Agent
+    # search. ``talent_search_run`` means the entire server-derived recall set
+    # from one confirmed talent-profile run.
+    source_kind: Mapped[str] = mapped_column(String(32), index=True)
+    # Source IDs are opaque internal references only.  They are never accepted
+    # as a resume selection from the browser and do not contain candidate data.
+    source_ref_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    conversation: Mapped[RecruitingAgentConversation] = relationship(
+        back_populates="candidate_sets",
+        foreign_keys=[conversation_id],
+        primaryjoin=(
+            "and_(RecruitingAgentCandidateSet.conversation_id == "
+            "RecruitingAgentConversation.id, RecruitingAgentCandidateSet.organization_id == "
+            "RecruitingAgentConversation.organization_id)"
+        ),
+    )
+    items: Mapped[list["RecruitingAgentCandidateSetItem"]] = relationship(
+        back_populates="candidate_set",
+        cascade="all, delete-orphan",
+        foreign_keys="RecruitingAgentCandidateSetItem.candidate_set_id",
+    )
+
+
+class RecruitingAgentCandidateSetItem(OrganizationScoped, Base):
+    """One opaque resume reference inside a frozen Agent candidate set."""
+
+    __tablename__ = "recruiting_agent_candidate_set_items"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["candidate_set_id", "organization_id"],
+            [
+                "recruiting_agent_candidate_sets.id",
+                "recruiting_agent_candidate_sets.organization_id",
+            ],
+            name="fk_recruiting_agent_candidate_set_item_set_organization",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "candidate_set_id",
+            "resume_id",
+            name="uq_recruiting_agent_candidate_set_item_resume",
+        ),
+        Index(
+            "ix_agent_set_items_org_set_ordinal",
+            "organization_id",
+            "candidate_set_id",
+            "ordinal",
+        ),
+        Index(
+            "ix_recruiting_agent_candidate_set_items_organization_resume",
+            "organization_id",
+            "resume_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    candidate_set_id: Mapped[str] = mapped_column(String(36), index=True)
+    # This is intentionally not a relationship to Resume.  A deleted/purged
+    # resume must not be revived through historical chat state; every read
+    # re-checks normal tenant and candidate-lifecycle visibility instead.
+    resume_id: Mapped[str] = mapped_column(String(36), index=True)
+    ordinal: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    candidate_set: Mapped[RecruitingAgentCandidateSet] = relationship(
+        back_populates="items",
+        foreign_keys=[candidate_set_id],
+        primaryjoin=(
+            "and_(RecruitingAgentCandidateSetItem.candidate_set_id == "
+            "RecruitingAgentCandidateSet.id, RecruitingAgentCandidateSetItem.organization_id == "
+            "RecruitingAgentCandidateSet.organization_id)"
+        ),
+    )
+
+
 class TalentSearchProfile(OrganizationScoped, Base):
     """A recruiter-confirmed, versioned AI talent-search brief.
 

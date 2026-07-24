@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import timedelta
 from email.message import EmailMessage
 from io import BytesIO
 from pathlib import Path
@@ -28,7 +29,11 @@ from app.models import (
     ResumeScore,
     ResumeSourceBlock,
     ResumeSummary,
+    RecruitingAgentConversation,
     ScoreTemplate,
+    OrganizationMembership,
+    UserAccount,
+    utcnow,
 )
 from app.schemas import CandidateSearchRequest
 from app.services import mailbox_import_service
@@ -79,6 +84,8 @@ def workspace_clients(tmp_path: Path) -> Iterator[tuple[TestClient, TestClient]]
         database_url="sqlite://",
         allow_unauthenticated=False,
         session_secret="tenant-isolation-test-session-secret",
+        deepseek_api_key="unit-test-key",
+        deepseek_model="unit-test-model",
         min_text_chars_per_page=20,
         transactional_email_provider="test",
         public_app_url="http://testserver",
@@ -454,6 +461,116 @@ def test_agent_source_text_language_evidence_never_crosses_workspaces(
         if match.filter_key == "language_credentials_any_of"
     )
     assert evidence.evidence_origin == "resume_text"
+
+
+def test_recruiting_agent_conversations_are_private_to_owner_and_workspace(
+    workspace_clients: tuple[TestClient, TestClient],
+    monkeypatch,
+) -> None:
+    """An opaque work-session ID is not a cross-user or cross-tenant handle."""
+
+    client_a, client_b = workspace_clients
+    session_a = _register_and_login(
+        client_a,
+        organization_name="Agent context workspace alpha",
+        full_name="Alpha Admin",
+        email="agent-context-alpha@example.test",
+        password="tenant-test-password-a",
+    )
+    _register_and_login(
+        client_b,
+        organization_name="Agent context workspace beta",
+        full_name="Beta Admin",
+        email="agent-context-beta@example.test",
+        password="tenant-test-password-b",
+    )
+    organization_a_id = str(session_a["organization"]["organization_id"])
+    owner_a_id = str(session_a["user"]["user_id"])
+    database = client_a.app.state.database
+    with database.session_factory() as session:
+        set_organization_context(session, organization_a_id)
+        another_member = UserAccount(
+            email="agent-context-other@example.test",
+            email_key="agent-context-other@example.test",
+            full_name="Other recruiter",
+            password_hash="not-used-in-this-test",
+            email_verified_at=utcnow(),
+        )
+        session.add(another_member)
+        session.flush()
+        session.add(
+            OrganizationMembership(
+                organization_id=organization_a_id,
+                user_id=another_member.id,
+                role="recruiter",
+            )
+        )
+        owner_conversation = RecruitingAgentConversation(
+            owner_user_id=owner_a_id,
+            expires_at=utcnow() + timedelta(hours=1),
+        )
+        other_member_conversation = RecruitingAgentConversation(
+            owner_user_id=another_member.id,
+            expires_at=utcnow() + timedelta(hours=1),
+        )
+        session.add_all((owner_conversation, other_member_conversation))
+        session.commit()
+        owner_conversation_id = owner_conversation.id
+        other_member_conversation_id = other_member_conversation.id
+
+    owner_read = client_a.get(
+        f"/v1/recruiting-agent/conversations/{owner_conversation_id}"
+    )
+    assert owner_read.status_code == 200, owner_read.text
+    assert owner_read.json()["conversation_id"] == owner_conversation_id
+
+    foreign_workspace_read = client_b.get(
+        f"/v1/recruiting-agent/conversations/{owner_conversation_id}"
+    )
+    non_owner_read = client_a.get(
+        f"/v1/recruiting-agent/conversations/{other_member_conversation_id}"
+    )
+    assert foreign_workspace_read.status_code == 404, foreign_workspace_read.text
+    assert non_owner_read.status_code == 404, non_owner_read.text
+    assert foreign_workspace_read.json()["detail"] == "agent_conversation_not_found"
+    assert non_owner_read.json()["detail"] == "agent_conversation_not_found"
+
+    def model_must_not_run(*args, **kwargs):
+        raise AssertionError("an inaccessible Agent conversation must fail before the model")
+
+    monkeypatch.setattr(
+        "app.services.recruiting_agent_service._model_completion",
+        model_must_not_run,
+    )
+    foreign_workspace_turn = client_b.post(
+        "/v1/recruiting-agent/turns",
+        json={
+            "message": "continue",
+            "conversation_id": owner_conversation_id,
+            "context_version": 1,
+        },
+    )
+    non_owner_turn = client_a.post(
+        "/v1/recruiting-agent/turns",
+        json={
+            "message": "continue",
+            "conversation_id": other_member_conversation_id,
+            "context_version": 1,
+        },
+    )
+    assert foreign_workspace_turn.status_code == 404, foreign_workspace_turn.text
+    assert non_owner_turn.status_code == 404, non_owner_turn.text
+    assert foreign_workspace_turn.json()["detail"] == "agent_conversation_not_found"
+    assert non_owner_turn.json()["detail"] == "agent_conversation_not_found"
+
+    foreign_workspace_delete = client_b.delete(
+        f"/v1/recruiting-agent/conversations/{owner_conversation_id}"
+    )
+    assert foreign_workspace_delete.status_code == 404, foreign_workspace_delete.text
+    assert (
+        client_a.get(f"/v1/recruiting-agent/conversations/{owner_conversation_id}").status_code
+        == 200
+    )
 
 
 def test_workspaces_can_reuse_candidate_names_without_cross_tenant_access(

@@ -5,17 +5,34 @@ import re
 import unicodedata
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from datetime import timedelta
+from functools import lru_cache
+from typing import Any, Literal, TypedDict
 from uuid import uuid4
 
-from sqlalchemy.orm import Session
+from langgraph.graph import END, START, StateGraph
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.config import AppSettings
+from app.database import Database
 from app.filter_options import language_credential_label
+from app.models import (
+    JobMatchBatchItem,
+    RecruitingAgentCandidateSet,
+    RecruitingAgentCandidateSetItem,
+    RecruitingAgentConversation,
+    Resume,
+    TalentSearchRun,
+    utcnow,
+)
 from app.schemas import (
     CandidateSearchRequest,
+    RecruitingAgentActiveContext,
     RecruitingAgentAction,
     RecruitingAgentCandidate,
+    RecruitingAgentConversationResponse,
     RecruitingAgentRequest,
     RecruitingAgentResponse,
     RecruitingAgentSearchSummary,
@@ -34,6 +51,7 @@ from app.services.job_match_batch_service import enqueue_job_version_match_batch
 from app.services.job_service import (
     JobServiceError,
     JobVersionNotFoundError,
+    derive_job_match_score,
     get_job_version,
     get_latest_confirmed_job_version,
     list_job_version_matches,
@@ -55,10 +73,23 @@ from app.services.score_service import (
     ScoreTemplateNotFoundError,
     list_score_templates,
 )
+from app.tenant_scope import clear_organization_context, set_organization_context
 
 
 class RecruitingAgentServiceError(RuntimeError):
     """A visible failure, never a silent fallback to rule matching."""
+
+
+class RecruitingAgentConversationNotFoundError(RecruitingAgentServiceError):
+    """The caller cannot access a private, workspace-scoped conversation."""
+
+
+class RecruitingAgentConversationConflictError(RecruitingAgentServiceError):
+    """A second browser tab advanced the conversation work state first."""
+
+
+class RecruitingAgentContextReferenceNotFoundError(RecruitingAgentServiceError):
+    """A caller cannot bind an unavailable workspace-owned Agent context."""
 
 
 @dataclass(frozen=True)
@@ -88,6 +119,46 @@ class ToolRun:
     search_summary: RecruitingAgentSearchSummary | None = None
     batch_id: str | None = None
     intent: AgentIntent | None = None
+    # Only a server-produced search result may become the next conversational
+    # candidate scope.  The browser and the model never provide this list.
+    context_resume_ids: list[str] | None = None
+
+
+class _RecruitingAgentGraphState(TypedDict, total=False):
+    """Ephemeral LangGraph state for one Agent HTTP turn.
+
+    There is intentionally no LangGraph checkpointer here.  A default
+    checkpointer would persist prompt/messages, while the product must retain
+    only the narrow conversation state stored in our tenant-scoped tables.
+    """
+
+    session: Session
+    payload: RecruitingAgentRequest
+    settings: AppSettings
+    mailbox_tools_available: bool
+    actor_user_id: str
+    conversation: RecruitingAgentConversation
+    job: ResolvedJob | None
+    active_context: RecruitingAgentActiveContext
+    messages: list[dict[str, Any]]
+    assistant_message: dict[str, Any]
+    cards: list[RecruitingAgentCandidate]
+    actions: list[RecruitingAgentAction]
+    traces: list[RecruitingAgentToolTrace]
+    search_summary: RecruitingAgentSearchSummary | None
+    batch_id: str | None
+    intent: AgentIntent
+    tool_steps: int
+    tool_call_limit_exceeded: bool
+    pending_search_resume_ids: list[str] | None
+    response: RecruitingAgentResponse
+
+
+_AGENT_CONVERSATION_TTL = timedelta(hours=24)
+_CONTEXT_SOURCE_AGENT_SEARCH = "agent_search"
+_CONTEXT_SOURCE_TALENT_SEARCH_RUN = "talent_search_run"
+_MAX_TOOL_CALLS_PER_MODEL_RESPONSE = 4
+_MAX_TOOL_ROUNDS_PER_TURN = 4
 
 
 _STRING_ARRAY_SCHEMA: dict[str, Any] = {
@@ -356,6 +427,58 @@ _TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_current_job_ranking_from_active_context",
+            "description": (
+                "Rank only the server-saved candidate set from this conversation against the "
+                "currently selected confirmed JD. Use this, not get_current_job_ranking, when "
+                "the user says 刚刚筛选出的、上一轮结果、其中、这些人, or asks to choose from "
+                "the current talent-profile/RAG result. If the user explicitly says only RAG "
+                "matches displayed as 100%, set source_match_min_score to 100. Never accept or "
+                "invent candidate IDs. The result reports whether current-JD matching is complete "
+                "for the saved scope; missing rows are unknown, not a negative conclusion."
+            ),
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+                    "source_match_min_score": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 100,
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "start_current_job_match_for_active_context",
+            "description": (
+                "Start a current-JD match batch only for the server-saved candidate set from "
+                "this conversation. Use it after get_current_job_ranking_from_active_context "
+                "reports that the current JD has no completed results and the user asked to compare "
+                "or select candidates. If the user limits the set to RAG results displayed as 100%, "
+                "set source_match_min_score to 100. Never use this tool for a browser-provided "
+                "candidate list; never claim the batch has finished inside this turn."
+            ),
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "source_match_min_score": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 100,
+                    }
+                },
+            },
+        },
+    },
 ]
 
 
@@ -447,6 +570,36 @@ _ACTIVE_TOOL_DEFINITIONS: ContextVar[tuple[dict[str, Any], ...]] = ContextVar(
     default=tuple(_TOOLS),
 )
 
+# Final Agent replies are rendered directly in the Chinese recruiting
+# workspace. Proper names, IDs, and technical terms may stay in their source
+# language, but an English-only (or English-dominant) answer must not reach a
+# recruiter. The small guard below gives the model one no-tool correction
+# attempt without re-running a search or inventing new facts.
+_AGENT_ENGLISH_SHORT_REPLY_WORD = re.compile(
+    r"(?i)\b(?:yes|no|okay|ok|sorry|please|thanks|cannot|can't|unable)\b"
+)
+_AGENT_FINAL_REPLY_FALLBACK = "暂时无法生成符合要求的中文回复，请稍后重试。"
+
+
+def _is_valid_chinese_final_reply(value: object) -> bool:
+    """Accept Chinese prose while permitting necessary English technical terms."""
+
+    if not isinstance(value, str):
+        return False
+    normalized = value.strip()
+    if not normalized:
+        return False
+    chinese_character_count = len(re.findall(r"[\u4e00-\u9fff]", normalized))
+    latin_letter_count = len(re.findall(r"[A-Za-z]", normalized))
+    if chinese_character_count == 0:
+        return False
+    if latin_letter_count > chinese_character_count * 4:
+        return False
+    return not (
+        chinese_character_count < 4
+        and _AGENT_ENGLISH_SHORT_REPLY_WORD.search(normalized) is not None
+    )
+
 
 def _tool_definitions(*, mailbox_tools_available: bool) -> tuple[dict[str, Any], ...]:
     if mailbox_tools_available:
@@ -454,7 +607,12 @@ def _tool_definitions(*, mailbox_tools_available: bool) -> tuple[dict[str, Any],
     return tuple(_TOOLS)
 
 
-def _model_completion(*, settings: AppSettings, messages: list[dict[str, Any]]) -> dict[str, Any]:
+def _model_completion(
+    *,
+    settings: AppSettings,
+    messages: list[dict[str, Any]],
+    tools_enabled: bool = True,
+) -> dict[str, Any]:
     """Run one Agent model step through the active platform AI route.
 
     ``run_recruiting_agent_turn`` installs exactly one gateway execution
@@ -471,15 +629,15 @@ def _model_completion(*, settings: AppSettings, messages: list[dict[str, Any]]) 
     if gateway_executor is None:
         raise RecruitingAgentServiceError("agent_model_not_configured")
     try:
-        payload = gateway_executor(
-            {
-                "temperature": 0,
-                "max_tokens": 900,
-                "messages": messages,
-                "tools": list(_ACTIVE_TOOL_DEFINITIONS.get()),
-                "tool_choice": "auto",
-            }
-        )
+        payload: dict[str, Any] = {
+            "temperature": 0,
+            "max_tokens": 900,
+            "messages": messages,
+        }
+        if tools_enabled:
+            payload["tools"] = list(_ACTIVE_TOOL_DEFINITIONS.get())
+            payload["tool_choice"] = "auto"
+        payload = gateway_executor(payload)
     except AiGatewayError as exc:
         raise _gateway_error_as_agent_error(exc) from exc
     try:
@@ -489,6 +647,47 @@ def _model_completion(*, settings: AppSettings, messages: list[dict[str, Any]]) 
     if not isinstance(message, dict):
         raise RecruitingAgentServiceError("agent_model_invalid_response")
     return message
+
+
+def _ensure_chinese_final_reply(
+    *,
+    settings: AppSettings,
+    messages: list[dict[str, Any]],
+    original_content: str,
+) -> str:
+    """Return Chinese final prose, using at most one tool-free rewrite call."""
+
+    normalized = original_content.strip()
+    if _is_valid_chinese_final_reply(normalized):
+        return normalized
+    rewrite_messages = [
+        *messages,
+        {"role": "assistant", "content": normalized},
+        {
+            "role": "user",
+            "content": (
+                "请仅改写上一条最终答复，改为简洁、完整的简体中文（zh-CN）。"
+                "不得调用任何工具，不得新增、猜测或改变工具已确认的事实、数量和不确定性。"
+                "英文仅可作为必要的专有名词、代码或技术术语嵌入中文句子；"
+                "只返回可直接展示给招聘人员的最终 Markdown 答复。"
+            ),
+        },
+    ]
+    try:
+        corrected_message = _model_completion(
+            settings=settings,
+            messages=rewrite_messages,
+            tools_enabled=False,
+        )
+    except RecruitingAgentServiceError:
+        return _AGENT_FINAL_REPLY_FALLBACK
+    if corrected_message.get("tool_calls"):
+        return _AGENT_FINAL_REPLY_FALLBACK
+    corrected_content = corrected_message.get("content")
+    if not _is_valid_chinese_final_reply(corrected_content):
+        return _AGENT_FINAL_REPLY_FALLBACK
+    assert isinstance(corrected_content, str)
+    return corrected_content.strip()
 
 
 def _gateway_error_as_agent_error(exc: AiGatewayError) -> RecruitingAgentServiceError:
@@ -538,6 +737,387 @@ def _resolve_job(session: Session, requested_job_version_id: str | None) -> Reso
     if item.status != "confirmed" or not item.requirements:
         return None
     return ResolvedJob(job_version_id=item.job_version_id, title=item.title)
+
+
+def _is_expired(value: object) -> bool:
+    """Treat malformed/legacy timestamps as expired rather than reusable."""
+
+    if not isinstance(value, type(utcnow())):
+        return True
+    now = utcnow()
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=now.tzinfo)
+    return value <= now
+
+
+def _conversation_or_create(
+    session: Session,
+    *,
+    conversation_id: str | None,
+    context_version: int | None,
+    actor_user_id: str,
+    require_context_version: bool,
+) -> RecruitingAgentConversation:
+    """Load a private conversation under the current tenant, or create one.
+
+    The automatic OrganizationScoped predicate is defence in depth.  The
+    explicit owner condition ensures two recruiters in the same workspace do
+    not silently inherit each other's active candidate set.
+    """
+
+    normalized_conversation_id = (conversation_id or "").strip()
+    if not normalized_conversation_id:
+        conversation = RecruitingAgentConversation(
+            owner_user_id=actor_user_id,
+            expires_at=utcnow() + _AGENT_CONVERSATION_TTL,
+        )
+        session.add(conversation)
+        session.flush()
+        return conversation
+
+    conversation = session.scalar(
+        select(RecruitingAgentConversation).where(
+            RecruitingAgentConversation.id == normalized_conversation_id,
+            RecruitingAgentConversation.owner_user_id == actor_user_id,
+        ).with_for_update()
+    )
+    if conversation is None:
+        # This identical result intentionally covers an unknown ID, another
+        # workspace, and another user in the same workspace.
+        raise RecruitingAgentConversationNotFoundError("agent_conversation_not_found")
+    if _is_expired(conversation.expires_at):
+        # A public 404 causes the request transaction to roll back, so do not
+        # pretend this request physically purged the row. A maintenance task
+        # can clean expired opaque state later; it is already unusable here.
+        raise RecruitingAgentConversationNotFoundError("agent_conversation_not_found")
+    if require_context_version and context_version is None:
+        raise RecruitingAgentConversationConflictError("agent_conversation_stale")
+    if context_version is not None and context_version != conversation.context_version:
+        raise RecruitingAgentConversationConflictError("agent_conversation_stale")
+    return conversation
+
+
+def _active_candidate_set(
+    session: Session,
+    *,
+    conversation: RecruitingAgentConversation,
+) -> RecruitingAgentCandidateSet | None:
+    candidate_set_id = conversation.active_candidate_set_id
+    if not candidate_set_id:
+        return None
+    candidate_set = session.scalar(
+        select(RecruitingAgentCandidateSet).where(
+            RecruitingAgentCandidateSet.id == candidate_set_id,
+            RecruitingAgentCandidateSet.conversation_id == conversation.id,
+        )
+    )
+    if candidate_set is None or _is_expired(candidate_set.expires_at):
+        return None
+    return candidate_set
+
+
+def _candidate_set_resume_ids(
+    session: Session,
+    *,
+    candidate_set: RecruitingAgentCandidateSet | None,
+) -> list[str]:
+    if candidate_set is None:
+        return []
+    stored_resume_ids = list(
+        session.scalars(
+            select(RecruitingAgentCandidateSetItem.resume_id)
+            .where(
+                RecruitingAgentCandidateSetItem.candidate_set_id == candidate_set.id,
+            )
+            .order_by(
+                RecruitingAgentCandidateSetItem.ordinal.asc(),
+                RecruitingAgentCandidateSetItem.id.asc(),
+            )
+        ).all()
+    )
+    if not stored_resume_ids:
+        return []
+    # Candidate-set items intentionally carry only opaque IDs and have no
+    # Resume FK. Re-check ordinary tenant and lifecycle visibility whenever
+    # the scope is read, so a deleted, archived, or no-longer-ready resume
+    # cannot inflate the displayed count or receive a new AI match task.
+    visible_resume_ids = set(
+        session.scalars(
+            select(Resume.id).where(
+                Resume.id.in_(stored_resume_ids),
+                Resume.is_active.is_(True),
+                Resume.extraction_status == "ready",
+            )
+        ).all()
+    )
+    return [resume_id for resume_id in stored_resume_ids if resume_id in visible_resume_ids]
+
+
+def _conversation_context(
+    session: Session,
+    *,
+    conversation: RecruitingAgentConversation,
+    current_job: ResolvedJob | None,
+) -> RecruitingAgentActiveContext:
+    """Build the only durable work state that enters the model context."""
+
+    candidate_set = _active_candidate_set(session, conversation=conversation)
+    candidate_count = len(
+        _candidate_set_resume_ids(session, candidate_set=candidate_set)
+    )
+    saved_job = current_job
+    if (
+        saved_job is None
+        and conversation.active_job_version_id
+    ):
+        saved_job = _resolve_job(session, conversation.active_job_version_id)
+    return RecruitingAgentActiveContext(
+        candidate_set_source=(candidate_set.source_kind if candidate_set else None),
+        candidate_count=candidate_count,
+        active_job_version_id=(
+            saved_job.job_version_id if saved_job is not None else None
+        ),
+        active_job_title=(saved_job.title if saved_job is not None else None),
+        expires_at=conversation.expires_at,
+    )
+
+
+def _conversation_response(
+    session: Session,
+    *,
+    conversation: RecruitingAgentConversation,
+    current_job: ResolvedJob | None = None,
+) -> RecruitingAgentConversationResponse:
+    return RecruitingAgentConversationResponse(
+        conversation_id=conversation.id,
+        context_version=conversation.context_version,
+        active_context=_conversation_context(
+            session,
+            conversation=conversation,
+            current_job=current_job,
+        ),
+    )
+
+
+def get_recruiting_agent_conversation(
+    session: Session,
+    *,
+    conversation_id: str,
+    actor_user_id: str,
+) -> RecruitingAgentConversationResponse:
+    """Read one private conversation's safe UI state without chat history."""
+
+    conversation = _conversation_or_create(
+        session,
+        conversation_id=conversation_id,
+        context_version=None,
+        actor_user_id=actor_user_id,
+        require_context_version=False,
+    )
+    return _conversation_response(session, conversation=conversation)
+
+
+def delete_recruiting_agent_conversation(
+    session: Session,
+    *,
+    conversation_id: str,
+    actor_user_id: str,
+) -> None:
+    """Remove a private work session and its opaque candidate references."""
+
+    conversation = _conversation_or_create(
+        session,
+        conversation_id=conversation_id,
+        context_version=None,
+        actor_user_id=actor_user_id,
+        require_context_version=False,
+    )
+    session.delete(conversation)
+
+
+def purge_expired_recruiting_agent_conversations(
+    database: Database,
+    *,
+    limit: int = 100,
+) -> int:
+    """Physically remove expired private Agent work state.
+
+    The global scan reads only opaque conversation and workspace IDs. Each
+    delete re-enters the concrete workspace, re-checks expiry under normal
+    tenant filtering, and relies on the composite-FK cascade to remove frozen
+    candidate sets and their opaque resume references.
+    """
+
+    if limit < 1:
+        return 0
+    now = utcnow()
+    deleted_count = 0
+    with database.session_factory() as session:
+        expired_rows = session.execute(
+            select(
+                RecruitingAgentConversation.id,
+                RecruitingAgentConversation.organization_id,
+            )
+            .where(RecruitingAgentConversation.expires_at <= now)
+            .order_by(RecruitingAgentConversation.expires_at.asc())
+            .limit(limit)
+            .execution_options(skip_organization_scope=True)
+        ).all()
+        for conversation_id, organization_id in expired_rows:
+            if not organization_id:
+                continue
+            set_organization_context(session, organization_id)
+            try:
+                conversation = session.scalar(
+                    select(RecruitingAgentConversation)
+                    .where(
+                        RecruitingAgentConversation.id == conversation_id,
+                        RecruitingAgentConversation.expires_at <= now,
+                    )
+                    .with_for_update()
+                )
+                if conversation is None:
+                    session.rollback()
+                    continue
+                session.delete(conversation)
+                session.commit()
+                deleted_count += 1
+            except StaleDataError:
+                # A recruiter can explicitly forget the same short-lived
+                # conversation while this global maintenance pass is working.
+                # Treat that as already-cleaned state rather than stopping the
+                # entire worker loop and delaying other workspaces' expiry.
+                session.rollback()
+                continue
+            finally:
+                clear_organization_context(session)
+    return deleted_count
+
+
+def _advance_conversation_context(conversation: RecruitingAgentConversation) -> None:
+    conversation.context_version += 1
+
+
+def _set_conversation_job(
+    conversation: RecruitingAgentConversation,
+    *,
+    payload: RecruitingAgentRequest,
+    job: ResolvedJob | None,
+) -> None:
+    """Record only the resolved, server-side JD reference for this turn."""
+
+    if "job_version_id" not in payload.model_fields_set:
+        return
+    job_version_id = job.job_version_id if job is not None else None
+    if conversation.active_job_version_id != job_version_id:
+        conversation.active_job_version_id = job_version_id
+        _advance_conversation_context(conversation)
+
+
+def _deduplicate_resume_ids(values: list[str]) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = value.strip() if isinstance(value, str) else ""
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            unique.append(normalized)
+    return unique
+
+
+def _replace_active_candidate_set(
+    session: Session,
+    *,
+    conversation: RecruitingAgentConversation,
+    source_kind: str,
+    source_ref_id: str | None,
+    resume_ids: list[str],
+) -> RecruitingAgentCandidateSet:
+    """Freeze one server-derived candidate scope under the private session."""
+
+    previous_candidate_set = _active_candidate_set(
+        session,
+        conversation=conversation,
+    )
+    candidate_set = RecruitingAgentCandidateSet(
+        organization_id=conversation.organization_id,
+        conversation_id=conversation.id,
+        source_kind=source_kind,
+        source_ref_id=source_ref_id,
+        expires_at=conversation.expires_at,
+    )
+    session.add(candidate_set)
+    session.flush()
+    normalized_ids = _deduplicate_resume_ids(resume_ids)
+    session.add_all(
+        RecruitingAgentCandidateSetItem(
+            organization_id=conversation.organization_id,
+            candidate_set_id=candidate_set.id,
+            resume_id=resume_id,
+            ordinal=index,
+        )
+        for index, resume_id in enumerate(normalized_ids, start=1)
+    )
+    # The request session deliberately disables implicit autoflush in several
+    # paths. Make membership visible to the same-turn response as well as the
+    # later committed conversation, otherwise the UI could show a zero-sized
+    # scope immediately after a successful search.
+    session.flush()
+    conversation.active_candidate_set_id = candidate_set.id
+    # The product has one active “刚刚这些人” scope, not a hidden search
+    # history. Remove a superseded opaque set immediately rather than retaining
+    # prior resume references for the remainder of the session TTL.
+    if previous_candidate_set is not None:
+        session.delete(previous_candidate_set)
+    _advance_conversation_context(conversation)
+    return candidate_set
+
+
+def _bind_talent_search_run_context(
+    session: Session,
+    *,
+    conversation: RecruitingAgentConversation,
+    run_id: str,
+) -> None:
+    """Bind one workspace-owned, server-generated RAG recall set to a chat."""
+
+    run = session.get(TalentSearchRun, run_id)
+    if run is None:
+        raise RecruitingAgentContextReferenceNotFoundError(
+            "agent_context_reference_not_found"
+        )
+    current = _active_candidate_set(session, conversation=conversation)
+    if (
+        current is not None
+        and current.source_kind == _CONTEXT_SOURCE_TALENT_SEARCH_RUN
+        and current.source_ref_id == run.id
+    ):
+        return
+    _replace_active_candidate_set(
+        session,
+        conversation=conversation,
+        source_kind=_CONTEXT_SOURCE_TALENT_SEARCH_RUN,
+        source_ref_id=run.id,
+        resume_ids=list(run.recalled_resume_ids or []),
+    )
+
+
+def _touch_conversation(
+    session: Session,
+    *,
+    conversation: RecruitingAgentConversation,
+) -> None:
+    """Refresh the short-lived state without retaining chat content."""
+
+    expires_at = utcnow() + _AGENT_CONVERSATION_TTL
+    conversation.expires_at = expires_at
+    active_candidate_set = _active_candidate_set(session, conversation=conversation)
+    if active_candidate_set is not None:
+        active_candidate_set.expires_at = expires_at
+    # Advance on every successful turn, not only when the visible JD/scope
+    # changes. This makes the mapped SQLAlchemy version a genuine compare-and-
+    # swap token for two tabs that both send ordinary follow-up messages.
+    _advance_conversation_context(conversation)
 
 
 def _score_template_context(session: Session) -> list[dict[str, object]]:
@@ -1330,6 +1910,35 @@ def _remove_null_values(value: object) -> object:
     return value
 
 
+def _strict_tool_arguments(
+    arguments: object,
+    *,
+    allowed: set[str],
+) -> dict[str, Any]:
+    """Validate provider tool JSON before a read or side effect.
+
+    Function-call schemas are a model-facing hint, not a security boundary.
+    Reject unknown keys rather than silently broadening a search or starting a
+    workspace-wide job after a misspelled field.
+    """
+
+    cleaned_arguments = _remove_null_values(arguments)
+    if not isinstance(cleaned_arguments, dict):
+        raise RecruitingAgentServiceError("agent_tool_arguments_invalid")
+    if not set(cleaned_arguments).issubset(allowed):
+        raise RecruitingAgentServiceError("agent_tool_arguments_invalid")
+    return cleaned_arguments
+
+
+def _bounded_limit(arguments: dict[str, Any], *, default: int = 10) -> int:
+    raw_limit = arguments.get("limit", default)
+    if isinstance(raw_limit, bool) or not isinstance(raw_limit, int):
+        raise RecruitingAgentServiceError("agent_tool_arguments_invalid")
+    if not 1 <= raw_limit <= 20:
+        raise RecruitingAgentServiceError("agent_tool_arguments_invalid")
+    return raw_limit
+
+
 def _language_filter_labels(request: CandidateSearchRequest) -> list[str]:
     labels: list[str] = []
     for item in request.language_credentials_any_of:
@@ -1393,20 +2002,16 @@ def _search(session: Session, arguments: dict[str, Any]) -> ToolRun:
     allowed = set(_SEARCH_SCHEMA["properties"])
     # Tool models occasionally include optional keys with JSON null.  Those
     # are omissions, not a reason to turn a recruiter request into a 500.
-    cleaned_arguments = _remove_null_values(arguments)
-    if not isinstance(cleaned_arguments, dict):
-        raise RecruitingAgentServiceError("agent_search_arguments_invalid")
-    values = {
-        key: value
-        for key, value in cleaned_arguments.items()
-        if key in allowed
-    }
+    try:
+        values = _strict_tool_arguments(arguments, allowed=allowed)
+    except RecruitingAgentServiceError as exc:
+        raise RecruitingAgentServiceError("agent_search_arguments_invalid") from exc
     raw_limit = values.get("limit", 20)
-    values["limit"] = (
-        min(raw_limit, 20)
-        if isinstance(raw_limit, int) and not isinstance(raw_limit, bool)
-        else 20
-    )
+    if isinstance(raw_limit, bool) or not isinstance(raw_limit, int):
+        raise RecruitingAgentServiceError("agent_search_arguments_invalid")
+    if not 1 <= raw_limit <= 20:
+        raise RecruitingAgentServiceError("agent_search_arguments_invalid")
+    values["limit"] = raw_limit
     try:
         request = CandidateSearchRequest.model_validate(values)
     except (TypeError, ValueError) as exc:
@@ -1508,6 +2113,7 @@ def _search(session: Session, arguments: dict[str, Any]) -> ToolRun:
         ],
         search_summary=search_summary,
         intent="search_candidates",
+        context_resume_ids=[card.resume_id for card in cards],
     )
 
 
@@ -1515,8 +2121,10 @@ def _start_batch(
     session: Session,
     job: ResolvedJob | None,
     *,
+    arguments: dict[str, Any],
     settings: AppSettings,
 ) -> ToolRun:
+    _strict_tool_arguments(arguments, allowed=set())
     if job is None:
         return ToolRun(payload={"error": "没有已确认的当前 JD，无法启动批量匹配。"})
     batch = enqueue_job_version_match_batch(
@@ -1534,11 +2142,10 @@ def _start_batch(
 
 
 def _ranking(session: Session, job: ResolvedJob | None, arguments: dict[str, Any]) -> ToolRun:
+    arguments = _strict_tool_arguments(arguments, allowed={"limit"})
     if job is None:
         return ToolRun(payload={"error": "没有已确认的当前 JD，无法读取排行榜。"})
-    limit = arguments.get("limit", 10)
-    if not isinstance(limit, int):
-        limit = 10
+    limit = _bounded_limit(arguments)
     latest: dict[str, Any] = {}
     for match in list_job_version_matches(session, job_version_id=job.job_version_id):
         latest.setdefault(match.resume_id, match)
@@ -1566,6 +2173,237 @@ def _ranking(session: Session, job: ResolvedJob | None, arguments: dict[str, Any
         actions=[RecruitingAgentAction(action="open_match_workspace", label="打开 JD 匹配工作区")],
         traces=[RecruitingAgentToolTrace(tool="JD 匹配排行", summary=f"已读取“{job.title}”的 {len(latest)} 条完成匹配结果")],
         intent="show_job_ranking",
+    )
+
+
+def _context_scope_resume_ids(
+    session: Session,
+    *,
+    conversation: RecruitingAgentConversation,
+    arguments: dict[str, Any],
+    allow_limit: bool,
+) -> tuple[list[str], RecruitingAgentCandidateSet | None, str | None]:
+    """Resolve a model request into a server-owned candidate scope.
+
+    The only accepted narrowing argument is a score threshold from the
+    referenced talent-search run.  The model never receives a tool parameter
+    for a resume or candidate ID, so it cannot widen the current scope.
+    """
+
+    allowed = {"source_match_min_score"}
+    if allow_limit:
+        allowed.add("limit")
+    arguments = _strict_tool_arguments(arguments, allowed=allowed)
+    candidate_set = _active_candidate_set(session, conversation=conversation)
+    if candidate_set is None:
+        return [], None, "当前会话还没有可用于限定的筛选结果，请先执行筛选或人才画像搜索。"
+    resume_ids = _candidate_set_resume_ids(session, candidate_set=candidate_set)
+    if not resume_ids:
+        return [], candidate_set, "当前会话保存的候选集合为空，无法进行 JD 比较。"
+
+    raw_threshold = arguments.get("source_match_min_score")
+    if raw_threshold is None:
+        return resume_ids, candidate_set, None
+    if (
+        isinstance(raw_threshold, bool)
+        or not isinstance(raw_threshold, (int, float))
+        or not 0 <= float(raw_threshold) <= 100
+    ):
+        return [], candidate_set, "RAG 匹配度阈值无效，未读取候选人。"
+    if candidate_set.source_kind != _CONTEXT_SOURCE_TALENT_SEARCH_RUN:
+        return [], candidate_set, "当前会话不是人才画像 RAG 结果，不能按 RAG 匹配度筛选。"
+    if not candidate_set.source_ref_id:
+        return [], candidate_set, "当前人才画像上下文不完整，无法按 RAG 匹配度筛选。"
+
+    run = session.get(TalentSearchRun, candidate_set.source_ref_id)
+    if run is None or not run.job_match_batch_id:
+        return [], candidate_set, "当前人才画像尚未生成可用的 RAG 核验结果，暂不能按匹配度筛选。"
+    batch_items = session.scalars(
+        select(JobMatchBatchItem)
+        .where(JobMatchBatchItem.batch_id == run.job_match_batch_id)
+        .options(selectinload(JobMatchBatchItem.job_match))
+    ).all()
+    source_scores: dict[str, float] = {}
+    for item in batch_items:
+        match = item.job_match
+        if match is None:
+            continue
+        source_scores[match.resume_id] = derive_job_match_score(
+            total_score=match.total_score,
+            evidence_coverage=match.evidence_coverage,
+        )
+
+    threshold = float(raw_threshold)
+    # Talent-profile scores are displayed to recruiters with one decimal
+    # place.  A displayed "100.0" must remain eligible for a requested 100,
+    # even if the underlying float is 99.96 because of weighted arithmetic.
+    display_tolerance = 0.05
+    scoped_ids = [
+        resume_id
+        for resume_id in resume_ids
+        if source_scores.get(resume_id, -1.0) + display_tolerance >= threshold
+    ]
+    return scoped_ids, candidate_set, None
+
+
+def _context_ranking(
+    session: Session,
+    *,
+    job: ResolvedJob | None,
+    conversation: RecruitingAgentConversation,
+    arguments: dict[str, Any],
+) -> ToolRun:
+    """Read current-JD matches only for the saved conversational candidate set."""
+
+    if job is None:
+        return ToolRun(
+            payload={"error": "没有已确认的当前 JD，无法在当前候选集合内比较。"},
+            intent="show_job_ranking",
+        )
+    resume_ids, candidate_set, scope_error = _context_scope_resume_ids(
+        session,
+        conversation=conversation,
+        arguments=arguments,
+        allow_limit=True,
+    )
+    if scope_error:
+        return ToolRun(
+            payload={"error": scope_error},
+            actions=[
+                RecruitingAgentAction(
+                    action="open_match_workspace",
+                    label="打开 JD 匹配工作区",
+                )
+            ],
+            intent="show_job_ranking",
+        )
+    limit = _bounded_limit(arguments)
+    scoped_id_set = set(resume_ids)
+    latest: dict[str, Any] = {}
+    for match in list_job_version_matches(session, job_version_id=job.job_version_id):
+        if match.resume_id in scoped_id_set:
+            latest.setdefault(match.resume_id, match)
+    ranked = sorted(
+        latest.values(),
+        key=lambda item: item.total_score,
+        reverse=True,
+    )[: min(max(limit, 1), 20)]
+    cards = [
+        RecruitingAgentCandidate(
+            candidate_id=item.candidate_id,
+            resume_id=item.resume_id,
+            display_name=item.candidate_display_name,
+            score=item.total_score,
+            detail=(
+                f"JD 匹配 {item.total_score:.1f} 分 · "
+                f"{item.hard_requirement_status or '硬条件待确认'}"
+            ),
+        )
+        for item in ranked
+    ]
+    completed_count = len(latest)
+    pending_count = max(len(resume_ids) - completed_count, 0)
+    return ToolRun(
+        payload={
+            "job_title": job.title,
+            "context_source": candidate_set.source_kind if candidate_set else None,
+            "context_candidate_count": len(resume_ids),
+            "completed_current_job_match_count": completed_count,
+            "pending_current_job_match_count": pending_count,
+            "ranking": [
+                {
+                    "name": card.display_name or "未命名候选人",
+                    "score": card.score,
+                    "hard_requirement_status": item.hard_requirement_status,
+                }
+                for card, item in zip(cards, ranked, strict=True)
+            ],
+        },
+        cards=cards,
+        actions=[
+            RecruitingAgentAction(
+                action="open_match_workspace",
+                label="打开 JD 匹配工作区",
+            )
+        ],
+        traces=[
+            RecruitingAgentToolTrace(
+                tool="当前会话 JD 排名",
+                summary=(
+                    f"已在当前会话的 {len(resume_ids)} 名候选人中读取“{job.title}”的 "
+                    f"{completed_count} 条完成匹配结果"
+                    + (f"；另有 {pending_count} 名尚未完成当前 JD 匹配" if pending_count else "")
+                ),
+            )
+        ],
+        intent="show_job_ranking",
+    )
+
+
+def _start_context_job_match_batch(
+    session: Session,
+    *,
+    job: ResolvedJob | None,
+    conversation: RecruitingAgentConversation,
+    arguments: dict[str, Any],
+    settings: AppSettings,
+) -> ToolRun:
+    """Queue a JD-match batch for the server-owned conversational scope."""
+
+    if job is None:
+        return ToolRun(
+            payload={"error": "没有已确认的当前 JD，无法为当前候选集合创建匹配任务。"},
+            intent="run_job_matching",
+        )
+    resume_ids, candidate_set, scope_error = _context_scope_resume_ids(
+        session,
+        conversation=conversation,
+        arguments=arguments,
+        allow_limit=False,
+    )
+    if scope_error:
+        return ToolRun(
+            payload={"error": scope_error},
+            intent="run_job_matching",
+        )
+    if not resume_ids:
+        return ToolRun(
+            payload={"error": "当前会话范围内没有可匹配的候选人，未创建任务。"},
+            intent="run_job_matching",
+        )
+    # The batch service coalesces active work by JD and, importantly, appends
+    # any missing members of this server-owned scope before returning. Later
+    # reads remain filtered to the scope even if another request shares the
+    # same underlying JD batch.
+    batch = enqueue_job_version_match_batch(
+        session,
+        job_version_id=job.job_version_id,
+        settings=settings,
+        resume_ids=resume_ids,
+    )
+    return ToolRun(
+        payload={
+            "job_title": job.title,
+            "batch_id": batch.batch_id,
+            "status": batch.status,
+            "context_candidate_count": len(resume_ids),
+        },
+        actions=[
+            RecruitingAgentAction(
+                action="open_match_workspace",
+                label="打开 JD 匹配工作区",
+            )
+        ],
+        traces=[
+            RecruitingAgentToolTrace(
+                tool="当前会话 JD 匹配",
+                summary=(
+                    f"已为当前会话候选范围请求“{job.title}”的 JD 匹配；完成后只会在这批候选人内排名"
+                ),
+            )
+        ],
+        batch_id=batch.batch_id,
+        intent="run_job_matching",
     )
 
 
@@ -1657,20 +2495,126 @@ def _start_workspace_score_batch(
     )
 
 
+_ACTIVE_SCOPE_REFERENCE_MARKERS = (
+    "刚刚筛选",
+    "刚才筛选",
+    "上一轮",
+    "上一次",
+    "这些人",
+    "这批人",
+    "其中",
+    "当前筛选",
+    "本次筛选",
+    "人才画像",
+    "rag",
+    "these candidates",
+    "those candidates",
+    "last search",
+    "previous search",
+    "among them",
+    "current result",
+)
+_EXPLICIT_WORKSPACE_SCOPE_MARKERS = (
+    "全库",
+    "全体",
+    "全部候选人",
+    "所有候选人",
+    "整个工作区",
+    "工作区全部",
+    "workspace-wide",
+    "entire workspace",
+    "all candidates",
+)
+
+
+def _message_targets_active_scope(user_message: str) -> bool:
+    """Recognize an explicit reference to the current private candidate set."""
+
+    normalized = user_message.casefold()
+    if _message_explicitly_targets_workspace(normalized):
+        return False
+    return any(marker in normalized for marker in _ACTIVE_SCOPE_REFERENCE_MARKERS)
+
+
+def _message_explicitly_targets_workspace(normalized_message: str) -> bool:
+    """Return whether a recruiter explicitly overrode the current result scope."""
+
+    return any(
+        marker in normalized_message
+        for marker in _EXPLICIT_WORKSPACE_SCOPE_MARKERS
+    )
+
+
+def _request_targets_active_scope(
+    session: Session,
+    *,
+    conversation: RecruitingAgentConversation,
+    user_message: str,
+) -> bool:
+    """Decide scope in code, not only in the model's system instruction."""
+
+    return (
+        _active_candidate_set(session, conversation=conversation) is not None
+        and _message_targets_active_scope(user_message)
+    )
+
+
+def _tool_consumes_pending_search_scope(
+    *,
+    user_message: str,
+    tool_name: str,
+) -> bool:
+    """Whether a same-response later tool must consume a just-finished search.
+
+    A provider may call ``search_candidates`` and then use a legacy global
+    ranking/batch tool name in the same response.  In that sequence the
+    natural and safe default is to compare the newly found people, regardless
+    of whether the recruiter repeated words such as “这些人”.  Only an explicit
+    workspace-wide phrase can override that pending, server-derived scope.
+    """
+
+    if tool_name in {
+        "get_current_job_ranking_from_active_context",
+        "start_current_job_match_for_active_context",
+    }:
+        return True
+    if tool_name not in {
+        "get_current_job_ranking",
+        "start_current_job_match_batch",
+    }:
+        return False
+    return not _message_explicitly_targets_workspace(user_message.casefold())
+
+
 def _execute_tool(
     *,
     name: str,
     arguments: dict[str, Any],
     session: Session,
     job: ResolvedJob | None,
+    conversation: RecruitingAgentConversation,
     settings: AppSettings,
     mailbox_tools_available: bool,
     user_message: str,
+    force_active_scope: bool = False,
 ) -> ToolRun:
     if name == "search_candidates":
         return _search(session, arguments)
     if name == "start_current_job_match_batch":
-        return _start_batch(session, job, settings=settings)
+        arguments = _strict_tool_arguments(arguments, allowed=set())
+        if force_active_scope or _request_targets_active_scope(
+            session,
+            conversation=conversation,
+            user_message=user_message,
+        ):
+            return _start_context_job_match_batch(
+                session,
+                job=job,
+                conversation=conversation,
+                arguments={},
+                settings=settings,
+            )
+        return _start_batch(session, job, arguments=arguments, settings=settings)
     if name == "start_workspace_score_batch":
         return _start_workspace_score_batch(
             session,
@@ -1678,7 +2622,34 @@ def _execute_tool(
             settings=settings,
         )
     if name == "get_current_job_ranking":
+        arguments = _strict_tool_arguments(arguments, allowed={"limit"})
+        if force_active_scope or _request_targets_active_scope(
+            session,
+            conversation=conversation,
+            user_message=user_message,
+        ):
+            return _context_ranking(
+                session,
+                job=job,
+                conversation=conversation,
+                arguments=arguments,
+            )
         return _ranking(session, job, arguments)
+    if name == "get_current_job_ranking_from_active_context":
+        return _context_ranking(
+            session,
+            job=job,
+            conversation=conversation,
+            arguments=arguments,
+        )
+    if name == "start_current_job_match_for_active_context":
+        return _start_context_job_match_batch(
+            session,
+            job=job,
+            conversation=conversation,
+            arguments=arguments,
+            settings=settings,
+        )
     if name == "get_mailbox_status":
         return (
             _get_mailbox_status(session, arguments)
@@ -1727,65 +2698,25 @@ def _execute_tool(
     raise RecruitingAgentServiceError("agent_tool_not_allowed")
 
 
-def run_recruiting_agent_turn(
+def _resolve_conversation_job(
     session: Session,
     *,
     payload: RecruitingAgentRequest,
-    settings: AppSettings,
-    mailbox_tools_available: bool = False,
-) -> RecruitingAgentResponse:
-    """Run one bounded Agent turn under one durable AI gateway run.
+    conversation: RecruitingAgentConversation,
+) -> ResolvedJob | None:
+    """Resolve an explicit JD first, then the saved JD, then the workspace default."""
 
-    A recruiting request can require several model completions as it calls
-    tools and then turns their verified results into Markdown.  The gateway
-    context must therefore surround the entire turn instead of an individual
-    completion: every external attempt shares one ``AiRun`` and still gets
-    its own ``ApiInvocation`` record.
-    """
-
-    if not ai_gateway_credentials_configured(settings):
-        raise RecruitingAgentServiceError("agent_model_not_configured")
-
-    turn_id = str(uuid4())
-    try:
-        with ai_gateway_execution(
-            session,
-            settings=settings,
-            spec=AiExecutionSpec(
-                feature="recruiting_agent_turn",
-                business_ref_type="recruiting_agent_turn",
-                business_ref_id=turn_id,
-                correlation_id=turn_id,
-                prompt_revision="recruiting_agent.tools.v4",
-                contract_version="recruiting_agent.tools.v4",
-            ),
-        ):
-            return _run_recruiting_agent_turn_with_tools(
-                session,
-                payload=payload,
-                settings=settings,
-                mailbox_tools_available=mailbox_tools_available,
-            )
-    except AiGatewayError as exc:
-        raise _gateway_error_as_agent_error(exc) from exc
+    requested_job_version_id = (payload.job_version_id or "").strip()
+    if requested_job_version_id:
+        return _resolve_job(session, requested_job_version_id)
+    if conversation.active_job_version_id:
+        saved_job = _resolve_job(session, conversation.active_job_version_id)
+        if saved_job is not None:
+            return saved_job
+    return _resolve_job(session, None)
 
 
-def _run_recruiting_agent_turn_with_tools(
-    session: Session,
-    *,
-    payload: RecruitingAgentRequest,
-    settings: AppSettings,
-    mailbox_tools_available: bool,
-) -> RecruitingAgentResponse:
-    job = _resolve_job(session, payload.job_version_id)
-    context = {
-        "current_job": {"job_version_id": job.job_version_id, "title": job.title} if job else None,
-        "current_score_templates": _score_template_context(session),
-        "mailbox_tools_available": mailbox_tools_available,
-        "current_mailbox_channels": (
-            _agent_mailbox_context(session) if mailbox_tools_available else []
-        ),
-    }
+def _agent_system_instruction(*, mailbox_tools_available: bool) -> str:
     mailbox_instruction = (
         "For mailbox status or recent attachment questions, call the mailbox tools before "
         "answering. Never expose an email address, IMAP host, password, message body, sender, "
@@ -1799,128 +2730,454 @@ def _run_recruiting_agent_turn_with_tools(
         else "Mailbox tools are not available to this account. Do not claim to read or synchronize "
         "a mailbox, and explain that mailbox management requires an authorized advanced workspace. "
     )
-    messages: list[dict[str, Any]] = [
+    return (
+        "You are a Chinese recruiting assistant that works through tools. For any request "
+        "about finding candidates, JD matching, or ranking, call the appropriate tool before "
+        "answering. Never claim a candidate fact that is absent from a tool result. Do not make "
+        "hiring, rejection, or discrimination decisions. After tools return, answer in concise "
+        "Simplified Chinese (zh-CN), state the result and uncertainties. Every final user-visible "
+        "reply must be Chinese regardless of the request language. Do not output a complete English "
+        "sentence or paragraph; English is allowed only for indispensable proper names, standard codes, "
+        "URLs, or technical terms embedded inside Chinese prose. "
+        "The server-provided conversation_work_state is a private, current work scope. It may contain "
+        "one saved candidate set and one current JD, but never a chat transcript. When the recruiter "
+        "says 刚刚筛选出的、上一轮结果、其中、这些人, or asks to choose from the current RAG result, use "
+        "get_current_job_ranking_from_active_context instead of get_current_job_ranking. If they "
+        "explicitly request only RAG results displayed as 100%, call that tool with "
+        "source_match_min_score=100. If the scoped ranking says matches are pending, say that they "
+        "are pending rather than selecting, rejecting, or treating absent rows as a low score. "
+        "For an English credential search, `confirmed` means the resume explicitly mentions the "
+        "requested credential in a source-grounded extracted fact or in reliable original resume text. "
+        "`unconfirmed` means no clear resume evidence within the same screening scope; it never means "
+        "the candidate failed or lacks the credential. Use the tool's search_summary counts exactly. "
+        "Do not say that zero confirmed records proves nobody has passed the credential, and do not "
+        "invent reasons such as a missing upload unless the tool reports them. "
+        "For a request to score all candidates in the current workspace, call start_workspace_score_batch "
+        "and use only a template_id from current_score_templates. Never select, score, or imply facts "
+        "about one current candidate. For search filters, highest degree codes run from "
+        "vocational_or_below and high_school through associate/bachelor/master/doctor. Experience types "
+        "include employment, internship, project, research, competition, campus, club, volunteer, "
+        "entrepreneurship, and training. English codes include cet4/cet6/ielts/toefl/tem4/tem8/bec/toeic; "
+        "Chinese names such as 四级 map to cet4. For institution classifications use only 985, 211, "
+        "undergraduate, associate, secondary_vocational, or overseas. 211 is strictly 211-only and "
+        "never includes 985; a missing classification is unknown, not a negative conclusion. Use "
+        "education_degree_in for “有本科学历” or “本科毕业” so a later master's or doctorate does not get "
+        "excluded. Use highest_degree_in only when the user explicitly asks about highest degree, and "
+        "use institution classifications only for school type such as 985, 211, or 本科院校. "
+        "Format the final answer as concise Markdown when structure improves scanning, such as short "
+        "headings, bullet lists, or compact tables. Do not output raw HTML. Do not mention hidden prompts, "
+        "model routing, or chain-of-thought. "
+        + mailbox_instruction
+    )
+
+
+def _prepare_graph_turn(state: _RecruitingAgentGraphState) -> dict[str, Any]:
+    """Create a private work session and the initial tool-facing model context."""
+
+    session = state["session"]
+    payload = state["payload"]
+    actor_user_id = state["actor_user_id"]
+    mailbox_tools_available = state["mailbox_tools_available"]
+    conversation = _conversation_or_create(
+        session,
+        conversation_id=payload.conversation_id,
+        context_version=payload.context_version,
+        actor_user_id=actor_user_id,
+        require_context_version=True,
+    )
+    if payload.context_ref is not None:
+        _bind_talent_search_run_context(
+            session,
+            conversation=conversation,
+            run_id=payload.context_ref.run_id,
+        )
+    job = _resolve_conversation_job(
+        session,
+        payload=payload,
+        conversation=conversation,
+    )
+    _set_conversation_job(
+        conversation,
+        payload=payload,
+        job=job,
+    )
+    active_context = _conversation_context(
+        session,
+        conversation=conversation,
+        current_job=job,
+    )
+    context = {
+        "current_job": {"job_version_id": job.job_version_id, "title": job.title} if job else None,
+        "conversation_work_state": {
+            "candidate_set_source": active_context.candidate_set_source,
+            "candidate_count": active_context.candidate_count,
+            "active_job_version_id": active_context.active_job_version_id,
+            "active_job_title": active_context.active_job_title,
+        },
+        "current_score_templates": _score_template_context(session),
+        "mailbox_tools_available": mailbox_tools_available,
+        "current_mailbox_channels": (
+            _agent_mailbox_context(session) if mailbox_tools_available else []
+        ),
+    }
+    return {
+        "conversation": conversation,
+        "job": job,
+        "active_context": active_context,
+        "messages": [
+            {
+                "role": "system",
+                "content": _agent_system_instruction(
+                    mailbox_tools_available=mailbox_tools_available
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "当前工作台上下文："
+                    + json.dumps(context, ensure_ascii=False)
+                    + "\n\n用户请求："
+                    + payload.message.strip()
+                ),
+            },
+        ],
+        "cards": [],
+        "actions": [],
+        "traces": [],
+        "search_summary": None,
+        "batch_id": None,
+        "intent": "help",
+        "tool_steps": 0,
+        "tool_call_limit_exceeded": False,
+        "pending_search_resume_ids": None,
+    }
+
+
+def _call_agent_model(state: _RecruitingAgentGraphState) -> dict[str, Any]:
+    """One model node in the bounded LangGraph tool loop."""
+
+    if state["tool_steps"] >= _MAX_TOOL_ROUNDS_PER_TURN:
+        raise RecruitingAgentServiceError("agent_model_tool_loop_limit")
+    return {
+        "assistant_message": _model_completion(
+            settings=state["settings"],
+            messages=state["messages"],
+        )
+    }
+
+
+def _call_agent_final_model(state: _RecruitingAgentGraphState) -> dict[str, Any]:
+    """Obtain prose after the bounded tool budget without enabling more tools."""
+
+    message = _model_completion(
+        settings=state["settings"],
+        messages=state["messages"],
+        tools_enabled=False,
+    )
+    content = message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        # This is deliberately factual and tool-free: four operations may
+        # have completed, but an invalid provider response must not turn their
+        # result into a generic HTTP 503 or invent a recruiter conclusion.
+        content = "本轮可执行操作已完成，请根据上方结果继续查看或发起下一步。"
+    return {"assistant_message": {"content": content}}
+
+
+def _route_agent_model(state: _RecruitingAgentGraphState) -> Literal["tools", "finalize"]:
+    calls = state["assistant_message"].get("tool_calls")
+    if not calls:
+        return "finalize"
+    if not isinstance(calls, list):
+        raise RecruitingAgentServiceError("agent_model_invalid_tool_calls")
+    return "tools"
+
+
+def _route_after_agent_tools(
+    state: _RecruitingAgentGraphState,
+) -> Literal["model", "final_model", "finalize"]:
+    """Bound tools while still allowing a final recruiter-readable reply."""
+
+    if state.get("tool_call_limit_exceeded"):
+        return "finalize"
+    if state["tool_steps"] >= _MAX_TOOL_ROUNDS_PER_TURN:
+        return "final_model"
+    return "model"
+
+
+def _execute_agent_tools(state: _RecruitingAgentGraphState) -> dict[str, Any]:
+    """Execute only declared tools and retain safe UI facts for this HTTP turn."""
+
+    assistant_message = state["assistant_message"]
+    calls = assistant_message.get("tool_calls")
+    if not isinstance(calls, list):
+        raise RecruitingAgentServiceError("agent_model_invalid_tool_calls")
+    if len(calls) > _MAX_TOOL_CALLS_PER_MODEL_RESPONSE:
+        # Do not iterate a malformed provider response. A tool batch can
+        # enqueue background work, so reject the entire turn before any tool
+        # reads data or changes state.
+        return {
+            "assistant_message": {
+                "content": "本次请求包含过多操作，未执行任何工具。请拆分后重试。"
+            },
+            "tool_steps": state["tool_steps"] + 1,
+            "tool_call_limit_exceeded": True,
+            "traces": [
+                *state["traces"],
+                RecruitingAgentToolTrace(
+                    tool="Agent 工具",
+                    summary="工具调用数量超出单轮上限，未执行任何操作",
+                ),
+            ],
+        }
+    messages = list(state["messages"])
+    messages.append(
         {
-            "role": "system",
-            "content": (
-                "You are a Chinese recruiting assistant that works through tools. For any request "
-                "about finding candidates, JD matching, or ranking, call the "
-                "appropriate tool before answering. Never claim a candidate fact that is absent from a "
-                "tool result. Do not make hiring, rejection, or discrimination decisions. After tools "
-                "return, answer in concise Simplified Chinese, state the result and uncertainties. "
-                "For an English credential search, `confirmed` means the resume explicitly "
-                "mentions the requested credential in a source-grounded extracted fact or in "
-                "reliable original resume text. `unconfirmed` means no clear resume evidence "
-                "within the same screening scope; it never means the candidate failed or lacks "
-                "the credential. Use the tool's search_summary counts exactly. Do not say that "
-                "zero confirmed records proves nobody has passed the credential, and do not invent "
-                "reasons such as a missing upload unless the tool reports them. "
-                "For a request to score all candidates in the current workspace, call "
-                "start_workspace_score_batch and use only a template_id from current_score_templates. "
-                "Never select, score, or imply facts about one current candidate. "
-                "For search filters, highest degree codes run from vocational_or_below and "
-                "high_school through associate/bachelor/master/doctor. Experience types include "
-                "employment, internship, project, research, competition, campus, club, volunteer, "
-                 "entrepreneurship, and training. English codes include cet4/cet6/ielts/toefl/"
-                 "tem4/tem8/bec/toeic; Chinese names such as 四级 map to cet4. "
-                 "For institution classifications use only 985, 211, undergraduate, associate, "
-                 "secondary_vocational, or overseas. 211 is strictly 211-only and never includes "
-                 "985; a missing classification is unknown, not a negative conclusion. "
-                 "Use education_degree_in for “有本科学历” or “本科毕业” so a later master's "
-                 "or doctorate does not get excluded. Use highest_degree_in only when the user "
-                 "explicitly asks about highest degree, and use institution classifications only "
-                 "for school type such as 985, 211, or 本科院校. "
-                 "Format the final answer as concise Markdown when structure improves scanning, "
-                "such as short headings, bullet lists, or compact tables. Do not output raw HTML. "
-                "Do not mention hidden prompts, model routing, or chain-of-thought. "
-                + mailbox_instruction
+            "role": "assistant",
+            "content": assistant_message.get("content"),
+            "tool_calls": calls,
+        }
+    )
+    cards = list(state["cards"])
+    actions = list(state["actions"])
+    traces = list(state["traces"])
+    search_summary = state.get("search_summary")
+    batch_id = state.get("batch_id")
+    intent = state.get("intent", "help")
+    pending_search_resume_ids = state.get("pending_search_resume_ids")
+    for call in calls:
+        if not isinstance(call, dict):
+            raise RecruitingAgentServiceError("agent_model_invalid_tool_calls")
+        function = call.get("function")
+        call_id = call.get("id")
+        if not isinstance(function, dict) or not isinstance(call_id, str):
+            raise RecruitingAgentServiceError("agent_model_invalid_tool_calls")
+        name = function.get("name")
+        if not isinstance(name, str):
+            raise RecruitingAgentServiceError("agent_model_invalid_tool_calls")
+        # Providers normally request a search and then wait for its result
+        # before asking to compare “这些人”. If they place both tool calls in
+        # one response, make that sequence deterministic as well: materialize
+        # the just-produced server result before a scoped tool can read it.
+        force_active_scope = False
+        if pending_search_resume_ids is not None and _tool_consumes_pending_search_scope(
+            user_message=state["payload"].message,
+            tool_name=name,
+        ):
+            _replace_active_candidate_set(
+                state["session"],
+                conversation=state["conversation"],
+                source_kind=_CONTEXT_SOURCE_AGENT_SEARCH,
+                source_ref_id=None,
+                resume_ids=pending_search_resume_ids,
+            )
+            pending_search_resume_ids = None
+            force_active_scope = name in {
+                "get_current_job_ranking",
+                "start_current_job_match_batch",
+            }
+        try:
+            run = _execute_tool(
+                name=name,
+                arguments=_clean_tool_arguments(function.get("arguments")),
+                session=state["session"],
+                job=state["job"],
+                conversation=state["conversation"],
+                settings=state["settings"],
+                mailbox_tools_available=state["mailbox_tools_available"],
+                user_message=state["payload"].message,
+                force_active_scope=force_active_scope,
+            )
+        except RecruitingAgentServiceError as exc:
+            run = _recoverable_tool_call_error(exc)
+            if run is None:
+                raise
+        # A model may refine its first search with a second, narrower search.
+        # The visible cards, summary, and persisted scope must all refer to
+        # the same latest search, including a valid zero-result refinement.
+        if run.intent == "search_candidates":
+            cards = run.cards
+            search_summary = run.search_summary
+            pending_search_resume_ids = run.context_resume_ids
+        elif run.cards:
+            cards = run.cards
+        actions.extend(run.actions)
+        traces.extend(run.traces)
+        if run.intent != "search_candidates" and run.search_summary is not None:
+            search_summary = run.search_summary
+        batch_id = run.batch_id or batch_id
+        if run.intent is not None:
+            intent = run.intent
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": json.dumps(run.payload, ensure_ascii=False),
+            }
+        )
+    return {
+        "messages": messages,
+        "cards": cards,
+        "actions": actions,
+        "traces": traces,
+        "search_summary": search_summary,
+        "batch_id": batch_id,
+        "intent": intent,
+        "tool_steps": state["tool_steps"] + 1,
+        "pending_search_resume_ids": pending_search_resume_ids,
+    }
+
+
+def _finalize_graph_turn(state: _RecruitingAgentGraphState) -> dict[str, Any]:
+    """Persist only controlled work state and return the final Markdown reply."""
+
+    assistant_message = state["assistant_message"]
+    content = assistant_message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise RecruitingAgentServiceError("agent_model_missing_final_answer")
+    conversation = state["conversation"]
+    pending_search_resume_ids = state.get("pending_search_resume_ids")
+    if pending_search_resume_ids is not None:
+        _replace_active_candidate_set(
+            state["session"],
+            conversation=conversation,
+            source_kind=_CONTEXT_SOURCE_AGENT_SEARCH,
+            source_ref_id=None,
+            resume_ids=pending_search_resume_ids,
+        )
+    _touch_conversation(state["session"], conversation=conversation)
+    active_context = _conversation_context(
+        state["session"],
+        conversation=conversation,
+        current_job=state["job"],
+    )
+    return {
+        "response": RecruitingAgentResponse(
+            conversation_id=conversation.id,
+            context_version=conversation.context_version,
+            active_context=active_context,
+            message=_ensure_chinese_final_reply(
+                settings=state["settings"],
+                messages=state["messages"],
+                original_content=content,
             ),
-        },
+            intent=state["intent"],
+            job_version_id=(
+                state["job"].job_version_id if state["job"] is not None else None
+            ),
+            candidates=state["cards"],
+            actions=state["actions"],
+            tool_trace=state["traces"],
+            search_summary=state.get("search_summary"),
+            batch_id=state.get("batch_id"),
+        )
+    }
+
+
+@lru_cache(maxsize=1)
+def _recruiting_agent_graph() -> Any:
+    """Compile the ephemeral LangGraph orchestration once per process.
+
+    No checkpointer is configured. Durable conversation state belongs to the
+    tenant-scoped SQL models, which intentionally exclude chat/prompt content.
+    """
+
+    graph = StateGraph(_RecruitingAgentGraphState)
+    graph.add_node("prepare", _prepare_graph_turn)
+    graph.add_node("model", _call_agent_model)
+    graph.add_node("tools", _execute_agent_tools)
+    graph.add_node("final_model", _call_agent_final_model)
+    graph.add_node("finalize", _finalize_graph_turn)
+    graph.add_edge(START, "prepare")
+    graph.add_edge("prepare", "model")
+    graph.add_conditional_edges(
+        "model",
+        _route_agent_model,
+        {"tools": "tools", "finalize": "finalize"},
+    )
+    graph.add_conditional_edges(
+        "tools",
+        _route_after_agent_tools,
         {
-            "role": "user",
-            "content": "当前工作台上下文：" + json.dumps(context, ensure_ascii=False) + "\n\n用户请求：" + payload.message.strip(),
+            "model": "model",
+            "final_model": "final_model",
+            "finalize": "finalize",
         },
-    ]
-    cards: list[RecruitingAgentCandidate] = []
-    actions: list[RecruitingAgentAction] = []
-    traces: list[RecruitingAgentToolTrace] = []
-    search_summary: RecruitingAgentSearchSummary | None = None
-    batch_id: str | None = None
-    intent: AgentIntent = "help"
+    )
+    graph.add_edge("final_model", "finalize")
+    graph.add_edge("finalize", END)
+    return graph.compile()
+
+
+def run_recruiting_agent_turn(
+    session: Session,
+    *,
+    payload: RecruitingAgentRequest,
+    settings: AppSettings,
+    actor_user_id: str,
+    mailbox_tools_available: bool = False,
+) -> RecruitingAgentResponse:
+    """Run one tenant-scoped LangGraph recruiting-Agent turn.
+
+    A turn can call the model repeatedly as it invokes tools. The gateway
+    surrounds the entire graph execution, so all provider invocations retain
+    one durable, privacy-safe AI ledger run without persisting graph messages.
+    """
+
+    if not ai_gateway_credentials_configured(settings):
+        raise RecruitingAgentServiceError("agent_model_not_configured")
+
+    turn_id = str(uuid4())
     token = _ACTIVE_TOOL_DEFINITIONS.set(
         _tool_definitions(mailbox_tools_available=mailbox_tools_available)
     )
     try:
-        for _ in range(4):
-            assistant_message = _model_completion(settings=settings, messages=messages)
-            calls = assistant_message.get("tool_calls")
-            if not calls:
-                content = assistant_message.get("content")
-                if not isinstance(content, str) or not content.strip():
-                    raise RecruitingAgentServiceError("agent_model_missing_final_answer")
-                return RecruitingAgentResponse(
-                    message=content.strip(),
-                    intent=intent,
-                    job_version_id=job.job_version_id if job else None,
-                    candidates=cards,
-                    actions=actions,
-                    tool_trace=traces,
-                    search_summary=search_summary,
-                    batch_id=batch_id,
-                )
-            if not isinstance(calls, list):
-                raise RecruitingAgentServiceError("agent_model_invalid_tool_calls")
-            messages.append({"role": "assistant", "content": assistant_message.get("content"), "tool_calls": calls})
-            for call in calls:
-                if not isinstance(call, dict):
-                    raise RecruitingAgentServiceError("agent_model_invalid_tool_calls")
-                function = call.get("function")
-                call_id = call.get("id")
-                if not isinstance(function, dict) or not isinstance(call_id, str):
-                    raise RecruitingAgentServiceError("agent_model_invalid_tool_calls")
-                name = function.get("name")
-                if not isinstance(name, str):
-                    raise RecruitingAgentServiceError("agent_model_invalid_tool_calls")
-                try:
-                    run = _execute_tool(
-                        name=name,
-                        arguments=_clean_tool_arguments(function.get("arguments")),
-                        session=session,
-                        job=job,
-                        settings=settings,
-                        mailbox_tools_available=mailbox_tools_available,
-                        user_message=payload.message,
-                    )
-                except RecruitingAgentServiceError as exc:
-                    run = _recoverable_tool_call_error(exc)
-                    if run is None:
-                        raise
-                # A model may refine its first search with a second, narrower
-                # search.  The visible cards and summary must always describe
-                # the same, most recent search, including a valid zero-result
-                # refinement.
-                if run.intent == "search_candidates":
-                    cards = run.cards
-                    search_summary = run.search_summary
-                elif run.cards:
-                    cards = run.cards
-                actions.extend(run.actions)
-                traces.extend(run.traces)
-                if run.intent != "search_candidates" and run.search_summary is not None:
-                    search_summary = run.search_summary
-                batch_id = run.batch_id or batch_id
-                if run.intent is not None:
-                    intent = run.intent
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call_id,
-                        "content": json.dumps(run.payload, ensure_ascii=False),
-                    }
-                )
-        raise RecruitingAgentServiceError("agent_model_tool_loop_limit")
+        with ai_gateway_execution(
+            session,
+            settings=settings,
+            spec=AiExecutionSpec(
+                feature="recruiting_agent_turn",
+                business_ref_type="recruiting_agent_turn",
+                business_ref_id=turn_id,
+                actor_user_id=actor_user_id,
+                correlation_id=turn_id,
+                prompt_revision="recruiting_agent.langgraph.v1",
+                contract_version="recruiting_agent.langgraph.v1",
+            ),
+        ):
+            graph_state = _recruiting_agent_graph().invoke(
+                {
+                    "session": session,
+                    "payload": payload,
+                    "settings": settings,
+                    "mailbox_tools_available": mailbox_tools_available,
+                    "actor_user_id": actor_user_id,
+                },
+                config={"recursion_limit": 16},
+            )
+    except StaleDataError as exc:
+        # The row-version guard is the fallback for a backend that does not
+        # honour ``FOR UPDATE`` (notably SQLite in local tests). Do not turn a
+        # concurrent tab into a generic provider failure.
+        raise RecruitingAgentConversationConflictError(
+            "agent_conversation_stale"
+        ) from exc
+    except AiGatewayError as exc:
+        raise _gateway_error_as_agent_error(exc) from exc
     finally:
         _ACTIVE_TOOL_DEFINITIONS.reset(token)
+    response = graph_state.get("response")
+    if not isinstance(response, RecruitingAgentResponse):
+        raise RecruitingAgentServiceError("agent_model_missing_final_answer")
+    return response
 
 
-__all__ = ["RecruitingAgentServiceError", "run_recruiting_agent_turn"]
+__all__ = [
+    "RecruitingAgentConversationConflictError",
+    "RecruitingAgentConversationNotFoundError",
+    "RecruitingAgentContextReferenceNotFoundError",
+    "RecruitingAgentServiceError",
+    "delete_recruiting_agent_conversation",
+    "get_recruiting_agent_conversation",
+    "purge_expired_recruiting_agent_conversations",
+    "run_recruiting_agent_turn",
+]

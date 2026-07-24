@@ -8,10 +8,18 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.ai import CompletionResult, NormalizedUsage, ToolCall
-from app.models import AiRun, ApiInvocation, Organization, utcnow
+from app.models import (
+    AiRun,
+    ApiInvocation,
+    Organization,
+    RecruitingAgentCandidateSetItem,
+    RecruitingAgentConversation,
+    utcnow,
+)
 from app.services.ai_gateway_service import AiGatewayError
 from app.services.recruiting_agent_service import ResolvedJob, _TOOLS, _resolve_job
 from app.services.trial_quota_service import TRIAL_LLM_CALL_QUOTA_EXHAUSTED_CODE
+from app.tenant_scope import bypass_organization_scope
 from test_score_service import _template_payload
 from test_resume_flow import create_candidate, replace_page_evidence, upload_text_resume
 
@@ -104,6 +112,159 @@ def test_agent_executes_model_selected_search_tool(
     assert payload["tool_trace"][0]["summary"] == "已完成候选人筛选：找到 0 人"
     assert "{" not in payload["tool_trace"][0]["summary"]
     assert calls == 2
+
+
+def test_agent_keeps_a_server_created_search_scope_for_the_next_turn(
+    ai_client: TestClient,
+    monkeypatch,
+) -> None:
+    """A second Agent turn can rank only its saved search, never browser IDs."""
+
+    resume_id = _save_agent_source_only_resume(
+        ai_client,
+        source_text="教育经历 北京大学 本科。大学英语四级 CET-4 成绩 520。",
+    )
+    job = ai_client.post(
+        "/v1/jobs",
+        json={
+            "title": "Context Engineer",
+            "jd_text": "Must have Python experience.",
+            "requirements": {"must_have": ["Python experience"], "preferred": []},
+        },
+    )
+    assert job.status_code == 200, job.text
+    context_job_version_id = job.json()["job_version_id"]
+    calls = 0
+    second_turn_prompt: str | None = None
+
+    def fake_completion(*, settings, messages):
+        nonlocal calls, second_turn_prompt
+        calls += 1
+        if calls == 1:
+            return {
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call-search-context",
+                        "type": "function",
+                        "function": {
+                            "name": "search_candidates",
+                            "arguments": json.dumps(
+                                {
+                                    "language_credentials_any_of": [
+                                        {"credential_code": "cet4"}
+                                    ]
+                                }
+                            ),
+                        },
+                    }
+                ],
+            }
+        if calls == 2:
+            return {"content": "已保存当前筛选范围。"}
+        if calls == 3:
+            second_turn_prompt = str(messages[-1]["content"])
+            return {
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call-rank-active-context",
+                        "type": "function",
+                        "function": {
+                            "name": "get_current_job_ranking_from_active_context",
+                            "arguments": json.dumps({"limit": 5}),
+                        },
+                    }
+                ],
+            }
+        assert calls == 4
+        return {"content": "已在刚才筛选出的候选人中完成 JD 比较。"}
+
+    def fake_job_matches(session, *, job_version_id):
+        assert job_version_id == context_job_version_id
+        return [
+            SimpleNamespace(
+                candidate_id="candidate-in-context",
+                resume_id=resume_id,
+                candidate_display_name="Context fixture",
+                total_score=88.0,
+                hard_requirement_status="met",
+            ),
+            # A workspace JD match outside the saved search must never leak
+            # into the next-turn ranking.
+            SimpleNamespace(
+                candidate_id="candidate-outside-context",
+                resume_id="resume-outside-context",
+                candidate_display_name="Outside fixture",
+                total_score=99.0,
+                hard_requirement_status="met",
+            ),
+        ]
+
+    monkeypatch.setattr(
+        "app.services.recruiting_agent_service._model_completion",
+        fake_completion,
+    )
+    monkeypatch.setattr(
+        "app.services.recruiting_agent_service.list_job_version_matches",
+        fake_job_matches,
+    )
+
+    first_turn = ai_client.post(
+        "/v1/recruiting-agent/turns",
+        json={
+            "message": "找有 CET-4 的候选人",
+            "job_version_id": context_job_version_id,
+        },
+    )
+
+    assert first_turn.status_code == 200, first_turn.text
+    first_payload = first_turn.json()
+    conversation_id = first_payload["conversation_id"]
+    database = ai_client.app.state.database
+    with database.session_factory() as session:
+        with bypass_organization_scope(session):
+            conversation = session.get(RecruitingAgentConversation, conversation_id)
+            assert conversation is not None
+            assert conversation.active_candidate_set_id is not None
+            persisted_resume_ids = list(
+                session.scalars(
+                    select(RecruitingAgentCandidateSetItem.resume_id)
+                    .where(
+                        RecruitingAgentCandidateSetItem.candidate_set_id
+                        == conversation.active_candidate_set_id
+                    )
+                    .order_by(RecruitingAgentCandidateSetItem.ordinal)
+                )
+            )
+    assert persisted_resume_ids == [resume_id]
+    assert first_payload["active_context"]["candidate_set_source"] == "agent_search"
+    assert first_payload["active_context"]["candidate_count"] == 1, first_payload
+    assert first_payload["active_context"]["active_job_version_id"] == context_job_version_id
+    assert first_payload["active_context"]["active_job_title"] == "Context Engineer"
+
+    # The browser sends only the opaque conversation version.  It supplies no
+    # candidate or resume identifier for the follow-up comparison.
+    second_turn = ai_client.post(
+        "/v1/recruiting-agent/turns",
+        json={
+            "message": "从刚才筛选的人里选最匹配当前 JD 的",
+            "conversation_id": conversation_id,
+            "context_version": first_payload["context_version"],
+        },
+    )
+
+    assert second_turn.status_code == 200, second_turn.text
+    second_payload = second_turn.json()
+    assert second_payload["conversation_id"] == conversation_id
+    assert second_payload["context_version"] > first_payload["context_version"]
+    assert [item["resume_id"] for item in second_payload["candidates"]] == [resume_id]
+    assert second_payload["candidates"][0]["score"] == 88.0
+    assert "resume-outside-context" not in json.dumps(second_payload)
+    assert second_turn_prompt is not None
+    assert "conversation_work_state" in second_turn_prompt
+    assert resume_id not in second_turn_prompt
+
 
 
 def test_agent_language_search_returns_source_grounded_confirmation_and_unconfirmed_count(
@@ -682,6 +843,107 @@ def test_agent_rejects_client_supplied_candidate_binding(client: TestClient) -> 
     assert response.status_code == 422
     detail = response.json()["detail"]
     assert any(item["loc"] == ["body", "resume_id"] for item in detail)
+
+
+def test_agent_context_reference_rejects_browser_candidate_or_resume_ids(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/v1/recruiting-agent/turns",
+        json={
+            "message": "在上次人才画像结果中比较",
+            "context_ref": {
+                "kind": "talent_search_run",
+                "run_id": "profile-run-001",
+                "resume_ids": ["browser-supplied-resume"],
+                "candidate_ids": ["browser-supplied-candidate"],
+            },
+        },
+    )
+
+    assert response.status_code == 422
+    locations = {tuple(item["loc"]) for item in response.json()["detail"]}
+    assert ("body", "context_ref", "resume_ids") in locations
+    assert ("body", "context_ref", "candidate_ids") in locations
+
+
+def test_agent_rejects_a_stale_conversation_context_version(
+    ai_client: TestClient,
+    monkeypatch,
+) -> None:
+    job = ai_client.post(
+        "/v1/jobs",
+        json={
+            "title": "Stale context fixture",
+            "jd_text": "Must have Python experience.",
+            "requirements": {"must_have": ["Python experience"], "preferred": []},
+        },
+    )
+    assert job.status_code == 200, job.text
+    completion_calls = 0
+
+    def fake_completion(*, settings, messages):
+        nonlocal completion_calls
+        completion_calls += 1
+        return {"content": "已保存当前 JD。"}
+
+    monkeypatch.setattr(
+        "app.services.recruiting_agent_service._model_completion",
+        fake_completion,
+    )
+
+    first_turn = ai_client.post(
+        "/v1/recruiting-agent/turns",
+        json={
+            "message": "使用这个 JD",
+            "job_version_id": job.json()["job_version_id"],
+        },
+    )
+    assert first_turn.status_code == 200, first_turn.text
+    first_payload = first_turn.json()
+    assert first_payload["context_version"] >= 2
+
+    stale_turn = ai_client.post(
+        "/v1/recruiting-agent/turns",
+        json={
+            "message": "继续比较",
+            "conversation_id": first_payload["conversation_id"],
+            "context_version": first_payload["context_version"] - 1,
+        },
+    )
+
+    assert stale_turn.status_code == 409, stale_turn.text
+    assert stale_turn.json()["detail"] == "agent_conversation_stale"
+    assert completion_calls == 1
+
+
+def test_agent_rewrites_an_english_only_final_reply_to_chinese_once(
+    ai_client: TestClient,
+    monkeypatch,
+) -> None:
+    tool_modes: list[bool] = []
+
+    def fake_completion(*, settings, messages, tools_enabled=True):
+        tool_modes.append(tools_enabled)
+        if tools_enabled:
+            return {"content": "The current candidate search is complete."}
+        assert messages[-1]["role"] == "user"
+        assert "简体中文" in messages[-1]["content"]
+        return {"content": "当前候选人筛选已完成。"}
+
+    monkeypatch.setattr(
+        "app.services.recruiting_agent_service._model_completion",
+        fake_completion,
+    )
+
+    response = ai_client.post(
+        "/v1/recruiting-agent/turns",
+        json={"message": "show the current result"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["message"] == "当前候选人筛选已完成。"
+    assert tool_modes == [True, False]
 
 
 def test_agent_model_context_has_no_selected_candidate_scope(

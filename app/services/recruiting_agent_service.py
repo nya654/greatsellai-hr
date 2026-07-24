@@ -190,6 +190,14 @@ _SEARCH_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
     "properties": {
         "is_985_211": {"type": "boolean"},
+        "education_degree_in": {
+            "type": "array",
+            "items": {"type": "string", "enum": [
+                "vocational_or_below", "high_school", "associate",
+                "bachelor", "master", "doctor",
+            ]},
+            "maxItems": 6,
+        },
         "highest_degree_in": {
             "type": "array",
             "items": {"type": "string", "enum": [
@@ -296,7 +304,10 @@ _TOOLS: list[dict[str, Any]] = [
                 "with keyword_match_mode broad or precise. English credential alternatives "
                 "belong in language_credentials_any_of and are OR conditions. For school type, "
                 "use institution_classifications_any_of: 985 and 211 are separate exact classes, "
-                "and 211 never includes 985. Do not infer an unknown school type."
+                "and 211 never includes 985. Use education_degree_in when the recruiter asks for "
+                "a degree anywhere in education history (for example 本科毕业); reserve "
+                "highest_degree_in for an explicitly highest-degree requirement. Do not infer an "
+                "unknown school type."
             ),
             "parameters": _SEARCH_SCHEMA,
         },
@@ -1807,14 +1818,18 @@ def _run_recruiting_agent_turn_with_tools(
                 "For a request to score all candidates in the current workspace, call "
                 "start_workspace_score_batch and use only a template_id from current_score_templates. "
                 "Never select, score, or imply facts about one current candidate. "
-                 "For search filters, highest degree codes run from vocational_or_below and "
-                 "high_school through associate/bachelor/master/doctor. Experience types include "
+                "For search filters, highest degree codes run from vocational_or_below and "
+                "high_school through associate/bachelor/master/doctor. Experience types include "
                 "employment, internship, project, research, competition, campus, club, volunteer, "
                  "entrepreneurship, and training. English codes include cet4/cet6/ielts/toefl/"
                  "tem4/tem8/bec/toeic; Chinese names such as 四级 map to cet4. "
                  "For institution classifications use only 985, 211, undergraduate, associate, "
                  "secondary_vocational, or overseas. 211 is strictly 211-only and never includes "
                  "985; a missing classification is unknown, not a negative conclusion. "
+                 "Use education_degree_in for “有本科学历” or “本科毕业” so a later master's "
+                 "or doctorate does not get excluded. Use highest_degree_in only when the user "
+                 "explicitly asks about highest degree, and use institution classifications only "
+                 "for school type such as 985, 211, or 本科院校. "
                  "Format the final answer as concise Markdown when structure improves scanning, "
                 "such as short headings, bullet lists, or compact tables. Do not output raw HTML. "
                 "Do not mention hidden prompts, model routing, or chain-of-thought. "

@@ -2042,6 +2042,10 @@ class TalentSearchRun(OrganizationScoped, Base):
         index=True,
     )
     hard_filter_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    # Server-derived counts for the strict-recall funnel.  Keeping this on the
+    # run makes a historic zero-result explanation stable even after the
+    # profile is refined or more resumes are later uploaded.
+    recall_diagnostics: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     # This is the server-derived strict-recall target set used to constrain the
     # later semantic match batch.  It is never accepted from the browser.
     recalled_resume_ids: Mapped[list[str]] = mapped_column(JSON, default=list)

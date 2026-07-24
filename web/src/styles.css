@@ -5050,7 +5050,7 @@ button {
 
 .mailbox-setup-shell {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(18rem, 22rem);
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-xl);
   max-width: 76rem;
   align-items: start;
@@ -5450,7 +5450,7 @@ button {
 
 .mailbox-detail-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(16rem, 19rem);
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-xl);
   align-items: start;
 }
@@ -6869,9 +6869,6 @@ details[open] > .mailbox-disclosure-heading::after {
     grid-template-columns: 1fr;
   }
 
-  .mailbox-detail-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media (max-width: 60rem) {

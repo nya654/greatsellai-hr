@@ -5,8 +5,6 @@ import {
   useEffect,
   useRef,
   useState,
-  type ChangeEvent,
-  type DragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
   type RefObject,
@@ -39,12 +37,10 @@ import type {
   PresenceStatus,
   ScholarshipLevel,
   JobMatch,
-  ResumeDetail,
   ResumeLibraryItem,
   ResumeReviewDetail,
   ResumeScore,
   ResumeSummary,
-  ResumeUploadResponse,
   RegistrationOffer,
   RecruitingAgentCandidate,
   SavedFilter,
@@ -53,20 +49,14 @@ import type {
 } from "./types";
 import { Icon, type IconName } from "./icons";
 import { BackofficeButton } from "./backoffice/ui/BackofficeButton";
-import {
-  AI_STATUS_POLL_INTERVAL_MS,
-  aiExtractionIsInProgress,
-} from "./backoffice/utils/ai-extraction";
-import { formatFileSize, formatLibraryDate } from "./backoffice/utils/formatters";
+import { formatLibraryDate } from "./backoffice/utils/formatters";
 import {
   hasSourceTextQualityIssue,
   hasSupersededReparseVersion,
 } from "./backoffice/utils/resume-source-quality";
 import {
   canPreviewInline,
-  isSupportedResumeFile,
   resumeFileExtension,
-  resumeFileTypeLabel,
 } from "./backoffice/utils/resume-file";
 import { MailboxPage } from "./features/mailbox/MailboxPage";
 import { mailboxImportErrorMessages } from "./features/mailbox/mailbox-model";
@@ -77,6 +67,7 @@ import { ScoreWorkspace } from "./features/scoring/ScoreWorkspace";
 import { MatchWorkspace } from "./features/job-match/MatchWorkspace";
 import { CandidateDataLifecyclePage } from "./features/candidate-data/CandidateDataLifecyclePage";
 import { RecruitingAgentDrawer } from "./features/recruiting-agent/RecruitingAgentDrawer";
+import { UploadPage } from "./features/upload/UploadPage";
 import {
   degreeLabels,
   experienceTypeOptions,
@@ -113,19 +104,6 @@ interface ToastMessage {
   id: number;
   kind: ToastKind;
   message: string;
-}
-
-type UploadStatus =
-  "queued" | "uploading" | "extracting" | "success" | "attention" | "error";
-
-interface UploadQueueItem {
-  id: string;
-  file: File;
-  status: UploadStatus;
-  idempotencyKey: string;
-  response?: ResumeUploadResponse;
-  error?: string;
-  retryable?: boolean;
 }
 
 const emptySearch: CandidateSearchResponse = {
@@ -204,13 +182,6 @@ const defaultFilterDraft: FilterDraft = {
   keywordsMode: "broad",
 };
 
-/**
- * Each supported resume file is normalized by the API. Keeping a queue avoids
- * competing writes while still letting a recruiter add a whole folder in one action.
- */
-const BATCH_UPLOAD_CONCURRENCY = 1;
-const MAX_BATCH_FILES = 100;
-
 function aiExtractionStatusLabel(status: AiExtractionStatus): string {
   switch (status) {
     case "queued":
@@ -224,34 +195,6 @@ function aiExtractionStatusLabel(status: AiExtractionStatus): string {
     case "unavailable":
       return "等待服务配置";
   }
-}
-
-function uploadStatusFromResponse(
-  response: ResumeUploadResponse,
-): UploadStatus {
-  if (response.extraction_status === "failed") return "attention";
-  if (response.ai_extraction_status === "completed") return "success";
-  if (
-    response.ai_extraction_status === "needs_attention" ||
-    response.ai_extraction_status === "unavailable"
-  )
-    return "attention";
-  return "extracting";
-}
-
-function withLatestAiExtractionStatus(
-  uploaded: ResumeUploadResponse,
-  detail: ResumeDetail,
-): ResumeUploadResponse {
-  return {
-    ...uploaded,
-    extraction_status: detail.extraction_status,
-    ai_extraction_status: detail.ai_extraction_status,
-    ai_extraction_error: detail.ai_extraction_error,
-    source_page_count: detail.source_page_count,
-    parsed_page_count: detail.parsed_page_count,
-    quality_flags: detail.quality_flags,
-  };
 }
 
 const degreeOptions: Array<{ value: DegreeLevel; label: string }> = [
@@ -557,25 +500,6 @@ function humanizeError(error: unknown): string {
     return `操作没有完成：${error.message}`;
   }
   return "操作没有完成。请检查网络后重试。";
-}
-
-function fileFingerprint(file: File): string {
-  return `${file.name.toLocaleLowerCase()}-${file.size}-${file.lastModified}`;
-}
-
-function createUploadIdempotencyKey(): string {
-  if (
-    typeof crypto !== "undefined" &&
-    typeof crypto.randomUUID === "function"
-  ) {
-    return crypto.randomUUID();
-  }
-  return `upload-${Date.now()}-${Math.random().toString(36).slice(2, 14)}`;
-}
-
-function isRetryableUploadError(error: unknown): boolean {
-  if (!isApiError(error)) return true;
-  return error.status === 408 || error.status === 429 || error.status >= 500;
 }
 
 function draftToSearchRequest(
@@ -2190,7 +2114,11 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
             />
           )}
           <div hidden={view !== "upload"}>
-            <UploadPage onComplete={openUploadedResume} notify={notify} />
+            <UploadPage
+              formatError={humanizeError}
+              notify={notify}
+              onComplete={openUploadedResume}
+            />
           </div>
           {view === "score" && (
             <ScoreWorkspace
@@ -3396,545 +3324,6 @@ function WorkspaceSettingsPage({
     </div>
   );
 }
-
-
-function UploadPage({
-  onComplete,
-  notify,
-}: {
-  onComplete: (resumeId: string, candidateId: string) => void;
-  notify: (kind: ToastKind, message: string) => void;
-}) {
-  const [uploads, setUploads] = useState<UploadQueueItem[]>([]);
-  const [dragging, setDragging] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const uploadLockRef = useRef(false);
-  const dragDepthRef = useRef(0);
-
-  const queuedUploads = uploads.filter((item) => item.status === "queued");
-  const failedUploads = uploads.filter((item) => item.status === "error");
-  const retryableFailedUploads = failedUploads.filter(
-    (item) => item.retryable !== false,
-  );
-  const completedUploads = uploads.filter((item) => item.status === "success");
-  const resolvedUploads = uploads.filter(
-    (item) => item.status === "success" || item.status === "attention",
-  );
-  const attentionUploads = uploads.filter(
-    (item) => item.status === "attention",
-  );
-  const extractingUploads = uploads.filter(
-    (item) => item.status === "extracting",
-  );
-
-  const updateUpload = (uploadId: string, patch: Partial<UploadQueueItem>) => {
-    setUploads((current) =>
-      current.map((item) =>
-        item.id === uploadId ? { ...item, ...patch } : item,
-      ),
-    );
-  };
-
-  useEffect(() => {
-    const resumeIds = uploads
-      .filter(
-        (item) =>
-          item.response &&
-          aiExtractionIsInProgress(item.response.ai_extraction_status),
-      )
-      .map((item) => item.response!.resume_id);
-    if (!resumeIds.length) return undefined;
-
-    let cancelled = false;
-    const refreshAiStatuses = async () => {
-      const details = await Promise.all(
-        resumeIds.map(async (resumeId) => {
-          try {
-            return await api.getResume(resumeId);
-          } catch {
-            // A transient polling failure must not turn a saved resume into an
-            // upload failure. The worker will continue independently.
-            return null;
-          }
-        }),
-      );
-      if (cancelled) return;
-      const byResumeId = new Map(
-        details
-          .filter((detail): detail is ResumeDetail => detail !== null)
-          .map((detail) => [detail.resume_id, detail]),
-      );
-      if (!byResumeId.size) return;
-      setUploads((current) =>
-        current.map((item) => {
-          if (!item.response) return item;
-          const detail = byResumeId.get(item.response.resume_id);
-          if (!detail) return item;
-          const response = withLatestAiExtractionStatus(item.response, detail);
-          const status = uploadStatusFromResponse(response);
-          if (
-            item.status === status &&
-            item.response.extraction_status === response.extraction_status &&
-            item.response.ai_extraction_status ===
-              response.ai_extraction_status &&
-            item.response.ai_extraction_error === response.ai_extraction_error
-          )
-            return item;
-          return { ...item, response, status, error: undefined };
-        }),
-      );
-    };
-
-    void refreshAiStatuses();
-    const interval = window.setInterval(() => {
-      void refreshAiStatuses();
-    }, AI_STATUS_POLL_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [uploads]);
-
-  const addFiles = (selectedFiles: FileList | File[]) => {
-    if (uploading) return;
-    const incoming = Array.from(selectedFiles);
-    if (!incoming.length) return;
-
-    const supportedFiles = incoming.filter(isSupportedResumeFile);
-    const knownFiles = new Set(
-      uploads.map((item) => fileFingerprint(item.file)),
-    );
-    const uniqueFiles = supportedFiles.filter((file) => {
-      const fingerprint = fileFingerprint(file);
-      if (knownFiles.has(fingerprint)) return false;
-      knownFiles.add(fingerprint);
-      return true;
-    });
-    const remainingSlots = Math.max(0, MAX_BATCH_FILES - uploads.length);
-    const acceptedFiles = uniqueFiles.slice(0, remainingSlots);
-    const invalidCount = incoming.length - supportedFiles.length;
-    const duplicateCount = supportedFiles.length - uniqueFiles.length;
-    const capacityCount = uniqueFiles.length - acceptedFiles.length;
-
-    if (!acceptedFiles.length) {
-      const reason = invalidCount
-        ? "所选文件不在支持格式内。"
-        : duplicateCount
-          ? "这些简历已在当前队列中。"
-          : `一次最多处理 ${MAX_BATCH_FILES} 份简历。`;
-      notify("error", `没有加入新文件：${reason}`);
-      return;
-    }
-
-    const timestamp = Date.now();
-    setUploads((current) => [
-      ...current,
-      ...acceptedFiles.map((file, index) => ({
-        id: `upload-${timestamp}-${index}-${fileFingerprint(file)}`,
-        file,
-        status: "queued" as const,
-        idempotencyKey: createUploadIdempotencyKey(),
-      })),
-    ]);
-    notify(
-      "success",
-      acceptedFiles.length === 1
-        ? "已加入 1 份简历，等待上传。"
-        : `已加入 ${acceptedFiles.length} 份简历，等待上传。`,
-    );
-
-    const exclusions: string[] = [];
-    if (invalidCount) exclusions.push(`${invalidCount} 个不支持的文件`);
-    if (duplicateCount) exclusions.push(`${duplicateCount} 份重复简历`);
-    if (capacityCount) exclusions.push(`${capacityCount} 份超过本次上限`);
-    if (exclusions.length)
-      notify("error", `未加入：${exclusions.join("、")}。`);
-  };
-
-  const handleInputChange = (event: ChangeEvent<HTMLInputElement>) => {
-    if (event.currentTarget.files) addFiles(event.currentTarget.files);
-    event.currentTarget.value = "";
-  };
-
-  const handleDragEnter = (event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    if (uploading) return;
-    dragDepthRef.current += 1;
-    setDragging(true);
-  };
-
-  const handleDragLeave = (event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    if (uploading) return;
-    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
-    if (!dragDepthRef.current) setDragging(false);
-  };
-
-  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    dragDepthRef.current = 0;
-    setDragging(false);
-    if (!uploading) addFiles(event.dataTransfer.files);
-  };
-
-  const runUploads = async (targets: UploadQueueItem[]) => {
-    if (!targets.length) {
-      notify("error", "请先选择至少一份简历。");
-      return;
-    }
-    if (uploadLockRef.current) return;
-
-    uploadLockRef.current = true;
-    setUploading(true);
-    let nextIndex = 0;
-    let succeeded = 0;
-    let failed = 0;
-
-    const worker = async () => {
-      while (nextIndex < targets.length) {
-        const item = targets[nextIndex++];
-        updateUpload(item.id, {
-          status: "uploading",
-          error: undefined,
-          retryable: undefined,
-        });
-        try {
-          const response = await api.uploadResume(item.file, {
-            idempotencyKey: item.idempotencyKey,
-          });
-          succeeded += 1;
-          updateUpload(item.id, {
-            status: uploadStatusFromResponse(response),
-            response,
-            error: undefined,
-          });
-        } catch (error) {
-          failed += 1;
-          updateUpload(item.id, {
-            status: "error",
-            error: humanizeError(error),
-            retryable: isRetryableUploadError(error),
-          });
-        }
-      }
-    };
-
-    try {
-      await Promise.all(
-        Array.from(
-          { length: Math.min(BATCH_UPLOAD_CONCURRENCY, targets.length) },
-          worker,
-        ),
-      );
-    } finally {
-      uploadLockRef.current = false;
-      setUploading(false);
-    }
-
-    if (succeeded) {
-      notify(
-        "success",
-        succeeded === 1
-          ? "简历已保存，AI 正在提取候选人姓名和结构化事实。"
-          : `${succeeded} 份简历已保存，AI 正在按队列提取候选人姓名和结构化事实。`,
-      );
-    }
-    if (failed) {
-      notify(
-        "error",
-        failed === 1
-          ? "1 份简历上传失败。请查看原因后重试。"
-          : `${failed} 份简历上传失败。其余文件未受影响。`,
-      );
-    }
-  };
-
-  const openSuccessfulUpload = (item: UploadQueueItem) => {
-    if (!item.response) return;
-    onComplete(item.response.resume_id, item.response.candidate_id);
-  };
-
-  const statusText = (item: UploadQueueItem): string => {
-    if (item.status === "queued") return "等待上传";
-    if (item.status === "uploading") return "正在保存原件并提取文字";
-    if (item.status === "extracting") {
-      return item.response?.ai_extraction_status === "running"
-        ? "AI 正在提取候选人姓名、教育、经历和技能"
-        : "原件已保存，AI 正在排队提取候选人姓名和结构化事实";
-    }
-    if (item.status === "attention") {
-      if (
-        item.response?.extraction_status === "failed" ||
-        !item.response?.parsed_page_count
-      ) {
-        return "原件已保存，但未读取到可用文字，暂不能 AI 提取";
-      }
-      if (item.response?.ai_extraction_status === "unavailable") {
-        return "原件和文字已保存，等待服务器配置 AI 服务";
-      }
-      return "原件和文字已保存，但 AI 提取需要处理；可查看原件并重新上传。";
-    }
-    if (item.status === "success") {
-      return item.response?.quality_flags.length
-        ? "AI 已提取并启用，存在解析提示"
-        : "AI 已提取并已进入筛选库";
-    }
-    return item.error || "上传没有完成，请重试。";
-  };
-
-  return (
-    <div className="page-frame">
-      <header className="page-heading">
-        <div>
-          <h1>批量上传简历</h1>
-          <p>
-            上传后会逐份保存原件、提取原生文字，并由 AI
-            自动识别候选人姓名、教育、经历和技能。姓名无法可靠识别时，将保留为“未命名候选人”。
-          </p>
-        </div>
-      </header>
-      <div className="page-layout">
-        <section className="panel">
-          <div className="panel-heading">
-            <div>
-              <h2>添加候选人简历</h2>
-              <p>
-                可拖入多份简历或一次选择多个文件。支持 PDF、Word、图片、Excel 和 HTML。候选人姓名仅由 AI
-                从简历原文识别，文件名只用于区分上传文件。
-              </p>
-            </div>
-          </div>
-          <div className="form-grid">
-            <div className="span-full">
-              <div
-                aria-busy={uploading}
-                aria-describedby="upload-dropzone-help"
-                aria-label="批量简历上传区域"
-                className={`dropzone${dragging ? " is-dragging" : ""}${uploading ? " is-disabled" : ""}`}
-                onDragEnter={handleDragEnter}
-                onDragLeave={handleDragLeave}
-                onDragOver={(event) => event.preventDefault()}
-                onDrop={handleDrop}
-              >
-                <input
-                  accept=".pdf,.doc,.docx,.png,.jpg,.jpeg,.xls,.xlsx,.html,.htm,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/png,image/jpeg,text/html"
-                  disabled={uploading}
-                  multiple
-                  onChange={handleInputChange}
-                  ref={inputRef}
-                  tabIndex={-1}
-                  type="file"
-                />
-                <div className="dropzone-inner">
-                  <span className="dropzone-icon">
-                    <Icon name="upload" size={25} />
-                  </span>
-                  <h2>
-                    {uploading
-                      ? `正在保存并入队：已完成 ${completedUploads.length} / ${uploads.length}`
-                      : extractingUploads.length
-                        ? `AI 正在处理 ${extractingUploads.length} 份简历`
-                        : uploads.length
-                          ? `已加入 ${uploads.length} 份简历`
-                          : "拖入简历，或点击选择文件"}
-                  </h2>
-                  <p id="upload-dropzone-help">
-                    支持 PDF、Word、图片、Excel 和 HTML。每份会单独校验、保存，并由 AI
-                    从原文识别候选人姓名和结构化事实；姓名不清晰时不会使用文件名代替。
-                  </p>
-                  <button
-                    className="button"
-                    disabled={uploading}
-                    onClick={() => inputRef.current?.click()}
-                    type="button"
-                  >
-                    选择简历文件
-                  </button>
-                </div>
-              </div>
-              {uploads.length > 0 && (
-                <div className="upload-queue">
-                  <div className="upload-queue-header" aria-live="polite">
-                    <div>
-                      <strong>上传队列</strong>
-                      <span>
-                        {uploads.length} 份文件 · AI 处理中{" "}
-                        {extractingUploads.length} · 已启用{" "}
-                        {completedUploads.length} · 需处理{" "}
-                        {attentionUploads.length} · 失败 {failedUploads.length}
-                      </span>
-                    </div>
-                    {resolvedUploads.length > 0 && (
-                      <button
-                        className="text-button"
-                        disabled={uploading}
-                        onClick={() =>
-                          setUploads((current) =>
-                            current.filter(
-                              (item) =>
-                                item.status !== "success" &&
-                                item.status !== "attention",
-                            ),
-                          )
-                        }
-                        type="button"
-                      >
-                        清除已完成
-                      </button>
-                    )}
-                  </div>
-                  <ul>
-                    {uploads.map((item) => (
-                      <li
-                        className={`upload-file-card is-${item.status}`}
-                        key={item.id}
-                        role={item.status === "error" ? "alert" : undefined}
-                      >
-                        <Icon name="document" size={22} />
-                        <div className="upload-file-main">
-                          <strong title={item.file.name}>
-                            {item.file.name}
-                          </strong>
-                          <span>
-                            {formatFileSize(item.file.size)} · {resumeFileTypeLabel(item.file.name)} ·{" "}
-                            {statusText(item)}
-                          </span>
-                        </div>
-                        <div className="upload-row-actions">
-                          {(item.status === "uploading" ||
-                            item.status === "extracting") && (
-                            <i
-                              aria-label={
-                                item.status === "uploading"
-                                  ? "正在上传并解析"
-                                  : "AI 正在提取"
-                              }
-                              className="spinner"
-                            />
-                          )}
-                          {item.status === "error" &&
-                            item.retryable !== false && (
-                              <button
-                                className="button button-ghost upload-row-button"
-                                disabled={uploading}
-                                onClick={() => void runUploads([item])}
-                                type="button"
-                              >
-                                重新上传
-                              </button>
-                            )}
-                          {item.response &&
-                            item.status !== "queued" &&
-                            item.status !== "uploading" && (
-                              <button
-                                className="button button-ghost upload-row-button"
-                                onClick={() => openSuccessfulUpload(item)}
-                                type="button"
-                              >
-                                {item.status === "extracting"
-                                  ? "查看状态"
-                                  : "查看简历"}
-                              </button>
-                            )}
-                          {item.status !== "uploading" && (
-                            <button
-                              aria-label={`移除 ${item.file.name}`}
-                              className="icon-button"
-                              disabled={uploading}
-                              onClick={() =>
-                                setUploads((current) =>
-                                  current.filter(
-                                    (entry) => entry.id !== item.id,
-                                  ),
-                                )
-                              }
-                              type="button"
-                            >
-                              <Icon name="close" size={16} />
-                            </button>
-                          )}
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-          </div>
-          <div className="review-actions upload-actions">
-            {(uploading || queuedUploads.length > 0) && (
-              <button
-                className="button button-primary"
-                disabled={!queuedUploads.length || uploading}
-                onClick={() => void runUploads(queuedUploads)}
-                type="button"
-              >
-                {uploading ? (
-                  <>
-                    <i className="spinner" />
-                    正在按队列上传…
-                  </>
-                ) : (
-                  <>
-                    <Icon name="upload" size={16} />
-                    上传 {queuedUploads.length} 份并自动提取
-                  </>
-                )}
-              </button>
-            )}
-            {retryableFailedUploads.length > 0 && (
-              <button
-                className="button"
-                disabled={uploading}
-                onClick={() => void runUploads(retryableFailedUploads)}
-                type="button"
-              >
-                重新上传失败项（{retryableFailedUploads.length}）
-              </button>
-            )}
-          </div>
-        </section>
-        <aside className="panel">
-          <div className="panel-heading">
-            <div>
-              <h2>批量处理路径</h2>
-              <p>每一份简历独立处理，便于定位问题与补传。</p>
-            </div>
-          </div>
-          <ol className="workflow-list">
-            <li>
-              <span className="workflow-step">1</span>
-              <div>
-                <strong>逐份保存原始文件</strong>
-              <span>支持 PDF、Word、图片、Excel 和 HTML，文件质量会单独检查。</span>
-              </div>
-            </li>
-            <li>
-              <span className="workflow-step">2</span>
-              <div>
-                <strong>AI 识别姓名与结构化事实</strong>
-                <span>
-                  基于可提取的原文识别候选人姓名、教育、经历和技能；姓名不明确时保留为未命名候选人。
-                </span>
-              </div>
-            </li>
-            <li>
-              <span className="workflow-step">3</span>
-              <div>
-                <strong>通过证据校验后自动启用</strong>
-                <span>
-                  AI 提取结果会直接进入筛选库；异常简历保留原件与失败状态。
-                </span>
-              </div>
-            </li>
-          </ol>
-        </aside>
-      </div>
-    </div>
-  );
-}
-
 
 
 function CandidateRequired({

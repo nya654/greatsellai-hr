@@ -600,7 +600,7 @@ test.describe("招聘工作台关键路径", () => {
     await expect(page.getByRole("tab", { name: "收件邮箱", exact: true })).toHaveAttribute("aria-selected", "true");
     await expect(page.getByRole("heading", { name: "收件邮箱", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "绑定招聘收件邮箱" })).toBeVisible();
-    expect(await gridTrackCount(".settings-layout")).toBe(2);
+    expect(await gridTrackCount(".settings-layout")).toBe(1);
     expect(await gridTrackCount(".mailbox-setup-shell")).toBe(1);
     await expect(page.getByRole("heading", { name: "收件通道" })).toHaveCount(0);
     await expect(page.getByRole("heading", { name: "附件入库记录" })).toHaveCount(0);
@@ -612,7 +612,7 @@ test.describe("招聘工作台关键路径", () => {
     await expect(page.getByRole("heading", { name: "E2E 收件通道" })).toBeVisible();
     await expect(page.locator("#mailbox-history-filter")).not.toHaveValue("");
     await expect(page.getByRole("button", { name: "归档通道" })).toBeVisible();
-    expect(await gridTrackCount(".mailbox-workspace")).toBe(2);
+    expect(await gridTrackCount(".mailbox-workspace")).toBe(1);
     await page.getByRole("button", { name: "编辑连接" }).click();
     await expect(page.getByRole("button", { name: "返回概览" })).toBeVisible();
     expect(await gridTrackCount(".mailbox-detail-grid")).toBe(1);
@@ -630,7 +630,7 @@ test.describe("招聘工作台关键路径", () => {
     await expect(page.getByText("已加入后台同步队列。")).toBeVisible();
     await page.getByRole("tab", { name: "候选人数据与保留", exact: true }).click();
     await expect(page.getByRole("heading", { name: "候选人数据与保留", exact: true })).toBeVisible();
-    expect(await gridTrackCount(".settings-layout")).toBe(2);
+    expect(await gridTrackCount(".settings-layout")).toBe(1);
   });
 
   test("旧邮箱入口会转入设置中的收件邮箱", async ({ page }) => {

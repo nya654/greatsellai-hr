@@ -80,6 +80,7 @@ import type {
 } from "./types";
 import { Icon, type IconName } from "./icons";
 import { TableSkeleton } from "./backoffice/ui/TableSkeleton";
+import { BackofficeButton } from "./backoffice/ui/BackofficeButton";
 import { formatFileSize, formatLibraryDate } from "./backoffice/utils/formatters";
 import { MailboxPage } from "./features/mailbox/MailboxPage";
 import { mailboxImportErrorMessages } from "./features/mailbox/mailbox-model";
@@ -3244,15 +3245,12 @@ function SideRail({
               type="button"
             >
               <Icon name={item.icon} size={19} />
+              <span className="rail-label">{item.label}</span>
               <span className="rail-tooltip">{item.label}</span>
             </button>
           ))}
       </nav>
       <div className="rail-bottom">
-        <button aria-label="工作记录" className="rail-item" type="button">
-          <Icon name="history" size={18} />
-          <span className="rail-tooltip">工作记录</span>
-        </button>
         {canManageSettings && (
           <button
             aria-current={activeView === "settings" ? "page" : undefined}
@@ -3262,6 +3260,7 @@ function SideRail({
             type="button"
           >
             <Icon name="gear" size={18} />
+            <span className="rail-label">设置</span>
             <span className="rail-tooltip">设置</span>
           </button>
         )}
@@ -3355,15 +3354,13 @@ function Topbar({
           <Icon name="spark" size={16} />
           <span className="topbar-action-label">招聘助手</span>
         </button>
-        <button
+        <BackofficeButton
           aria-label="上传简历"
-          className="button button-ghost"
+          icon={<Icon name="upload" size={16} />}
           onClick={onNewUpload}
-          type="button"
         >
-          <Icon name="upload" size={16} />
           <span className="topbar-action-label">上传简历</span>
-        </button>
+        </BackofficeButton>
         <AccountMenu
           canManageSettings={canManageSettings}
           onOpen={onAccountMenuOpen}

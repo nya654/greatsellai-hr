@@ -613,7 +613,7 @@ test.describe("招聘工作台关键路径", () => {
     await page.getByRole("button", { name: /^(保存收件通道|创建并开始接收)$/ }).click();
     await expect(page.getByText("收件通道已创建，只会入库从现在起收到的附件。")).toBeVisible();
     await expect(page.getByRole("heading", { name: "E2E 收件通道" })).toBeVisible();
-    await expect(page.locator("#mailbox-history-filter")).not.toHaveValue("");
+    await expect(page.getByLabel("来源", { exact: true })).toContainText("E2E 收件通道");
     await expect(page.getByRole("button", { name: "归档通道" })).toBeVisible();
     expect(await gridTrackCount(".mailbox-workspace")).toBe(1);
     await page.getByRole("button", { name: "编辑连接" }).click();

@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import "./backoffice-ui.css";
+import "./workspace-shell.css";
 
 type SemiConfigProvider = typeof import("@douyinfe/semi-ui-19/lib/es/configProvider").default;
 

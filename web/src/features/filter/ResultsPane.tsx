@@ -40,7 +40,6 @@ function InstitutionClassificationTags({
     </div>
   );
 }
-
 interface ResultDisplayColumn {
   key: CandidateSearchDisplayFieldKey;
   label: string;
@@ -554,4 +553,3 @@ export function ResultsPane({
     </section>
   );
 }
-

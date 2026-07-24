@@ -802,5 +802,3 @@ function ChipInput({
     </div>
   );
 }
-
-

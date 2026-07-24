@@ -1,0 +1,557 @@
+import type { ReactNode } from "react";
+import { BackofficeButton } from "../../backoffice/ui/BackofficeButton";
+import { BackofficeSelect } from "../../backoffice/ui/BackofficeSelect";
+import { TableSkeleton } from "../../backoffice/ui/TableSkeleton";
+import { Icon } from "../../icons";
+import {
+  degreeLabels,
+  experienceTypeOptions,
+  formatDuration,
+  institutionClassificationLabel,
+  institutionClassificationLabels,
+  sortInstitutionClassifications,
+  type FilterDraft,
+} from "./filter-model";
+import type {
+  CandidateSearchDisplayFieldKey,
+  CandidateSearchItem,
+  CandidateSearchResponse,
+  DegreeLevel,
+  InstitutionClassification,
+  ScoreTemplate,
+} from "../../types";
+
+function InstitutionClassificationTags({
+  classifications,
+}: {
+  classifications: readonly InstitutionClassification[] | null | undefined;
+}) {
+  const orderedClassifications = sortInstitutionClassifications(classifications);
+  if (!orderedClassifications.length) {
+    return <span className="candidate-meta">待核实</span>;
+  }
+  return (
+    <div className="institution-classification-tags">
+      {orderedClassifications.map((classification) => (
+        <span className="tag" key={classification}>
+          {institutionClassificationLabel(classification)}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+interface ResultDisplayColumn {
+  key: CandidateSearchDisplayFieldKey;
+  label: string;
+}
+
+function activeResultDisplayColumns(draft: FilterDraft): ResultDisplayColumn[] {
+  const columns: ResultDisplayColumn[] = [];
+  const add = (key: CandidateSearchDisplayFieldKey, label: string) => {
+    if (!columns.some((column) => column.key === key)) {
+      columns.push({ key, label });
+    }
+  };
+
+  if (draft.graduationStatus !== "any") add("graduation", "毕业时间");
+  if (draft.minEmploymentMonths > 0) {
+    add("employment_months", "正式工作年限");
+  }
+  if (draft.minEmploymentOrInternshipMonths > 0) {
+    add("employment_or_internship_months", "工作 + 实习年限");
+  }
+
+  if (draft.schoolName.trim()) add("school", "学校");
+  if (draft.major.trim()) add("major", "专业");
+  if (
+    draft.minAverageScore ||
+    draft.minGpaPercent ||
+    draft.maxRankPosition ||
+    draft.maxRankPercent
+  ) {
+    add("academic_performance", "学业表现");
+  }
+
+  if (draft.experienceTypes.length) add("experience_type", "经历类型");
+  if (draft.experienceName.trim()) add("experience_name", "经历名称");
+  if (draft.company.trim()) add("organization", "公司 / 组织");
+  if (draft.title.trim()) add("title", "职位");
+  if (
+    draft.experienceAwardLevels.length ||
+    draft.experienceAwardResult.trim()
+  ) {
+    add("experience_award", "经历获奖");
+  }
+
+  if (draft.skills.length || draft.skillCategories.length) add("skills", "技能");
+  if (
+    draft.languageCredentials.some(
+      (credential) =>
+        credential !== "custom" || Boolean(draft.customLanguageName.trim()),
+    )
+  ) {
+    add("language", "语言证书");
+  }
+  if (
+    draft.scholarshipStatus !== "any" ||
+    draft.scholarshipName.trim() ||
+    draft.scholarshipLevels.length
+  ) {
+    add("scholarship", "奖学金");
+  }
+  if (
+    draft.competitionStatus !== "any" ||
+    draft.competitionAwardStatus !== "any"
+  ) {
+    add("competition", "竞赛");
+  }
+  if (draft.leadershipContexts.length || draft.leadershipRoles.length) {
+    add("leadership", "领导经历");
+  }
+  if (draft.keywords.length) add("keywords", "关键词命中");
+
+  return columns;
+}
+
+function resultDisplayValueLabel(
+  key: CandidateSearchDisplayFieldKey,
+  value: string,
+): string {
+  const normalized = value.trim();
+  if (!normalized) return "";
+
+  if (key === "institution_classifications") {
+    return (
+      institutionClassificationLabels[
+        normalized as InstitutionClassification
+      ] ?? normalized
+    );
+  }
+  if (key === "highest_degree" || key === "education_degree") {
+    return degreeLabels[normalized as DegreeLevel] ?? normalized;
+  }
+  if (key === "experience_type") {
+    return (
+      experienceTypeOptions.find((option) => option.value === normalized)
+        ?.label ?? normalized
+    );
+  }
+  if (
+    key === "employment_months" ||
+    key === "employment_or_internship_months"
+  ) {
+    const months = Number(normalized);
+    return Number.isFinite(months) ? formatDuration(months) : normalized;
+  }
+  return normalized;
+}
+
+function resultDisplayValues(
+  item: CandidateSearchItem,
+  key: CandidateSearchDisplayFieldKey,
+): string[] {
+  const values = (item.display_fields ?? [])
+    .filter((field) => field.key === key)
+    .flatMap((field) => field.values)
+    .map((value) => resultDisplayValueLabel(key, value))
+    .filter(Boolean);
+  return [...new Set(values)];
+}
+
+function ResultDisplayValues({
+  item,
+  fieldKey,
+  label,
+}: {
+  item: CandidateSearchItem;
+  fieldKey: CandidateSearchDisplayFieldKey;
+  label?: string;
+}) {
+  const values = resultDisplayValues(item, fieldKey);
+  if (!values.length) {
+    return <span className="candidate-meta result-display-empty">—</span>;
+  }
+
+  return (
+    <div
+      aria-label={`${label ?? "筛选字段"}：${values.join("；")}`}
+      className="result-display-values"
+      title={values.join("；")}
+    >
+      {values.slice(0, 2).map((value) => (
+        <span className="result-display-value" key={value}>
+          {value}
+        </span>
+      ))}
+      {values.length > 2 && (
+        <span className="result-display-more">+{values.length - 2} 项</span>
+      )}
+    </div>
+  );
+}
+
+function ResultColumnHeader({
+  children,
+  active = false,
+}: {
+  children: ReactNode;
+  active?: boolean;
+}) {
+  return (
+    <span className="result-column-heading">
+      {children}
+      {active && <span className="result-filter-indicator">已筛</span>}
+    </span>
+  );
+}
+
+function scoreConfidencePresentation(value: number | null): {
+  label: string;
+  tone: "grounded" | "partial" | "unknown";
+} {
+  if (value === null) {
+    return { label: "依据待核实", tone: "unknown" };
+  }
+  if (value >= 80) {
+    return { label: `可信度高 · ${value.toFixed(0)}%`, tone: "grounded" };
+  }
+  if (value >= 50) {
+    return { label: `可信度中 · ${value.toFixed(0)}%`, tone: "partial" };
+  }
+  return { label: `待核实 · ${value.toFixed(0)}%`, tone: "unknown" };
+}
+
+function scoreStatusLabel(status: string | null): string | null {
+  if (status === "overridden") return "含人工调整";
+  if (status === "needs_review") return "建议复核";
+  if (status === "succeeded") return null;
+  return status ? "评分待更新" : null;
+}
+
+function CandidateEducationCell({ item }: { item: CandidateSearchItem }) {
+  const hasEducation = Boolean(
+    item.highest_degree ||
+      item.education_school ||
+      item.education_major ||
+      item.institution_classifications.length,
+  );
+  if (!hasEducation) return <span className="candidate-meta">未识别</span>;
+  return (
+    <div className="candidate-profile-cell candidate-education-cell">
+      <div className="candidate-profile-primary">
+        {item.highest_degree && (
+          <span className="degree-label">{degreeLabels[item.highest_degree]}</span>
+        )}
+        <span className="candidate-profile-title">
+          {item.education_school || "学校信息待补充"}
+        </span>
+      </div>
+      {item.education_major && (
+        <span className="candidate-meta">{item.education_major}</span>
+      )}
+      <InstitutionClassificationTags
+        classifications={item.institution_classifications}
+      />
+    </div>
+  );
+}
+
+function CandidateExperienceCell({ item }: { item: CandidateSearchItem }) {
+  const experienceType = experienceTypeOptions.find(
+    (option) => option.value === item.latest_experience_type,
+  )?.label;
+  const role = [
+    item.latest_experience_title,
+    item.latest_experience_organization,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const hasVerifiedEmployment = item.employment_months > 0;
+  const hasAdditionalInternshipTenure =
+    item.employment_or_internship_months > item.employment_months;
+  return (
+    <div className="candidate-profile-cell">
+      <div className="candidate-profile-primary">
+        <span
+          aria-label={
+            hasVerifiedEmployment
+              ? `正式工作 ${formatDuration(item.employment_months)}`
+              : "正式工作年限待核实"
+          }
+          className="candidate-profile-title"
+          title="正式工作年限仅累计有明确工作类型、公司、职位和起止日期的工作经历；实习单独计入“工作 + 实习”。"
+        >
+          {hasVerifiedEmployment
+            ? `${formatDuration(item.employment_months)} 正式工作`
+            : "正式工作年限待核实"}
+        </span>
+      </div>
+      {hasAdditionalInternshipTenure && (
+        <span className="candidate-meta">
+          工作 + 实习 {formatDuration(item.employment_or_internship_months)}
+        </span>
+      )}
+      {role ? (
+        <span className="candidate-meta">
+          {experienceType ? `${experienceType} · ` : ""}
+          {role}
+        </span>
+      ) : (
+        <span className="candidate-meta">最近岗位信息待补充</span>
+      )}
+    </div>
+  );
+}
+
+function CandidateSkillHighlights({ item }: { item: CandidateSearchItem }) {
+  const skills = item.skill_highlights ?? [];
+  if (!skills.length) return <span className="candidate-meta">未识别</span>;
+  return (
+    <div
+      aria-label={`核心技能：${skills.join("；")}`}
+      className="candidate-skill-highlights"
+      title={skills.join("；")}
+    >
+      {skills.slice(0, 3).map((skill) => (
+        <span className="tag" key={skill}>{skill}</span>
+      ))}
+      {skills.length > 3 && <span className="candidate-skills-more">+{skills.length - 3}</span>}
+    </div>
+  );
+}
+
+export function ResultsPane({
+  appliedDraft,
+  search,
+  searching,
+  selectedResumeId,
+  onOpenCandidate,
+  onScoreTemplateChange,
+  onLoadMore,
+  onUpload,
+  scoreTemplateId,
+  scoreTemplates,
+}: {
+  appliedDraft: FilterDraft;
+  search: CandidateSearchResponse;
+  searching: boolean;
+  selectedResumeId: string | null;
+  onOpenCandidate: (item: CandidateSearchItem, tab?: "score") => void;
+  onScoreTemplateChange: (templateId: string | null) => void;
+  onLoadMore: () => void;
+  onUpload: () => void;
+  scoreTemplateId: string | null;
+  scoreTemplates: ScoreTemplate[];
+}) {
+  const displayColumns = activeResultDisplayColumns(appliedDraft);
+  const hasAppliedDisplayColumns = displayColumns.length > 0;
+  const selectedScoreTemplate = scoreTemplates.find(
+    (template) => template.template_id === scoreTemplateId,
+  );
+  const scoreOrderLabel = selectedScoreTemplate
+    ? `按“${selectedScoreTemplate.name} · v${selectedScoreTemplate.version}”综合评分排序`
+    : "未选择统一评分模板，按最近更新排序";
+
+  return (
+    <section className="results-pane" aria-label="候选人结果">
+      <header className="results-header">
+        <div className="results-summary">
+          <h1>候选人结果</h1>
+          <p>
+            {search.items.length
+              ? `当前已加载 ${search.items.length} 位候选人，${scoreOrderLabel}`
+              : "仅显示已完成 AI 提取并启用的简历"}
+          </p>
+        </div>
+        <div className="results-toolbar">
+          <div className="score-sort-control">
+            <span id="score-sort-label">评分口径</span>
+            <BackofficeSelect
+              ariaLabel="综合评分排序规则"
+              ariaLabelledBy="score-sort-label"
+              className="score-sort-select"
+              onChange={(templateId) => onScoreTemplateChange(templateId || null)}
+              options={[
+                { label: "不按评分排序", value: "" },
+                ...scoreTemplates.map((template) => ({
+                  label: `${template.name} · v${template.version}`,
+                  value: template.template_id,
+                })),
+              ]}
+              value={scoreTemplateId ?? ""}
+            />
+          </div>
+          {search.needs_review_count > 0 && (
+            <span className="status-pill">
+              待处理 {search.needs_review_count}
+            </span>
+          )}
+          <BackofficeButton
+            icon={<Icon name="upload" size={16} />}
+            onClick={onUpload}
+          >
+            上传简历
+          </BackofficeButton>
+        </div>
+      </header>
+      <div
+        aria-label="候选人结果，可横向滚动查看筛选字段"
+        className="table-scroll"
+        role="region"
+        tabIndex={0}
+      >
+        {searching && !search.items.length ? (
+          <TableSkeleton />
+        ) : search.items.length ? (
+          <table
+            className={`candidate-table${
+              hasAppliedDisplayColumns ? " has-active-filter-columns" : ""
+            }`}
+          >
+            <thead>
+              <tr>
+                <th scope="col">候选人</th>
+                <th scope="col">学历 / 院校</th>
+                <th scope="col">经历</th>
+                <th scope="col">核心技能</th>
+                {displayColumns.map((column) => (
+                  <th className="result-display-column" key={column.key} scope="col">
+                    <ResultColumnHeader active>{column.label}</ResultColumnHeader>
+                  </th>
+                ))}
+                <th scope="col">综合评分</th>
+                <th scope="col" aria-label="查看详情" />
+              </tr>
+            </thead>
+            <tbody>
+              {search.items.map((item) => (
+                <tr
+                  className={
+                    selectedResumeId === item.resume_id ? "is-selected" : ""
+                  }
+                  key={item.resume_id}
+                  onClick={() => onOpenCandidate(item)}
+                >
+                  <td className="candidate-result-cell">
+                    <div className="candidate-person">
+                      <span className="candidate-name">
+                        {item.display_name?.trim() || "未命名候选人"}
+                      </span>
+                    </div>
+                  </td>
+                  <td>
+                    <CandidateEducationCell item={item} />
+                  </td>
+                  <td>
+                    <CandidateExperienceCell item={item} />
+                  </td>
+                  <td><CandidateSkillHighlights item={item} /></td>
+                  {displayColumns.map((column) => (
+                    <td className="result-display-cell" key={column.key}>
+                      <ResultDisplayValues
+                        fieldKey={column.key}
+                        item={item}
+                        label={column.label}
+                      />
+                    </td>
+                  ))}
+                  <td className="candidate-score-cell">
+                    {item.score_total !== null ? (
+                      <div className="candidate-score-summary">
+                        <button
+                          aria-label={`查看 ${item.display_name ?? "候选人"} 的评分详情`}
+                          className="library-score candidate-score-link"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onOpenCandidate(item, "score");
+                          }}
+                          type="button"
+                        >
+                          <strong>{item.score_total.toFixed(1)}</strong>
+                          <span>/ 100</span>
+                          {item.score_template_name && (
+                            <small>{item.score_template_name}</small>
+                          )}
+                        </button>
+                        <span
+                          className={`score-confidence is-${scoreConfidencePresentation(item.score_confidence).tone}`}
+                        >
+                          {scoreConfidencePresentation(item.score_confidence).label}
+                        </span>
+                        {scoreStatusLabel(item.score_status) && (
+                          <span className="candidate-score-status">
+                            {scoreStatusLabel(item.score_status)}
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="library-empty-copy">尚未评分</span>
+                    )}
+                  </td>
+                  <td className="candidate-open-cell">
+                    <button
+                      aria-label={`查看 ${item.display_name?.trim() || "未命名候选人"} 的简历详情`}
+                      className="candidate-open-action"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onOpenCandidate(item);
+                      }}
+                      type="button"
+                    >
+                      查看 <Icon name="chevron-right" size={17} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <div className="empty-state">
+            <div className="empty-state-inner">
+              <span className="empty-glyph">
+                <Icon name="search" size={24} />
+              </span>
+              <h2>没有符合条件的已启用简历</h2>
+              <p>
+                调整筛选条件，或上传一份简历。AI
+                提取完成后，它会自动进入筛选库。
+              </p>
+              <button
+                className="button button-primary"
+                onClick={onUpload}
+                type="button"
+              >
+                <Icon name="upload" size={16} />
+                上传简历
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+      <footer className="results-footer">
+        <span>
+          {searching ? (
+            <span className="loading-line">
+              <i className="spinner" />
+              正在查询候选人…
+            </span>
+          ) : (
+            `${search.items.length} 位候选人`
+          )}
+        </span>
+        {search.next_cursor && (
+          <button
+            className="button button-ghost"
+            disabled={searching}
+            onClick={onLoadMore}
+            type="button"
+          >
+            加载更多 <Icon name="arrow-right" size={16} />
+          </button>
+        )}
+      </footer>
+    </section>
+  );
+}
+

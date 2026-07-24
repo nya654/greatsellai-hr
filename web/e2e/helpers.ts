@@ -28,7 +28,7 @@ function uniqueTestEmail(label: string): string {
 }
 
 export function accountMenuTrigger(page: Page) {
-  return page.getByRole("button", { name: /账户与试用状态/ });
+  return page.getByRole("button", { name: /账户菜单/ });
 }
 
 export async function openAccountMenu(page: Page): Promise<void> {
@@ -101,7 +101,6 @@ export async function registerAndVerify(page: Page, label: string): Promise<stri
   await expect(page.getByRole("heading", { name: "邮箱已验证" })).toBeVisible();
   await page.goto("/");
   await expect(accountMenuTrigger(page)).toBeVisible();
-  await expect(accountMenuTrigger(page)).toHaveAccessibleName(/AI 剩余 1,000 次/);
   return email;
 }
 

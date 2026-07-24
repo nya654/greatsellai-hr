@@ -2635,7 +2635,7 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
           userDisplayName={authSession?.user?.display_name ?? null}
           userEmail={authSession?.user?.email ?? null}
         />
-        <TrialStatusBanner planName={authSession?.plan?.name ?? null} trial={authSession?.trial ?? null} />
+        <TrialStatusBanner trial={authSession?.trial ?? null} />
         <main className="main-content" id="main-content">
           {view === "library" && (
             <ResumeLibraryPage
@@ -3341,71 +3341,29 @@ function AuthPageLayout({
   );
 }
 
-function TrialStatusBanner({
-  planName,
-  trial,
-}: {
-  planName: string | null;
-  trial: TrialAccess | null;
-}) {
+function TrialStatusBanner({ trial }: { trial: TrialAccess | null }) {
   if (!trial) return null;
   const isExpired = trial.plan_status === "expired" || !trial.access_enabled;
   const isTrial = trial.plan_status === "trial";
-  if (!isExpired && !isTrial) return null;
-  const days = trial.trial_days_remaining;
-  const remaining = typeof days === "number" ? Math.max(0, days) : null;
-  const llmCallLimit =
-    typeof trial.llm_call_limit === "number"
-      ? Math.max(0, trial.llm_call_limit)
-      : null;
-  const llmCallUsed =
-    typeof trial.llm_call_used === "number"
-      ? Math.max(0, trial.llm_call_used)
-      : null;
   const llmCallRemaining =
     typeof trial.llm_call_remaining === "number"
       ? Math.max(0, trial.llm_call_remaining)
       : null;
-  const hasLlmCallUsage =
-    llmCallLimit !== null &&
-    llmCallUsed !== null &&
-    llmCallRemaining !== null;
   const isQuotaExhausted = isTrial && llmCallRemaining === 0;
-  const bannerStateClass = isExpired
-    ? " is-expired"
-    : isQuotaExhausted
-      ? " is-quota-exhausted"
-      : "";
-  const statusRole = isExpired || isQuotaExhausted ? "alert" : "status";
+  if (!isExpired && !isQuotaExhausted) return null;
   return (
-    <section className={`trial-banner${bannerStateClass}`} role={statusRole}>
+    <section className={`trial-banner${isExpired ? " is-expired" : " is-quota-exhausted"}`} role="alert">
       <div>
         <strong>
-          {isExpired
-            ? "试用期已结束"
-            : isQuotaExhausted
-              ? "试用 AI 调用额度已用完"
-              : `免费试用还剩 ${remaining ?? "—"} 天`}
+          {isExpired ? "试用期已结束" : "试用 AI 调用额度已用完"}
         </strong>
         <p>
           {isExpired
             ? "你的工作区数据已保留。续费入口开放前，请联系 GreatSell AI 团队继续使用。"
-            : isQuotaExhausted
-              ? "你仍可查看和管理已有数据。继续使用 AI 功能请联系 GreatSell AI 团队。"
-              : hasLlmCallUsage
-                ? `${planName ?? "进阶版"}试用中，AI 调用已用 ${formatWholeNumber(llmCallUsed ?? 0)} / ${formatWholeNumber(llmCallLimit ?? 0)}，剩余 ${formatWholeNumber(llmCallRemaining ?? 0)} 次。`
-                : `${planName ?? "进阶版"}试用中，已实现功能可正常体验。`}
+            : "你仍可查看和管理已有数据。继续使用 AI 功能请联系 GreatSell AI 团队。"}
         </p>
       </div>
-      <span>
-        {isExpired
-          ? "数据已保留"
-          : hasLlmCallUsage
-            ? isQuotaExhausted
-              ? `${formatWholeNumber(llmCallUsed ?? 0)} / ${formatWholeNumber(llmCallLimit ?? 0)} 次`
-              : `AI 剩余 ${formatWholeNumber(llmCallRemaining ?? 0)} 次`
-            : "30 天试用"}
-      </span>
+      <span>{isExpired ? "数据已保留" : "AI 调用已暂停"}</span>
     </section>
   );
 }
@@ -3623,11 +3581,7 @@ function AccountMenu({
     trial?.plan_status === "trial" && typeof trial.trial_days_remaining === "number"
       ? Math.max(0, trial.trial_days_remaining)
       : null;
-  const triggerLabel = `账户与试用状态：${displayName}${
-    trialLlmCallRemaining !== null
-      ? `，AI 剩余 ${formatWholeNumber(trialLlmCallRemaining)} 次`
-      : ""
-  }`;
+  const triggerLabel = `账户菜单：${displayName}`;
 
   const cancelHoverClose = () => {
     if (hoverCloseTimerRef.current === null) return;
@@ -3727,14 +3681,6 @@ function AccountMenu({
         ref={triggerRef}
         type="button"
       >
-        {trialLlmCallRemaining !== null && (
-          <span
-            aria-hidden="true"
-            className={`account-menu-quota${trialLlmCallRemaining === 0 ? " is-exhausted" : ""}`}
-          >
-            AI 剩余 {formatWholeNumber(trialLlmCallRemaining)} 次
-          </span>
-        )}
         <span className={`account-avatar${avatarInitials ? "" : " is-icon"}`} aria-hidden="true">
           {avatarInitials ?? <Icon name="user" size={17} />}
         </span>

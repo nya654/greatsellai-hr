@@ -606,6 +606,17 @@ def test_english_project_experience_term_is_not_forced_into_exact_skill_recall()
     )
 
 
+def test_profile_output_deduplicates_nonsemantic_aliases_and_questions() -> None:
+    payload = _generated_profile()
+    payload["aliases"] = ["LangChain 工程师", " LangChain 工程师 ", "LLM 应用工程师"]
+    payload["clarifying_questions"] = ["是否有行业经验要求？", "是否有行业经验要求？"]
+
+    normalized = validate_talent_search_profile_output(payload)
+
+    assert normalized["aliases"] == ["LangChain 工程师", "LLM 应用工程师"]
+    assert normalized["clarifying_questions"] == ["是否有行业经验要求？"]
+
+
 def test_zero_profile_run_persists_funnel_and_uses_frozen_snapshot(
     ai_client,
     monkeypatch,

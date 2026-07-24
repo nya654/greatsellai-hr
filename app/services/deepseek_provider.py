@@ -2444,14 +2444,33 @@ def _normalize_talent_profile_text_list(
     max_items: int,
     max_length: int,
 ) -> list[str]:
-    values = _require_string_list(value, code=code)
-    if len(values) > max_items:
+    # Do not use ``_require_string_list`` here: it rejects duplicate values
+    # before this display-only metadata helper has a chance to coalesce them.
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
         raise _contract_error(code)
-    normalized = [
+    values: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise _contract_error(code)
+        values.append(item)
+    normalized_values = [
         _normalize_jd_generation_input(item, code=code, max_length=max_length)
         for item in values
     ]
-    if len({" ".join(item.casefold().split()) for item in normalized}) != len(normalized):
+    # Aliases and clarifying questions are display metadata, not executable
+    # filters.  Function-calling models occasionally repeat a synonym verbatim
+    # despite the schema.  Preserve the first occurrence rather than turning a
+    # usable draft into a 502; unsupported types, blank text and overlong
+    # values remain contract errors above.
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in normalized_values:
+        key = " ".join(item.casefold().split())
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(item)
+    if len(normalized) > max_items:
         raise _contract_error(code)
     return normalized
 

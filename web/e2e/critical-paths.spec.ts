@@ -32,12 +32,15 @@ test.describe("招聘工作台关键路径", () => {
     await expect(accountMenuTrigger(page)).toBeVisible();
   });
 
-  test("右上角账户菜单展示试用额度和管理员设置，并支持 Escape 关闭", async ({ page }) => {
+  test("试用额度只在账户菜单内展示，并支持 Escape 关闭", async ({ page }) => {
     const email = await registerAndVerify(page, "account-menu");
     const trigger = accountMenuTrigger(page);
     const menu = page.getByRole("dialog", { name: "账户菜单" });
 
-    await expect(trigger).toHaveAccessibleName(/AI 剩余 1,000 次/);
+    await expect(trigger).toHaveAccessibleName(/账户菜单：E2E 管理员/);
+    await expect(trigger).not.toHaveAccessibleName(/AI 剩余/);
+    await expect(page.getByText("AI 剩余 1,000 次", { exact: true })).toHaveCount(0);
+    await expect(page.locator(".trial-banner")).toHaveCount(0);
 
     // A direct click must open and pin the menu even though moving the mouse
     // onto the trigger also opens it through hover.
@@ -60,7 +63,7 @@ test.describe("招聘工作台关键路径", () => {
     await openAccountMenu(page);
     await expect(menu.getByText("E2E 管理员", { exact: true })).toBeVisible();
     await expect(menu.getByText(email, { exact: true })).toBeVisible();
-    await expect(menu.getByText(/AI 调用/)).toBeVisible();
+    await expect(menu.locator(".account-menu-allowance")).toContainText("AI 调用已用 0 / 1,000，剩余 1,000 次");
     await expect(menu.getByRole("button", { name: "工作区设置" })).toBeVisible();
 
     await trigger.focus();

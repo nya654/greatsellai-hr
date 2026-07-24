@@ -3714,7 +3714,7 @@ button {
 
 .settings-layout {
   display: grid;
-  grid-template-columns: minmax(13rem, 16rem) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-xl);
   align-items: start;
 }
@@ -5043,14 +5043,14 @@ button {
 
 .mailbox-workspace {
   display: grid;
-  grid-template-columns: minmax(14.5rem, 17rem) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-xl);
   align-items: start;
 }
 
 .mailbox-setup-shell {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(18rem, 22rem);
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-xl);
   max-width: 76rem;
   align-items: start;
@@ -5450,7 +5450,7 @@ button {
 
 .mailbox-detail-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(16rem, 19rem);
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-xl);
   align-items: start;
 }
@@ -6869,9 +6869,6 @@ details[open] > .mailbox-disclosure-heading::after {
     grid-template-columns: 1fr;
   }
 
-  .mailbox-detail-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media (max-width: 60rem) {
@@ -6901,20 +6898,8 @@ details[open] > .mailbox-disclosure-heading::after {
     grid-template-columns: 1fr;
   }
 
-  .settings-layout {
-    grid-template-columns: 1fr;
-  }
-
   .settings-navigation-list {
     grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
-  }
-
-  .mailbox-workspace {
-    grid-template-columns: 1fr;
-  }
-
-  .mailbox-setup-shell {
-    grid-template-columns: 1fr;
   }
 
   .mailbox-operation-heading {

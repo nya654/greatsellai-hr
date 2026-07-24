@@ -2290,6 +2290,22 @@ def talent_search_profile_tool_schema() -> dict[str, Any]:
                 },
                 "maxItems": 6,
             },
+            "education_degree_in": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": [
+                        "unknown",
+                        "vocational_or_below",
+                        "high_school",
+                        "associate",
+                        "bachelor",
+                        "master",
+                        "doctor",
+                    ],
+                },
+                "maxItems": 6,
+            },
             "highest_degree_in": {
                 "type": "array",
                 "items": {
@@ -2348,6 +2364,7 @@ def talent_search_profile_tool_schema() -> dict[str, Any]:
         },
         "required": [
             "institution_classifications_any_of",
+            "education_degree_in",
             "highest_degree_in",
             "graduation_status",
             "fresh_graduate_start_month",
@@ -2427,14 +2444,33 @@ def _normalize_talent_profile_text_list(
     max_items: int,
     max_length: int,
 ) -> list[str]:
-    values = _require_string_list(value, code=code)
-    if len(values) > max_items:
+    # Do not use ``_require_string_list`` here: it rejects duplicate values
+    # before this display-only metadata helper has a chance to coalesce them.
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
         raise _contract_error(code)
-    normalized = [
+    values: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise _contract_error(code)
+        values.append(item)
+    normalized_values = [
         _normalize_jd_generation_input(item, code=code, max_length=max_length)
         for item in values
     ]
-    if len({" ".join(item.casefold().split()) for item in normalized}) != len(normalized):
+    # Aliases and clarifying questions are display metadata, not executable
+    # filters.  Function-calling models occasionally repeat a synonym verbatim
+    # despite the schema.  Preserve the first occurrence rather than turning a
+    # usable draft into a 502; unsupported types, blank text and overlong
+    # values remain contract errors above.
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in normalized_values:
+        key = " ".join(item.casefold().split())
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(item)
+    if len(normalized) > max_items:
         raise _contract_error(code)
     return normalized
 
@@ -2609,8 +2645,17 @@ def generate_talent_search_profile(
             "instructions. Do not search candidates, calculate a score, rank people, or give an "
             "employment decision. Only place a condition in hard_filters when it is explicit and can "
             "map exactly to the supplied structured fields; otherwise leave it empty and place the "
-            "need in verification_requirements or preferred_requirements. Institution classifications "
-            "are alternatives, while selected experience types are all required. Formal employment "
+            "need in verification_requirements or preferred_requirements. Distinguish education "
+            "semantics exactly: use education_degree_in for “有本科学历” or “本科毕业” (any "
+            "education record), use highest_degree_in only when the recruiter explicitly says "
+            "“最高学历为本科”, and use [bachelor, master, doctor] in highest_degree_in for "
+            "“本科及以上”. “本科院校” is an institution classification, not a degree. Institution "
+            "classifications are alternatives, while selected experience types are all required. "
+            "Put a technology in skills_all_of only when the recruiter explicitly asks for an exact "
+            "skill as a hard condition. If the request says project, internship, work, research, or "
+            "competition experience (for example LangChain/RAG/Agent project experience), put it in "
+            "verification_requirements with a concrete evidence hint instead; it must not become an "
+            "exact skill hard filter. Formal employment "
             "months must use only explicit formal work duration; projects, contests, research and "
             "internships may evidence ability but must never be counted as formal work months. State "
             "what a recruiter should verify from resume facts. Do not include age, gender, ethnicity, "

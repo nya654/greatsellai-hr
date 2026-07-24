@@ -1723,6 +1723,11 @@ class LeadershipFilter(ApiModel):
 class CandidateSearchRequest(ApiModel):
     schema_version: Literal["candidate_filter.v2"] = "candidate_filter.v2"
     is_985_211: bool | None = None
+    # Matches any one education record.  This is deliberately different from
+    # ``highest_degree_in``: a recruiter asking for someone who has completed
+    # a bachelor degree should still see a candidate whose highest degree is a
+    # master or doctor degree.
+    education_degree_in: list[DegreeLevel] = Field(default_factory=list, max_length=6)
     highest_degree_in: list[DegreeLevel] = Field(default_factory=list, max_length=6)
     graduation_status: Literal["any", "fresh", "previous"] = "any"
     fresh_graduate_start_month: Month | None = None
@@ -1904,6 +1909,11 @@ class TalentSearchHardFilters(ApiModel):
         default_factory=list,
         max_length=6,
     )
+    # Any education record may satisfy this group.  Keep it independent from
+    # both school classification and highest-degree filters so a profile can
+    # accurately express “有本科学历” without excluding later master's or
+    # doctorate study.
+    education_degree_in: list[DegreeLevel] = Field(default_factory=list, max_length=6)
     highest_degree_in: list[DegreeLevel] = Field(default_factory=list, max_length=6)
     graduation_status: Literal["any", "fresh", "previous"] = "any"
     fresh_graduate_start_month: Month | None = None
@@ -2545,6 +2555,29 @@ class TalentSearchProfileMatchResult(ApiModel):
     created_at: str
 
 
+class TalentSearchRecallDiagnosticStep(ApiModel):
+    """One server-derived stage in a strict profile-recall funnel."""
+
+    key: str
+    label: str
+    remaining_count: int = Field(ge=0)
+    removed_count: int = Field(ge=0)
+
+
+class TalentSearchRecallDiagnostics(ApiModel):
+    """Safe aggregate explanation for a zero-result profile search.
+
+    These are workspace-scoped counts only.  They deliberately do not expose
+    candidate names, source text, or an unsupported claim that an omitted fact
+    means a candidate lacks that capability.
+    """
+
+    eligible_resume_count: int = Field(ge=0)
+    needs_review_count: int = Field(ge=0)
+    strict_match_count: int = Field(ge=0)
+    steps: list[TalentSearchRecallDiagnosticStep] = Field(default_factory=list)
+
+
 class TalentSearchRunResponse(ApiModel):
     run_id: str
     profile_id: str
@@ -2560,4 +2593,9 @@ class TalentSearchRunResponse(ApiModel):
     match_results: list[TalentSearchProfileMatchResult] = Field(default_factory=list)
     created_at: str
     updated_at: str
+    # Read from the immutable run snapshot rather than the mutable current
+    # profile revision, so a historic zero-result explanation remains honest
+    # after HR later refines the profile.
+    applied_hard_filters: TalentSearchHardFilters
+    recall_diagnostics: TalentSearchRecallDiagnostics | None = None
     candidate_recall: CandidateSearchResponse

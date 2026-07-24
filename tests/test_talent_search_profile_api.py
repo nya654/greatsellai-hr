@@ -25,12 +25,25 @@ from test_resume_flow import create_candidate, replace_page_evidence, upload_tex
 from test_tenant_isolation import _register_and_login, workspace_clients
 
 
-def _profile_hard_filters(*, skills_all_of: list[str] | None = None) -> dict[str, object]:
+def _profile_hard_filters(
+    *,
+    skills_all_of: list[str] | None = None,
+    institution_classifications_any_of: list[str] | None = None,
+    education_degree_in: list[str] | None = None,
+    highest_degree_in: list[str] | None = None,
+) -> dict[str, object]:
     """Return the full persisted hard-filter shape used by the profile draft."""
 
     return {
-        "institution_classifications_any_of": ["985", "211"],
-        "highest_degree_in": ["bachelor"],
+        "institution_classifications_any_of": (
+            ["985", "211"]
+            if institution_classifications_any_of is None
+            else institution_classifications_any_of
+        ),
+        "education_degree_in": education_degree_in or [],
+        "highest_degree_in": (
+            ["bachelor"] if highest_degree_in is None else highest_degree_in
+        ),
         "graduation_status": "any",
         "fresh_graduate_start_month": None,
         "fresh_graduate_end_month": None,
@@ -103,10 +116,13 @@ def _save_ready_resume(
     *,
     skills: list[str],
     experience_types: list[str] | None = None,
+    education_degrees: list[str] | None = None,
+    source_suffix: str = "",
 ) -> str:
     """Persist a compact, source-grounded active resume for strict recall tests."""
 
     normalized_experience_types = experience_types or ["employment"]
+    normalized_education_degrees = education_degrees or ["bachelor"]
     candidate_id = create_candidate(client)
     resume_id = upload_text_resume(client, candidate_id)
     experience_facts: list[dict[str, object]] = []
@@ -116,6 +132,10 @@ def _save_ready_resume(
             organization = "实习示例公司"
             title = "实习工程师"
             prefix = "实习经历"
+        elif experience_type == "project":
+            organization = "项目示例"
+            title = "项目开发者"
+            prefix = "项目经历"
         else:
             organization = "工作示例公司"
             title = "后端工程师"
@@ -123,24 +143,53 @@ def _save_ready_resume(
         experience_text.append(
             f"{prefix} {organization}，担任{title}，2023-01 至 2023-06。"
         )
-        experience_facts.append(
+        experience_fact: dict[str, object] = {
+            "experience_type": experience_type,
+            "experience_name_raw": organization,
+            "organization_name_raw": organization,
+            "title_raw": title,
+            "start_month": "2023-01",
+            "end_month": "2023-06",
+            "evidence_block_ids": ["page-001"],
+            "classification_evidence_block_ids": ["page-001"],
+        }
+        if experience_type == "project" and source_suffix.strip():
+            experience_fact["detail_items"] = [
+                {
+                    "detail_raw": source_suffix.strip(),
+                    "evidence_block_ids": ["page-001"],
+                }
+            ]
+        experience_facts.append(experience_fact)
+    education_facts: list[dict[str, object]] = []
+    education_text: list[str] = []
+    degree_labels = {"bachelor": "本科", "master": "硕士", "doctor": "博士"}
+    for index, degree in enumerate(normalized_education_degrees):
+        start_year = 2018 + index * 4
+        end_year = start_year + 4
+        education_text.append(
+            "教育经历 北京大学 计算机 "
+            f"{degree_labels.get(degree, degree)}，{start_year}-09 至 {end_year}-06。"
+        )
+        education_facts.append(
             {
-                "experience_type": experience_type,
-                "experience_name_raw": organization,
-                "organization_name_raw": organization,
-                "title_raw": title,
-                "start_month": "2023-01",
-                "end_month": "2023-06",
+                "school_name_raw": "北京大学",
+                "degree": degree,
+                "major_raw": "计算机",
+                "start_month": f"{start_year}-09",
+                "end_month": f"{end_year}-06",
                 "evidence_block_ids": ["page-001"],
-                "classification_evidence_block_ids": ["page-001"],
             }
         )
-    source_text = (
-        "教育经历 北京大学 计算机 本科，2018-09 至 2022-06。"
-        + "".join(experience_text)
-        + "技能 "
-        + " ".join(skills)
-        + "。"
+    source_text = "".join(
+        [
+            *education_text,
+            *experience_text,
+            "技能 ",
+            " ".join(skills),
+            "。",
+            source_suffix,
+        ]
     )
     replace_page_evidence(client, resume_id, source_text)
     saved = client.put(
@@ -148,16 +197,7 @@ def _save_ready_resume(
         json={
             "facts": {
                 "schema_version": "resume_facts.v1",
-                "education": [
-                    {
-                        "school_name_raw": "北京大学",
-                        "degree": "bachelor",
-                        "major_raw": "计算机",
-                        "start_month": "2018-09",
-                        "end_month": "2022-06",
-                        "evidence_block_ids": ["page-001"],
-                    }
-                ],
+                "education": education_facts,
                 "experiences": experience_facts,
                 "skills": [
                     {"skill_display": skill, "evidence_block_ids": ["page-001"]}
@@ -182,7 +222,7 @@ def test_profile_generation_is_draft_only_and_cannot_run_before_confirmation(
     monkeypatch.setattr(profile_service, "search_candidates", search_must_not_run)
     created = ai_client.post(
         "/v1/talent-search-profiles/generate",
-        json={"message": "寻找有 AI Agent 项目经验的本科工程师"},
+        json={"message": "寻找有 AI Agent 项目经验的工程师"},
     )
 
     assert created.status_code == 200, created.text
@@ -359,6 +399,280 @@ def test_confirmed_profile_search_uses_frozen_snapshot_and_recalled_ids_only(
     ]
     assert search_calls[-1][0]["skills_all_of"] == ["Python"]
     assert search_calls[-1][1] == {matching_resume_id}
+
+
+def test_bachelor_degree_record_is_distinct_from_highest_degree_in_profile_recall(
+    ai_client,
+    monkeypatch,
+) -> None:
+    bachelor_resume_id = _save_ready_resume(ai_client, skills=["Python"])
+    master_resume_id = _save_ready_resume(
+        ai_client,
+        skills=["Python"],
+        education_degrees=["bachelor", "master"],
+    )
+
+    exact_highest = ai_client.post(
+        "/v1/candidates/search",
+        json={"highest_degree_in": ["bachelor"]},
+    )
+    assert exact_highest.status_code == 200, exact_highest.text
+    assert exact_highest.json()["total_count"] == 1
+    assert exact_highest.json()["items"][0]["resume_id"] == bachelor_resume_id
+
+    any_bachelor_record = ai_client.post(
+        "/v1/candidates/search",
+        json={"education_degree_in": ["bachelor"]},
+    )
+    assert any_bachelor_record.status_code == 200, any_bachelor_record.text
+    assert {item["resume_id"] for item in any_bachelor_record.json()["items"]} == {
+        bachelor_resume_id,
+        master_resume_id,
+    }
+
+    generated = _generated_profile()
+    generated["hard_filters"] = _profile_hard_filters(
+        institution_classifications_any_of=[],
+        highest_degree_in=["bachelor"],
+    )
+    _install_profile_ai_stub(monkeypatch, generated=generated)
+    created = ai_client.post(
+        "/v1/talent-search-profiles/generate",
+        json={"message": "寻找本科毕业的工程师"},
+    )
+    assert created.status_code == 200, created.text
+    profile_id = created.json()["profile_id"]
+    revision = created.json()["current_revision"]
+    assert revision["hard_filters"]["education_degree_in"] == ["bachelor"]
+    assert revision["hard_filters"]["highest_degree_in"] == []
+
+    assert ai_client.post(
+        f"/v1/talent-search-profiles/{profile_id}/confirm",
+        json={"revision_id": revision["revision_id"]},
+    ).status_code == 200
+
+    def fake_enqueue(session, **kwargs: object) -> SimpleNamespace:
+        job_version = session.get(JobVersion, kwargs["job_version_id"])
+        assert job_version is not None
+        batch = JobMatchBatch(
+            organization_id=job_version.organization_id,
+            job_version_id=job_version.id,
+            status="completed",
+            total_count=len(kwargs["resume_ids"]),
+            completed_count=0,
+            failed_count=0,
+            max_attempts=1,
+        )
+        session.add(batch)
+        session.flush()
+        return SimpleNamespace(batch_id=batch.id, status=batch.status)
+
+    monkeypatch.setattr(profile_service, "enqueue_job_version_match_batch", fake_enqueue)
+    started = ai_client.post(
+        f"/v1/talent-search-profiles/{profile_id}/runs",
+        json={"revision_id": revision["revision_id"], "limit": 10},
+    )
+    assert started.status_code == 200, started.text
+    payload = started.json()
+    assert payload["total_recalled_count"] == 2
+    assert {item["resume_id"] for item in payload["candidate_recall"]["items"]} == {
+        bachelor_resume_id,
+        master_resume_id,
+    }
+    assert payload["applied_hard_filters"]["education_degree_in"] == ["bachelor"]
+
+
+def test_bachelor_profile_normalizer_preserves_mixed_and_negative_degree_requests() -> None:
+    mixed_generated = _generated_profile()
+    mixed_generated["hard_filters"] = _profile_hard_filters(
+        institution_classifications_any_of=["985"],
+        highest_degree_in=["master", "doctor"],
+    )
+    mixed = profile_service._normalize_explicit_profile_intent(
+        mixed_generated,
+        request_message="寻找硕士及以上、本科毕业于985的工程师",
+    )
+    mixed_filters = mixed["hard_filters"]
+    assert isinstance(mixed_filters, dict)
+    assert mixed_filters["institution_classifications_any_of"] == ["985"]
+    assert mixed_filters["highest_degree_in"] == ["master", "doctor"]
+    assert mixed_filters["education_degree_in"] == []
+
+    negative_generated = _generated_profile()
+    negative_generated["hard_filters"] = _profile_hard_filters(
+        institution_classifications_any_of=[],
+        highest_degree_in=["master", "doctor"],
+    )
+    negative = profile_service._normalize_explicit_profile_intent(
+        negative_generated,
+        request_message="不要本科，只要硕士及以上",
+    )
+    negative_filters = negative["hard_filters"]
+    assert isinstance(negative_filters, dict)
+    assert negative_filters["highest_degree_in"] == ["master", "doctor"]
+    assert negative_filters["education_degree_in"] == []
+
+
+def test_project_experience_term_is_not_forced_into_exact_skill_recall(
+    ai_client,
+    monkeypatch,
+) -> None:
+    resume_id = _save_ready_resume(
+        ai_client,
+        skills=[],
+        experience_types=["project"],
+        source_suffix="项目中使用 LangChain 编排工具调用并完成上线。",
+    )
+    exact_skill = ai_client.post(
+        "/v1/candidates/search",
+        json={"skills_all_of": ["LangChain"]},
+    )
+    assert exact_skill.status_code == 200, exact_skill.text
+    assert exact_skill.json()["total_count"] == 0
+
+    generated = _generated_profile(skills_all_of=["LangChain"])
+    generated["hard_filters"] = _profile_hard_filters(
+        skills_all_of=["LangChain"],
+        institution_classifications_any_of=[],
+        highest_degree_in=[],
+    )
+    _install_profile_ai_stub(monkeypatch, generated=generated)
+    created = ai_client.post(
+        "/v1/talent-search-profiles/generate",
+        json={"message": "寻找有 LangChain 项目经验的工程师"},
+    )
+    assert created.status_code == 200, created.text
+    profile_id = created.json()["profile_id"]
+    revision = created.json()["current_revision"]
+    assert revision["hard_filters"]["skills_all_of"] == []
+    assert any(
+        "LangChain" in item["label"]
+        for item in revision["verification_requirements"]
+    )
+
+    assert ai_client.post(
+        f"/v1/talent-search-profiles/{profile_id}/confirm",
+        json={"revision_id": revision["revision_id"]},
+    ).status_code == 200
+
+    def fake_enqueue(session, **kwargs: object) -> SimpleNamespace:
+        job_version = session.get(JobVersion, kwargs["job_version_id"])
+        assert job_version is not None
+        batch = JobMatchBatch(
+            organization_id=job_version.organization_id,
+            job_version_id=job_version.id,
+            status="completed",
+            total_count=len(kwargs["resume_ids"]),
+            completed_count=0,
+            failed_count=0,
+            max_attempts=1,
+        )
+        session.add(batch)
+        session.flush()
+        return SimpleNamespace(batch_id=batch.id, status=batch.status)
+
+    monkeypatch.setattr(profile_service, "enqueue_job_version_match_batch", fake_enqueue)
+    started = ai_client.post(
+        f"/v1/talent-search-profiles/{profile_id}/runs",
+        json={"revision_id": revision["revision_id"], "limit": 10},
+    )
+    assert started.status_code == 200, started.text
+    payload = started.json()
+    assert payload["total_recalled_count"] == 1
+    assert payload["candidate_recall"]["items"][0]["resume_id"] == resume_id
+
+
+def test_english_project_experience_term_is_not_forced_into_exact_skill_recall() -> None:
+    generated = _generated_profile(skills_all_of=["LangChain"])
+    generated["hard_filters"] = _profile_hard_filters(
+        skills_all_of=["LangChain"],
+        institution_classifications_any_of=[],
+        highest_degree_in=[],
+    )
+
+    normalized = profile_service._normalize_explicit_profile_intent(
+        generated,
+        request_message="Find engineers with LangChain project experience",
+    )
+
+    hard_filters = normalized["hard_filters"]
+    assert isinstance(hard_filters, dict)
+    assert hard_filters["skills_all_of"] == []
+    verification_requirements = normalized["verification_requirements"]
+    assert isinstance(verification_requirements, list)
+    assert any(
+        isinstance(item, dict) and "LangChain" in str(item.get("label", ""))
+        for item in verification_requirements
+    )
+
+
+def test_profile_output_deduplicates_nonsemantic_aliases_and_questions() -> None:
+    payload = _generated_profile()
+    payload["aliases"] = ["LangChain 工程师", " LangChain 工程师 ", "LLM 应用工程师"]
+    payload["clarifying_questions"] = ["是否有行业经验要求？", "是否有行业经验要求？"]
+
+    normalized = validate_talent_search_profile_output(payload)
+
+    assert normalized["aliases"] == ["LangChain 工程师", "LLM 应用工程师"]
+    assert normalized["clarifying_questions"] == ["是否有行业经验要求？"]
+
+
+def test_zero_profile_run_persists_funnel_and_uses_frozen_snapshot(
+    ai_client,
+    monkeypatch,
+) -> None:
+    _save_ready_resume(ai_client, skills=["Python"])
+    _install_profile_ai_stub(
+        monkeypatch,
+        generated=_generated_profile(skills_all_of=["Rust"]),
+    )
+    created = ai_client.post(
+        "/v1/talent-search-profiles/generate",
+        json={"message": "寻找精确技能为 Rust 的工程师"},
+    )
+    assert created.status_code == 200, created.text
+    profile_id = created.json()["profile_id"]
+    revision = created.json()["current_revision"]
+    assert ai_client.post(
+        f"/v1/talent-search-profiles/{profile_id}/confirm",
+        json={"revision_id": revision["revision_id"]},
+    ).status_code == 200
+
+    started = ai_client.post(
+        f"/v1/talent-search-profiles/{profile_id}/runs",
+        json={"revision_id": revision["revision_id"], "limit": 10},
+    )
+    assert started.status_code == 200, started.text
+    payload = started.json()
+    assert payload["total_recalled_count"] == 0
+    assert payload["recall_diagnostics"] is not None
+    diagnostics = payload["recall_diagnostics"]
+    assert diagnostics["eligible_resume_count"] == 1
+    assert diagnostics["strict_match_count"] == 0
+    assert diagnostics["steps"][-1] == {
+        "key": "skills_all_of",
+        "label": "精确技能：Rust（全部）",
+        "remaining_count": 0,
+        "removed_count": 1,
+    }
+
+    database = ai_client.app.state.database
+    with database.session_factory() as session:
+        with bypass_organization_scope(session):
+            run = session.get(TalentSearchRun, payload["run_id"])
+            assert run is not None
+            assert run.recall_diagnostics == diagnostics
+            revision_row = session.get(TalentSearchProfileRevision, run.revision_id)
+            assert revision_row is not None
+            revision_row.hard_filters = _profile_hard_filters(skills_all_of=["Python"])
+            session.commit()
+
+    fetched = ai_client.get(
+        f"/v1/talent-search-profiles/{profile_id}/runs/{payload['run_id']}"
+    )
+    assert fetched.status_code == 200, fetched.text
+    assert fetched.json()["recall_diagnostics"] == diagnostics
+    assert fetched.json()["applied_hard_filters"]["skills_all_of"] == ["Rust"]
 
 
 def test_stale_profile_revision_cannot_be_confirmed(ai_client, monkeypatch) -> None:

@@ -41,6 +41,8 @@ from app.schemas import (
     TalentSearchProfileRunRequest,
     TalentSearchProfileSearchRequest,
     TalentSearchProfileMatchResult,
+    TalentSearchRecallDiagnosticStep,
+    TalentSearchRecallDiagnostics,
     TalentSearchRunResponse,
 )
 from app.services.ai_gateway_service import (
@@ -62,6 +64,7 @@ from app.services.job_service import (
     derive_job_match_score,
 )
 from app.services.search_service import SearchValidationError, search_candidates
+from app.services.normalization import normalized_key
 
 
 class TalentSearchProfileServiceError(RuntimeError):
@@ -72,6 +75,94 @@ class TalentSearchProfileNotFoundError(TalentSearchProfileServiceError):
     pass
 
 
+_DEGREE_LABELS = {
+    "vocational_or_below": "中专/职高及以下",
+    "high_school": "高中",
+    "associate": "大专",
+    "bachelor": "本科",
+    "master": "硕士",
+    "doctor": "博士",
+    "unknown": "待识别",
+}
+_INSTITUTION_CLASSIFICATION_LABELS = {
+    "985": "985",
+    "211": "211",
+    "undergraduate": "本科院校",
+    "associate": "大专院校",
+    "secondary_vocational": "中专院校",
+    "overseas": "海外院校",
+}
+_EXPERIENCE_TYPE_LABELS = {
+    "employment": "正式工作",
+    "internship": "实习",
+    "project": "项目",
+    "research": "科研",
+    "competition": "技能竞赛",
+    "campus": "校内/学生组织",
+    "club": "社团",
+    "volunteer": "志愿活动/社会实践",
+    "entrepreneurship": "创业",
+    "training": "培训",
+    "other": "其他经历",
+    "unknown": "待识别经历",
+}
+_PROJECT_EVIDENCE_MARKERS = (
+    "项目",
+    "实践",
+    "落地",
+    "实习",
+    "工作经历",
+    "工作职责",
+    "职责",
+    "科研",
+    "研究",
+    "竞赛",
+    "project",
+    "projects",
+    "projectexperience",
+    "practicalexperience",
+    "practice",
+    "internship",
+    "workexperience",
+    "workhistory",
+    "responsibility",
+    "responsibilities",
+    "research",
+    "competition",
+    "delivery",
+    "shipped",
+    "built",
+)
+_BACHELOR_INSTITUTION_MARKERS = (
+    "本科院校",
+    "普通本科",
+    "本科高校",
+    "本科毕业于",
+    "本科学校",
+    "本科就读于",
+)
+_BACHELOR_NEGATION_OR_RANGE_MARKERS = (
+    "不要本科",
+    "非本科",
+    "不是本科",
+    "排除本科",
+    "不招本科",
+    "拒绝本科",
+    "本科及以下",
+    "本科以下",
+)
+_OTHER_DEGREE_MARKERS = (
+    "硕士",
+    "博士",
+    "研究生",
+    "大专",
+    "专科",
+    "中专",
+    "高中",
+    "职高",
+)
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -79,6 +170,180 @@ def _utcnow() -> datetime:
 def _require_ai_gateway_credentials(settings: AppSettings) -> None:
     if not ai_gateway_credentials_configured(settings):
         raise TalentSearchProfileServiceError("deepseek_api_key_not_configured")
+
+
+def _message_requests_project_evidence(message: str, *, term: str) -> bool:
+    """Return whether one explicit term is requested as practical experience.
+
+    This is intentionally a narrow guard, not a hidden semantic taxonomy.  It
+    only corrects an unsafe AI draft when the recruiter's own wording places a
+    named technology close to an experience marker such as “项目” or “实习”.
+    """
+
+    message_key = normalized_key(message)
+    term_key = normalized_key(term)
+    if not message_key or not term_key:
+        return False
+    start = 0
+    while True:
+        index = message_key.find(term_key, start)
+        if index < 0:
+            return False
+        window = message_key[max(0, index - 18) : index + len(term_key) + 18]
+        if any(marker in window for marker in _PROJECT_EVIDENCE_MARKERS):
+            return True
+        start = index + len(term_key)
+
+
+def _ensure_project_verification_requirement(
+    requirements: list[object],
+    *,
+    term: str,
+) -> list[object]:
+    """Keep an explicit project-practice requirement visible to HR.
+
+    The provider normally produces this itself.  This fallback only applies
+    when the provider incorrectly put a project-experience term in the exact
+    skill checklist, so removing that strict filter never silently removes the
+    recruiter's stated requirement.
+    """
+
+    term_key = normalized_key(term)
+    for value in requirements:
+        if not isinstance(value, Mapping):
+            continue
+        text = " ".join(
+            str(value.get(field, ""))
+            for field in ("label", "evidence_hint")
+        )
+        if term_key and term_key in normalized_key(text):
+            return requirements
+
+    used_keys = {
+        str(value.get("key"))
+        for value in requirements
+        if isinstance(value, Mapping) and isinstance(value.get("key"), str)
+    }
+    suffix = 1
+    while f"project_evidence_{suffix}" in used_keys:
+        suffix += 1
+    return [
+        *requirements,
+        {
+            "key": f"project_evidence_{suffix}",
+            "label": f"具备 {term} 的项目、实习或工作实践",
+            "evidence_hint": (
+                f"核验项目、实习或工作职责中是否明确提及 {term}，"
+                "以及候选人的具体实现、贡献或结果。"
+            ),
+        },
+    ]
+
+
+def _request_unambiguously_requires_any_bachelor_degree(message_key: str) -> bool:
+    """Whether “本科” means any bachelor record, rather than a different rule.
+
+    This deliberately refuses to reinterpret mixed conditions.  For example,
+    “硕士及以上、本科毕业于 985” needs both the higher-degree filter and the
+    school requirement the model generated; converting it to “any bachelor”
+    would lose the recruiter's actual bar.
+    """
+
+    if "本科" not in message_key:
+        return False
+    if any(marker in message_key for marker in _BACHELOR_NEGATION_OR_RANGE_MARKERS):
+        return False
+    if "本科及以上" in message_key or "本科以上" in message_key:
+        return False
+    if "最高学历" in message_key:
+        return False
+    if any(marker in message_key for marker in _BACHELOR_INSTITUTION_MARKERS):
+        return False
+    if any(marker in message_key for marker in _OTHER_DEGREE_MARKERS):
+        return False
+    return True
+
+
+def _normalize_explicit_profile_intent(
+    generated: Mapping[str, object],
+    *,
+    request_message: str,
+) -> dict[str, object]:
+    """Correct a few unambiguous recruiter phrases before persisting a draft.
+
+    The profile model is asked to use the right fields, but this small
+    deterministic guard prevents two costly failures when it does not: treating
+    “本科毕业” as an exact highest-degree filter, and treating a named project
+    technology as an exact skill tag.  It never invents a new requirement; it
+    only preserves the recruiter's explicit wording in the appropriate,
+    visible profile section.
+    """
+
+    normalized = dict(generated)
+    try:
+        hard_filters = TalentSearchHardFilters.model_validate(
+            generated.get("hard_filters", {})
+        )
+    except ValueError:
+        # The provider validator normally catches this before the service sees
+        # it.  Keep the service defensive for test doubles and future routes.
+        return normalized
+
+    message_key = normalized_key(request_message)
+    hard_values = hard_filters.model_dump(mode="json")
+    has_bachelor_negation_or_range = any(
+        marker in message_key for marker in _BACHELOR_NEGATION_OR_RANGE_MARKERS
+    )
+    if (
+        not has_bachelor_negation_or_range
+        and ("本科及以上" in message_key or "本科以上" in message_key)
+    ):
+        hard_values["education_degree_in"] = []
+        hard_values["highest_degree_in"] = ["bachelor", "master", "doctor"]
+    elif (
+        not has_bachelor_negation_or_range
+        and "最高学历" in message_key
+        and "本科" in message_key
+    ):
+        hard_values["education_degree_in"] = []
+        hard_values["highest_degree_in"] = ["bachelor"]
+    elif (
+        _request_unambiguously_requires_any_bachelor_degree(message_key)
+        and hard_values["highest_degree_in"] in ([], ["bachelor"])
+    ):
+        hard_values["education_degree_in"] = ["bachelor"]
+        hard_values["highest_degree_in"] = []
+
+    verification_requirements = list(
+        generated.get("verification_requirements", [])
+        if isinstance(generated.get("verification_requirements"), list)
+        else []
+    )
+    exact_skill_terms = list(hard_values.get("skills_all_of", []))
+    project_terms = [
+        term
+        for term in exact_skill_terms
+        if isinstance(term, str)
+        and _message_requests_project_evidence(request_message, term=term)
+    ]
+    if project_terms:
+        hard_values["skills_all_of"] = [
+            term for term in exact_skill_terms if term not in project_terms
+        ]
+        for term in project_terms:
+            verification_requirements = _ensure_project_verification_requirement(
+                verification_requirements,
+                term=term,
+            )
+
+    try:
+        normalized["hard_filters"] = TalentSearchHardFilters.model_validate(
+            hard_values
+        ).model_dump(mode="json")
+    except ValueError:
+        return dict(generated)
+    normalized["verification_requirements"] = verification_requirements
+    return normalized
 
 
 def _current_revision(
@@ -224,13 +489,17 @@ def _generate_profile_payload(
                 contract_version="talent_search_profile.v1",
             ),
         ):
-            return generate_talent_search_profile(
+            generated = generate_talent_search_profile(
                 api_key=api_key,
                 model=model,
                 timeout_seconds=timeout_seconds,
                 request_message=request_message,
                 source_job_text=(source_job_version.raw_text if source_job_version else None),
                 previous_profile=previous_profile,
+            )
+            return _normalize_explicit_profile_intent(
+                generated,
+                request_message=request_message,
             )
     except AiGatewayError as exc:
         raise TalentSearchProfileServiceError(str(exc)) from exc
@@ -388,7 +657,18 @@ def _search_request_from_hard_filters(
     *,
     limit: int,
     cursor: str | None,
+    included_filter_keys: set[str] | None = None,
 ) -> CandidateSearchRequest:
+    """Compile one recruiter-visible profile snapshot into deterministic recall.
+
+    ``included_filter_keys`` is used only to construct the server-side
+    zero-result funnel.  ``None`` means the complete confirmed profile.  The
+    browser never controls either the snapshot or this subset.
+    """
+
+    def include(key: str) -> bool:
+        return included_filter_keys is None or key in included_filter_keys
+
     education_any_of = (
         [
             EducationFilter(
@@ -397,24 +677,171 @@ def _search_request_from_hard_filters(
                 )
             )
         ]
-        if hard_filters.institution_classifications_any_of
+        if (
+            include("institution_classifications_any_of")
+            and hard_filters.institution_classifications_any_of
+        )
         else []
     )
     return CandidateSearchRequest(
-        highest_degree_in=hard_filters.highest_degree_in,
-        graduation_status=hard_filters.graduation_status,
-        fresh_graduate_start_month=hard_filters.fresh_graduate_start_month,
-        fresh_graduate_end_month=hard_filters.fresh_graduate_end_month,
-        min_employment_months=hard_filters.min_employment_months,
+        education_degree_in=(
+            hard_filters.education_degree_in
+            if include("education_degree_in")
+            else []
+        ),
+        highest_degree_in=(
+            hard_filters.highest_degree_in
+            if include("highest_degree_in")
+            else []
+        ),
+        graduation_status=(
+            hard_filters.graduation_status
+            if include("graduation_status")
+            else "any"
+        ),
+        fresh_graduate_start_month=(
+            hard_filters.fresh_graduate_start_month
+            if include("graduation_status")
+            else None
+        ),
+        fresh_graduate_end_month=(
+            hard_filters.fresh_graduate_end_month
+            if include("graduation_status")
+            else None
+        ),
+        min_employment_months=(
+            hard_filters.min_employment_months
+            if include("min_employment_months")
+            else None
+        ),
         min_employment_or_internship_months=(
             hard_filters.min_employment_or_internship_months
+            if include("min_employment_or_internship_months")
+            else None
         ),
-        experience_types_all_of=hard_filters.experience_types_all_of,
+        experience_types_all_of=(
+            hard_filters.experience_types_all_of
+            if include("experience_types_all_of")
+            else []
+        ),
         education_any_of=education_any_of,
-        skills_all_of=hard_filters.skills_all_of,
-        language_credentials_all_of=hard_filters.language_credentials_all_of,
+        skills_all_of=(
+            hard_filters.skills_all_of if include("skills_all_of") else []
+        ),
+        language_credentials_all_of=(
+            hard_filters.language_credentials_all_of
+            if include("language_credentials_all_of")
+            else []
+        ),
         limit=limit,
         cursor=cursor,
+    )
+
+
+def _recall_filter_steps(
+    hard_filters: TalentSearchHardFilters,
+) -> list[tuple[str, str]]:
+    """Return the stable, recruiter-readable strict-recall order."""
+
+    steps: list[tuple[str, str]] = []
+    if hard_filters.institution_classifications_any_of:
+        labels = [
+            _INSTITUTION_CLASSIFICATION_LABELS.get(value, value)
+            for value in hard_filters.institution_classifications_any_of
+        ]
+        steps.append(("institution_classifications_any_of", f"院校类型：{' / '.join(labels)}（任一）"))
+    if hard_filters.education_degree_in:
+        labels = [
+            _DEGREE_LABELS.get(value, value)
+            for value in hard_filters.education_degree_in
+        ]
+        steps.append(("education_degree_in", f"教育经历：含{' / '.join(labels)}（任一）"))
+    if hard_filters.highest_degree_in:
+        labels = [
+            _DEGREE_LABELS.get(value, value)
+            for value in hard_filters.highest_degree_in
+        ]
+        steps.append(("highest_degree_in", f"最高学历：{' / '.join(labels)}（任一）"))
+    if hard_filters.graduation_status != "any":
+        status_label = "应届" if hard_filters.graduation_status == "fresh" else "往届"
+        steps.append(("graduation_status", f"毕业状态：{status_label}"))
+    if hard_filters.min_employment_months is not None:
+        steps.append(
+            (
+                "min_employment_months",
+                f"正式工作不少于 {hard_filters.min_employment_months} 个月",
+            )
+        )
+    if hard_filters.min_employment_or_internship_months is not None:
+        steps.append(
+            (
+                "min_employment_or_internship_months",
+                "工作加实习不少于 "
+                f"{hard_filters.min_employment_or_internship_months} 个月",
+            )
+        )
+    if hard_filters.experience_types_all_of:
+        labels = [
+            _EXPERIENCE_TYPE_LABELS.get(value, value)
+            for value in hard_filters.experience_types_all_of
+        ]
+        steps.append(("experience_types_all_of", f"经历：{' + '.join(labels)}（全部）"))
+    if hard_filters.skills_all_of:
+        steps.append(("skills_all_of", f"精确技能：{'、'.join(hard_filters.skills_all_of)}（全部）"))
+    if hard_filters.language_credentials_all_of:
+        labels = [
+            item.custom_name_contains or item.credential_code.upper()
+            for item in hard_filters.language_credentials_all_of
+        ]
+        steps.append(("language_credentials_all_of", f"证书：{'、'.join(labels)}（全部）"))
+    return steps
+
+
+def _build_zero_result_diagnostics(
+    session: Session,
+    *,
+    hard_filters: TalentSearchHardFilters,
+) -> TalentSearchRecallDiagnostics:
+    """Build and persist an honest funnel only when strict recall is zero."""
+
+    baseline = search_candidates(
+        session,
+        _search_request_from_hard_filters(
+            hard_filters,
+            limit=1,
+            cursor=None,
+            included_filter_keys=set(),
+        ),
+    )
+    previous_count = baseline.total_count
+    active_keys: set[str] = set()
+    steps: list[TalentSearchRecallDiagnosticStep] = []
+    for key, label in _recall_filter_steps(hard_filters):
+        active_keys.add(key)
+        result = search_candidates(
+            session,
+            _search_request_from_hard_filters(
+                hard_filters,
+                limit=1,
+                cursor=None,
+                included_filter_keys=active_keys,
+            ),
+        )
+        remaining_count = result.total_count
+        steps.append(
+            TalentSearchRecallDiagnosticStep(
+                key=key,
+                label=label,
+                remaining_count=remaining_count,
+                removed_count=max(previous_count - remaining_count, 0),
+            )
+        )
+        previous_count = remaining_count
+    return TalentSearchRecallDiagnostics(
+        eligible_resume_count=baseline.total_count,
+        needs_review_count=baseline.needs_review_count,
+        strict_match_count=previous_count,
+        steps=steps,
     )
 
 
@@ -566,6 +993,26 @@ def _profile_match_results(
     return [_profile_match_result(match) for match in matches]
 
 
+def _run_hard_filter_snapshot(run: TalentSearchRun) -> TalentSearchHardFilters:
+    try:
+        return TalentSearchHardFilters.model_validate(run.hard_filter_snapshot or {})
+    except ValueError as exc:
+        raise TalentSearchProfileServiceError("talent_search_run_snapshot_invalid") from exc
+
+
+def _run_recall_diagnostics(
+    run: TalentSearchRun,
+) -> TalentSearchRecallDiagnostics | None:
+    if not run.recall_diagnostics:
+        return None
+    try:
+        return TalentSearchRecallDiagnostics.model_validate(run.recall_diagnostics)
+    except ValueError as exc:
+        raise TalentSearchProfileServiceError(
+            "talent_search_run_diagnostics_invalid"
+        ) from exc
+
+
 def _run_response(
     session: Session,
     *,
@@ -574,6 +1021,7 @@ def _run_response(
     cursor: str | None,
 ) -> TalentSearchRunResponse:
     batch = session.get(JobMatchBatch, run.job_match_batch_id) if run.job_match_batch_id else None
+    hard_filters = _run_hard_filter_snapshot(run)
     return TalentSearchRunResponse(
         run_id=run.id,
         profile_id=run.profile_id,
@@ -587,6 +1035,8 @@ def _run_response(
         match_results=_profile_match_results(session, batch=batch),
         created_at=run.created_at.isoformat(),
         updated_at=run.updated_at.isoformat(),
+        applied_hard_filters=hard_filters,
+        recall_diagnostics=_run_recall_diagnostics(run),
         candidate_recall=_candidate_recall_response(
             session,
             run=run,
@@ -658,10 +1108,20 @@ def start_profile_search(
         session,
         hard_filters=hard_filters,
     )
+    recall_diagnostics = (
+        _build_zero_result_diagnostics(session, hard_filters=hard_filters)
+        if not recalled_resume_ids
+        else None
+    )
     run = TalentSearchRun(
         profile_id=profile.id,
         revision_id=revision.id,
         hard_filter_snapshot=hard_filters.model_dump(mode="json"),
+        recall_diagnostics=(
+            recall_diagnostics.model_dump(mode="json")
+            if recall_diagnostics is not None
+            else {}
+        ),
         recalled_resume_ids=recalled_resume_ids,
         status="completed",
         total_recalled_count=len(recalled_resume_ids),

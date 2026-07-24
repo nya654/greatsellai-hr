@@ -970,6 +970,40 @@ def search_candidates(
                 evidence_block_ids=[],
             )
 
+        # ``education_degree_in`` deliberately evaluates every education
+        # record rather than the aggregate highest degree.  It is the precise
+        # representation of recruiter language such as “有本科学历”; a
+        # master's graduate with a documented bachelor record must not be
+        # discarded by an exact-highest-degree shortcut.
+        if request.education_degree_in:
+            matching_degree_educations = [
+                education
+                for education in resume.educations
+                if education.degree in request.education_degree_in
+            ]
+            if not matching_degree_educations:
+                continue
+            matched_filters.append("education_degree_in")
+            _add_display_field(
+                display_field_values,
+                key="education_degree",
+                values=[education.degree for education in matching_degree_educations],
+                evidence_block_ids=[
+                    block_id
+                    for education in matching_degree_educations
+                    for block_id in (education.evidence_block_ids or [])
+                ],
+            )
+            matched_evidence.extend(
+                CandidateSearchMatch(
+                    filter_key="education_degree_in",
+                    label=education.degree,
+                    fact_type="education",
+                    evidence_block_ids=education.evidence_block_ids or [],
+                )
+                for education in matching_degree_educations
+            )
+
         if request.education_any_of:
             matching_education_pairs = [
                 (filter_item, education)

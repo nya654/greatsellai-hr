@@ -388,6 +388,144 @@ test.describe("招聘工作台关键路径", () => {
     await expect(trigger).toBeFocused();
   });
 
+  test("招聘助手在同一对话中生成画像，并解释零结果的严格召回条件", async ({ page }) => {
+    await registerAndVerify(page, "agent-profile-recall");
+
+    const hardFilters = {
+      institution_classifications_any_of: [],
+      education_degree_in: ["bachelor"],
+      highest_degree_in: [],
+      graduation_status: "any",
+      fresh_graduate_start_month: null,
+      fresh_graduate_end_month: null,
+      min_employment_months: null,
+      min_employment_or_internship_months: null,
+      experience_types_all_of: [],
+      skills_all_of: ["Python"],
+      language_credentials_all_of: [],
+    };
+    const draftRevision = {
+      revision_id: "e2e-profile-revision-1",
+      revision_number: 1,
+      source: "ai_generated",
+      status: "draft",
+      title: "LLM 应用工程师",
+      summary: "先保留本科毕业候选人，再核验 LangChain 项目实践。",
+      hard_filters: hardFilters,
+      verification_requirements: [
+        {
+          key: "langchain_project",
+          label: "具备 LangChain 的项目、实习或工作实践",
+          evidence_hint: "核验项目职责、实现和结果。",
+        },
+      ],
+      preferred_requirements: [],
+      aliases: ["LLM 应用工程师"],
+      clarifying_questions: [],
+      created_at: "2026-07-24T10:00:00Z",
+      confirmed_at: null,
+    };
+    const draftProfile = {
+      profile_id: "e2e-profile",
+      source_type: "freeform",
+      source_job_version_id: null,
+      original_request: "寻找有 LangChain 项目经验的本科毕业工程师",
+      status: "draft",
+      current_revision: draftRevision,
+      created_at: "2026-07-24T10:00:00Z",
+      updated_at: "2026-07-24T10:00:00Z",
+    };
+    const confirmedProfile = {
+      ...draftProfile,
+      status: "confirmed",
+      current_revision: {
+        ...draftRevision,
+        status: "confirmed",
+        confirmed_at: "2026-07-24T10:01:00Z",
+      },
+      updated_at: "2026-07-24T10:01:00Z",
+    };
+
+    await page.route(/\/v1\/talent-search-profiles\/generate$/, async (route) => {
+      expect(route.request().postDataJSON()).toMatchObject({
+        message: "寻找有 LangChain 项目经验的本科毕业工程师",
+      });
+      await route.fulfill({ json: draftProfile });
+    });
+    await page.route(/\/v1\/talent-search-profiles\/e2e-profile\/confirm$/, async (route) => {
+      expect(route.request().postDataJSON()).toEqual({ revision_id: "e2e-profile-revision-1" });
+      await route.fulfill({ json: confirmedProfile });
+    });
+    await page.route(/\/v1\/talent-search-profiles\/e2e-profile\/runs$/, async (route) => {
+      expect(route.request().postDataJSON()).toMatchObject({
+        revision_id: "e2e-profile-revision-1",
+      });
+      await route.fulfill({
+        json: {
+          run_id: "e2e-profile-run",
+          profile_id: "e2e-profile",
+          revision_id: "e2e-profile-revision-1",
+          status: "completed",
+          total_recalled_count: 0,
+          job_match_batch_id: null,
+          match_total_count: 0,
+          match_completed_count: 0,
+          match_failed_count: 0,
+          match_results: [],
+          created_at: "2026-07-24T10:02:00Z",
+          updated_at: "2026-07-24T10:02:00Z",
+          applied_hard_filters: hardFilters,
+          recall_diagnostics: {
+            eligible_resume_count: 4,
+            needs_review_count: 1,
+            strict_match_count: 0,
+            steps: [
+              {
+                key: "education_degree_in",
+                label: "教育经历：含本科（任一）",
+                remaining_count: 3,
+                removed_count: 1,
+              },
+              {
+                key: "skills_all_of",
+                label: "精确技能：Python（全部）",
+                remaining_count: 0,
+                removed_count: 3,
+              },
+            ],
+          },
+          candidate_recall: {
+            items: [],
+            next_cursor: null,
+            needs_review_count: 1,
+            total_count: 0,
+          },
+        },
+      });
+    });
+
+    await page.getByRole("button", { name: "招聘助手", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "招聘助手" });
+    await expect(dialog.getByRole("button", { name: "新建人才画像" })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "助手对话" })).toHaveCount(0);
+
+    await dialog.getByRole("button", { name: "新建人才画像" }).click();
+    await expect(dialog.getByText("正在新建人才画像：先给出可确认草案，不会直接检索候选人。")).toBeVisible();
+    await dialog.getByLabel("向招聘助手提问").fill("寻找有 LangChain 项目经验的本科毕业工程师");
+    await dialog.getByRole("button", { name: "发送提问" }).click();
+
+    await expect(dialog.getByText("教育经历：含本科（任一）")).toBeVisible();
+    await expect(dialog.getByText("具备 LangChain 的项目、实习或工作实践")).toBeVisible();
+    await expect(dialog.getByText("正在补充当前人才画像：发送后会生成新草案，不会直接检索候选人。")).toBeVisible();
+
+    await dialog.getByRole("button", { name: "确认画像" }).click();
+    await dialog.getByRole("button", { name: "开始找人" }).click();
+
+    await expect(dialog.getByText("没有候选人同时满足本次严格条件")).toBeVisible();
+    await expect(dialog.getByText("筛掉 3，剩余 0")).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "调整条件" })).toBeVisible();
+  });
+
   test("招聘助手将简历依据和未确认状态以招聘语言展示", async ({ page }) => {
     await registerAndVerify(page, "agent-evidence");
     await page.route("**/v1/recruiting-agent/turns", async (route) => {

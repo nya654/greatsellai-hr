@@ -77,6 +77,10 @@ def test_derive_job_match_score_keeps_unknown_separate_from_fit(
         # Lack of evidence for a hard requirement is a review case, not a
         # recommendation and not a rejection, regardless of overall coverage.
         ("information_insufficient", 100.0, "pending"),
+        # A partial hard requirement is a lead for recruiter review, not a
+        # recommendation. This is especially important for talent-profile
+        # searches such as "LangChain project experience".
+        ("partial", 100.0, "pending"),
         (None, 100.0, "pending"),
     ],
 )
@@ -129,6 +133,42 @@ def test_job_match_api_exposes_score_confidence_and_pending_lane(
     assert payload["evidence_coverage"] == 65.0
     assert payload["match_confidence"] == 65.0
     assert payload["hard_requirement_status"] == "information_insufficient"
+    assert payload["match_lane"] == "pending"
+
+
+def test_partial_must_have_stays_in_pending_review_lane(
+    ai_client,
+    monkeypatch,
+) -> None:
+    """Partial proof of a mandatory requirement must never look recommended."""
+
+    _, resume_id = _save_ready_resume(
+        ai_client,
+        source_text=(
+            "Education \u6e05\u534e\u5927\u5b66 \u8ba1\u7b97\u673a \u5de5\u4f5c\u7ecf\u5386 "
+            "Acme Python Engineer Python SQL"
+        ),
+    )
+    job = _create_job(
+        ai_client,
+        requirements=JobRequirements(must_have=["Python experience"]),
+    )
+    monkeypatch.setattr(
+        job_service,
+        "match_resume_fact_snapshot_against_requirements",
+        _provider_result_for_statuses(["partial"]),
+    )
+
+    response = ai_client.post(
+        f"/v1/resumes/{resume_id}/job-matches",
+        json={"job_version_id": job["job_version_id"]},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["hard_requirement_status"] == "partial"
+    assert payload["must_have_passed"] is None
+    assert payload["status"] == "needs_review"
     assert payload["match_lane"] == "pending"
 
 

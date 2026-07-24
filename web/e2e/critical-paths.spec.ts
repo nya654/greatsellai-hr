@@ -192,10 +192,32 @@ test.describe("招聘工作台关键路径", () => {
     await expect(page.getByRole("columnheader", { name: "AI 总结", exact: true })).toBeVisible();
     await expect(page.getByRole("columnheader", { name: "AI 评分", exact: true })).toBeVisible();
 
-    const candidateRow = page.getByRole("row", { name: /打开 E2E 推荐候选人 的 AI 总结和原始简历/ });
-    await expect(candidateRow).toBeVisible();
-    await candidateRow.focus();
+    const detailsButton = page.getByRole("button", {
+      name: "查看 E2E 推荐候选人 的简历详情",
+    });
+    await expect(detailsButton).toBeVisible();
+    await detailsButton.focus();
     await page.keyboard.press("Enter");
+    await expect(page.getByRole("dialog", { name: "E2E 推荐候选人 的简历详情" })).toBeVisible();
+  });
+
+  test("简历库窄屏保留查看入口且表格只在自身区域横向滚动", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await registerAndVerify(page, "resume-library-narrow");
+    await seedWorkspaceFixture(page);
+    await page.reload();
+
+    await page.getByRole("button", { name: "简历库", exact: true }).click();
+    const tableScroll = page.locator(".resume-library-page .table-scroll");
+    await expect(tableScroll).toBeVisible();
+    await expect.poll(() => page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    )).toBe(true);
+
+    const detailsButton = page.getByRole("button", {
+      name: "查看 E2E 推荐候选人 的简历详情",
+    });
+    await detailsButton.click();
     await expect(page.getByRole("dialog", { name: "E2E 推荐候选人 的简历详情" })).toBeVisible();
   });
 
@@ -205,7 +227,9 @@ test.describe("招聘工作台关键路径", () => {
     await page.reload();
 
     await page.getByRole("button", { name: "筛选工作台", exact: true }).click();
-    await expect(page.getByLabel("综合评分排序规则")).not.toHaveValue("");
+    await expect(
+      page.getByRole("combobox", { name: "评分口径" }),
+    ).toContainText("E2E 评分规则 · v1");
     const institutionTypes = page.getByLabel("院校类型条件");
     await expect(institutionTypes).toBeVisible();
     await expect(page.getByLabel("院校类型快捷筛选")).toHaveCount(0);

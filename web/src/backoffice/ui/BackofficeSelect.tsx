@@ -8,6 +8,7 @@ export interface BackofficeSelectOption {
 }
 
 interface BackofficeSelectProps {
+  ariaLabel?: string;
   ariaDescribedBy?: string;
   ariaLabelledBy?: string;
   className?: string;
@@ -21,6 +22,7 @@ interface BackofficeSelectProps {
 
 /** A small, controlled select adapter for backoffice forms and toolbars. */
 export function BackofficeSelect({
+  ariaLabel,
   ariaDescribedBy,
   ariaLabelledBy,
   className,
@@ -34,7 +36,9 @@ export function BackofficeSelect({
   const selectClassName = ["backoffice-select", className].filter(Boolean).join(" ");
   const fallback = (
     <select
+      aria-label={ariaLabel}
       aria-describedby={ariaDescribedBy}
+      aria-labelledby={ariaLabelledBy}
       className={`select-field ${selectClassName}`}
       disabled={disabled}
       id={id}
@@ -51,10 +55,12 @@ export function BackofficeSelect({
   return (
     <Suspense fallback={fallback}>
       <SemiSelect
+        aria-label={ariaLabel}
         aria-describedby={ariaDescribedBy}
         aria-labelledby={ariaLabelledBy}
         className={selectClassName}
         disabled={disabled}
+        id={id}
         onChange={(nextValue) => onChange(typeof nextValue === "string" ? nextValue : "")}
         optionList={options}
         placeholder={placeholder}

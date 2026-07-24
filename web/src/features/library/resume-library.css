@@ -182,15 +182,26 @@
   display: inline-flex;
   gap: 0.125rem;
   align-items: center;
+  padding: 0;
+  font: inherit;
   color: inherit;
   font-size: 0.75rem;
   font-weight: 650;
   white-space: nowrap;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
 }
 
 .backoffice-ui-root .resume-library-page .candidate-table tbody tr:hover .library-open-affordance,
-.backoffice-ui-root .resume-library-page .candidate-table tbody tr:focus-visible .library-open-affordance {
+.backoffice-ui-root .resume-library-page .library-open-affordance:focus-visible {
   color: var(--red);
+}
+
+.backoffice-ui-root .resume-library-page .library-open-affordance:focus-visible {
+  outline: 0.1875rem solid var(--workspace-focus);
+  outline-offset: 0.1875rem;
+  border-radius: 0.1875rem;
 }
 
 .backoffice-ui-root .resume-library-page .library-source-label {

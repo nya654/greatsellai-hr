@@ -257,7 +257,6 @@ export function ResumeLibraryPage({
                   );
                   return (
                     <tr
-                      aria-label={`打开 ${item.display_name?.trim() || "未命名候选人"} 的 AI 总结和原始简历`}
                       className={[
                         selectedResumeId === item.resume_id ? "is-selected" : "",
                         sourceTextIssue ? "has-source-quality-issue" : "",
@@ -267,13 +266,6 @@ export function ResumeLibraryPage({
                         .join(" ")}
                       key={item.resume_id}
                       onClick={() => onOpenResume(item)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                          event.preventDefault();
-                          onOpenResume(item);
-                        }
-                      }}
-                      tabIndex={0}
                     >
                       <td className="library-candidate-cell">
                         <div className="candidate-person">
@@ -362,9 +354,17 @@ export function ResumeLibraryPage({
                         </span>
                       </td>
                       <td className="library-open-cell">
-                        <span aria-hidden="true" className="library-open-affordance">
+                        <button
+                          aria-label={`查看 ${item.display_name?.trim() || "未命名候选人"} 的简历详情`}
+                          className="library-open-affordance"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onOpenResume(item);
+                          }}
+                          type="button"
+                        >
                           查看 <Icon name="chevron-right" size={17} />
-                        </span>
+                        </button>
                       </td>
                     </tr>
                   );

@@ -9258,7 +9258,7 @@ function MailboxPage({
         </section>
       ) : (
       <div className="mailbox-workspace">
-        <section className="panel mailbox-channel-panel" aria-label="收件通道">
+        <aside className="panel mailbox-channel-panel" aria-label="收件通道">
           <div className="panel-heading mailbox-channel-heading">
             <div><h2>收件通道</h2><p>每个通道独立保存接收起点与同步状态。</p></div>
             <span className="tiny-badge">{mailboxes.length}</span>
@@ -9294,7 +9294,7 @@ function MailboxPage({
           <button className="button button-ghost mailbox-add-channel" onClick={() => void startCreatingMailbox()} type="button">
             <Icon name="plus" size={16} />新建收件通道
           </button>
-        </section>
+        </aside>
 
         <div className={`mailbox-detail${showMailboxOverview ? " is-overview" : ""}`}>
           {showMailboxOverview ? mailboxOperationalOverview : (

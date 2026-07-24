@@ -743,6 +743,8 @@ test.describe("招聘工作台关键路径", () => {
     await expect(page.getByText("已加入后台同步队列。")).toBeVisible();
     await page.getByRole("tab", { name: "候选人数据与保留", exact: true }).click();
     await expect(page.getByRole("heading", { name: "候选人数据与保留", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "候选人资料保留策略" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "刷新记录" })).toBeVisible();
     expect(await gridTrackCount(".settings-layout")).toBe(1);
   });
 

@@ -182,6 +182,23 @@ test.describe("招聘工作台关键路径", () => {
     await expect(page.getByRole("button", { name: "重新加载预览" })).toBeVisible();
   });
 
+  test("简历库可浏览已入库候选人并通过键盘打开详情", async ({ page }) => {
+    await registerAndVerify(page, "resume-library");
+    await seedWorkspaceFixture(page);
+    await page.reload();
+
+    await page.getByRole("button", { name: "简历库", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "简历库", exact: true })).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: "AI 总结", exact: true })).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: "AI 评分", exact: true })).toBeVisible();
+
+    const candidateRow = page.getByRole("row", { name: /打开 E2E 推荐候选人 的 AI 总结和原始简历/ });
+    await expect(candidateRow).toBeVisible();
+    await candidateRow.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("dialog", { name: "E2E 推荐候选人 的简历详情" })).toBeVisible();
+  });
+
   test("评分不继承候选人，招聘详情按 JD 批量评估", async ({ page }) => {
     await registerAndVerify(page, "screen-score-match");
     const fixture = await seedWorkspaceFixture(page);

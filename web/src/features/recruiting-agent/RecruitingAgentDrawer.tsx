@@ -22,6 +22,7 @@ import type {
 } from "../../types";
 import { Icon } from "../../icons";
 import { degreeLabels, experienceTypeOptions } from "../filter/filter-model";
+import "./recruiting-agent.css";
 
 function humanizeAgentError(
   error: unknown,

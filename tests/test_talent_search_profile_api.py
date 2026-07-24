@@ -482,6 +482,37 @@ def test_bachelor_degree_record_is_distinct_from_highest_degree_in_profile_recal
     assert payload["applied_hard_filters"]["education_degree_in"] == ["bachelor"]
 
 
+def test_bachelor_profile_normalizer_preserves_mixed_and_negative_degree_requests() -> None:
+    mixed_generated = _generated_profile()
+    mixed_generated["hard_filters"] = _profile_hard_filters(
+        institution_classifications_any_of=["985"],
+        highest_degree_in=["master", "doctor"],
+    )
+    mixed = profile_service._normalize_explicit_profile_intent(
+        mixed_generated,
+        request_message="寻找硕士及以上、本科毕业于985的工程师",
+    )
+    mixed_filters = mixed["hard_filters"]
+    assert isinstance(mixed_filters, dict)
+    assert mixed_filters["institution_classifications_any_of"] == ["985"]
+    assert mixed_filters["highest_degree_in"] == ["master", "doctor"]
+    assert mixed_filters["education_degree_in"] == []
+
+    negative_generated = _generated_profile()
+    negative_generated["hard_filters"] = _profile_hard_filters(
+        institution_classifications_any_of=[],
+        highest_degree_in=["master", "doctor"],
+    )
+    negative = profile_service._normalize_explicit_profile_intent(
+        negative_generated,
+        request_message="不要本科，只要硕士及以上",
+    )
+    negative_filters = negative["hard_filters"]
+    assert isinstance(negative_filters, dict)
+    assert negative_filters["highest_degree_in"] == ["master", "doctor"]
+    assert negative_filters["education_degree_in"] == []
+
+
 def test_project_experience_term_is_not_forced_into_exact_skill_recall(
     ai_client,
     monkeypatch,
@@ -549,6 +580,30 @@ def test_project_experience_term_is_not_forced_into_exact_skill_recall(
     payload = started.json()
     assert payload["total_recalled_count"] == 1
     assert payload["candidate_recall"]["items"][0]["resume_id"] == resume_id
+
+
+def test_english_project_experience_term_is_not_forced_into_exact_skill_recall() -> None:
+    generated = _generated_profile(skills_all_of=["LangChain"])
+    generated["hard_filters"] = _profile_hard_filters(
+        skills_all_of=["LangChain"],
+        institution_classifications_any_of=[],
+        highest_degree_in=[],
+    )
+
+    normalized = profile_service._normalize_explicit_profile_intent(
+        generated,
+        request_message="Find engineers with LangChain project experience",
+    )
+
+    hard_filters = normalized["hard_filters"]
+    assert isinstance(hard_filters, dict)
+    assert hard_filters["skills_all_of"] == []
+    verification_requirements = normalized["verification_requirements"]
+    assert isinstance(verification_requirements, list)
+    assert any(
+        isinstance(item, dict) and "LangChain" in str(item.get("label", ""))
+        for item in verification_requirements
+    )
 
 
 def test_zero_profile_run_persists_funnel_and_uses_frozen_snapshot(

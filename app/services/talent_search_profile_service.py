@@ -117,6 +117,49 @@ _PROJECT_EVIDENCE_MARKERS = (
     "科研",
     "研究",
     "竞赛",
+    "project",
+    "projects",
+    "projectexperience",
+    "practicalexperience",
+    "practice",
+    "internship",
+    "workexperience",
+    "workhistory",
+    "responsibility",
+    "responsibilities",
+    "research",
+    "competition",
+    "delivery",
+    "shipped",
+    "built",
+)
+_BACHELOR_INSTITUTION_MARKERS = (
+    "本科院校",
+    "普通本科",
+    "本科高校",
+    "本科毕业于",
+    "本科学校",
+    "本科就读于",
+)
+_BACHELOR_NEGATION_OR_RANGE_MARKERS = (
+    "不要本科",
+    "非本科",
+    "不是本科",
+    "排除本科",
+    "不招本科",
+    "拒绝本科",
+    "本科及以下",
+    "本科以下",
+)
+_OTHER_DEGREE_MARKERS = (
+    "硕士",
+    "博士",
+    "研究生",
+    "大专",
+    "专科",
+    "中专",
+    "高中",
+    "职高",
 )
 
 
@@ -197,6 +240,30 @@ def _ensure_project_verification_requirement(
     ]
 
 
+def _request_unambiguously_requires_any_bachelor_degree(message_key: str) -> bool:
+    """Whether “本科” means any bachelor record, rather than a different rule.
+
+    This deliberately refuses to reinterpret mixed conditions.  For example,
+    “硕士及以上、本科毕业于 985” needs both the higher-degree filter and the
+    school requirement the model generated; converting it to “any bachelor”
+    would lose the recruiter's actual bar.
+    """
+
+    if "本科" not in message_key:
+        return False
+    if any(marker in message_key for marker in _BACHELOR_NEGATION_OR_RANGE_MARKERS):
+        return False
+    if "本科及以上" in message_key or "本科以上" in message_key:
+        return False
+    if "最高学历" in message_key:
+        return False
+    if any(marker in message_key for marker in _BACHELOR_INSTITUTION_MARKERS):
+        return False
+    if any(marker in message_key for marker in _OTHER_DEGREE_MARKERS):
+        return False
+    return True
+
+
 def _normalize_explicit_profile_intent(
     generated: Mapping[str, object],
     *,
@@ -224,17 +291,26 @@ def _normalize_explicit_profile_intent(
 
     message_key = normalized_key(request_message)
     hard_values = hard_filters.model_dump(mode="json")
-    mentions_bachelor_institution = any(
-        marker in message_key
-        for marker in ("本科院校", "普通本科", "本科高校")
+    has_bachelor_negation_or_range = any(
+        marker in message_key for marker in _BACHELOR_NEGATION_OR_RANGE_MARKERS
     )
-    if "本科及以上" in message_key or "本科以上" in message_key:
+    if (
+        not has_bachelor_negation_or_range
+        and ("本科及以上" in message_key or "本科以上" in message_key)
+    ):
         hard_values["education_degree_in"] = []
         hard_values["highest_degree_in"] = ["bachelor", "master", "doctor"]
-    elif "最高学历" in message_key and "本科" in message_key:
+    elif (
+        not has_bachelor_negation_or_range
+        and "最高学历" in message_key
+        and "本科" in message_key
+    ):
         hard_values["education_degree_in"] = []
         hard_values["highest_degree_in"] = ["bachelor"]
-    elif "本科" in message_key and not mentions_bachelor_institution:
+    elif (
+        _request_unambiguously_requires_any_bachelor_degree(message_key)
+        and hard_values["highest_degree_in"] in ([], ["bachelor"])
+    ):
         hard_values["education_degree_in"] = ["bachelor"]
         hard_values["highest_degree_in"] = []
 

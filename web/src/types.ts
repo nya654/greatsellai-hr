@@ -809,6 +809,8 @@ export interface FilterOptions {
 export interface CandidateSearchRequest {
   schema_version?: "candidate_filter.v2";
   is_985_211?: boolean | null;
+  /** Any education record has one of these degree levels. */
+  education_degree_in?: DegreeLevel[];
   highest_degree_in?: DegreeLevel[];
   graduation_status?: "any" | "fresh" | "previous";
   fresh_graduate_start_month?: string | null;
@@ -917,6 +919,8 @@ export interface CandidateSearchResponse {
 /** The small, HR-visible hard-filter subset an AI search profile may use. */
 export interface TalentSearchHardFilters {
   institution_classifications_any_of: InstitutionClassification[];
+  /** Any education record has one of these degree levels. */
+  education_degree_in: DegreeLevel[];
   highest_degree_in: DegreeLevel[];
   graduation_status: "any" | "fresh" | "previous";
   fresh_graduate_start_month: string | null;
@@ -1010,6 +1014,20 @@ export interface TalentSearchProfileMatchResult {
   created_at: string;
 }
 
+export interface TalentSearchRecallDiagnosticStep {
+  key: string;
+  label: string;
+  remaining_count: number;
+  removed_count: number;
+}
+
+export interface TalentSearchRecallDiagnostics {
+  eligible_resume_count: number;
+  needs_review_count: number;
+  strict_match_count: number;
+  steps: TalentSearchRecallDiagnosticStep[];
+}
+
 export interface TalentSearchRun {
   run_id: string;
   profile_id: string;
@@ -1023,6 +1041,8 @@ export interface TalentSearchRun {
   match_results: TalentSearchProfileMatchResult[];
   created_at: string;
   updated_at: string;
+  applied_hard_filters: TalentSearchHardFilters;
+  recall_diagnostics: TalentSearchRecallDiagnostics | null;
   candidate_recall: CandidateSearchResponse;
 }
 

@@ -3786,7 +3786,7 @@ button {
 
 .settings-layout {
   display: grid;
-  grid-template-columns: minmax(13rem, 16rem) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-xl);
   align-items: start;
 }
@@ -5115,7 +5115,7 @@ button {
 
 .mailbox-workspace {
   display: grid;
-  grid-template-columns: minmax(14.5rem, 17rem) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-xl);
   align-items: start;
 }

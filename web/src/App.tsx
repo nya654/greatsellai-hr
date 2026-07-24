@@ -5880,7 +5880,7 @@ function InstitutionClassificationTags({
 }) {
   const orderedClassifications = sortInstitutionClassifications(classifications);
   if (!orderedClassifications.length) {
-    return <span className="candidate-meta">未识别</span>;
+    return <span className="candidate-meta">待核实</span>;
   }
   return (
     <div className="institution-classification-tags">

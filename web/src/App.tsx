@@ -73,6 +73,7 @@ import {
   CandidateRequired,
   ToastRegion,
 } from "./features/workspace-shell/WorkspaceFeedback";
+import { useWorkspaceAuth } from "./features/auth/useWorkspaceAuth";
 import {
   degreeLabels,
   experienceTypeOptions,
@@ -965,12 +966,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
   const [libraryRefreshToken, setLibraryRefreshToken] = useState(0);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [globalQuery, setGlobalQuery] = useState("");
-  const [authState, setAuthState] = useState<
-    "checking" | "authenticated" | "unauthenticated"
-  >("checking");
-  const [authSession, setAuthSession] = useState<AuthSession | null>(null);
-  const [authError, setAuthError] = useState<string | null>(null);
-  const [authLoading, setAuthLoading] = useState(false);
   const filterDraftRef = useRef(filterDraft);
   const appliedFilterRef = useRef(appliedFilter);
   const scoreTemplateIdRef = useRef<string | null>(null);
@@ -982,6 +977,31 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
   const originalFileRequestRef = useRef(0);
   const originalFileRevokeRef = useRef<(() => void) | null>(null);
   const agentTriggerRef = useRef<HTMLButtonElement | null>(null);
+
+  const clearWorkspaceAfterLogout = useCallback(() => {
+    setSelectedResume(null);
+    setDrawerOpen(false);
+  }, []);
+  const {
+    authError,
+    authLoading,
+    authSession,
+    authState,
+    completeEmailVerification,
+    completePasswordReset,
+    login,
+    logout,
+    refreshAuthSession,
+    register,
+    requestPasswordReset,
+    resendEmailVerification,
+  } = useWorkspaceAuth({
+    authRoute,
+    formatError: humanizeError,
+    onLogoutCleanup: clearWorkspaceAfterLogout,
+    rootWorkspaceBasePath: ROOT_WORKSPACE_BASE_PATH,
+    workspaceHref,
+  });
 
   const canManageMailbox =
     authSession?.role === "admin" &&
@@ -1083,27 +1103,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
   const refreshLibraryScores = useCallback(() => {
     setLibraryRefreshToken((current) => current + 1);
   }, []);
-
-  const applyAuthSession = useCallback((session: AuthSession) => {
-    setAuthSession(session);
-    setAuthState(session.authenticated ? "authenticated" : "unauthenticated");
-  }, []);
-
-  // The verification email can be opened in another browser or device. The
-  // registration tab keeps its own signed session, so polling the current
-  // session is enough to learn that the user record was verified elsewhere.
-  const refreshAuthSession = useCallback(async (): Promise<AuthSession | null> => {
-    try {
-      const session = await api.getAuthSession();
-      applyAuthSession(session);
-      return session;
-    } catch {
-      // A transient refresh failure must not log out a person who is simply
-      // waiting for their verification email. The initial session bootstrap
-      // below still handles a genuine unauthenticated start safely.
-      return null;
-    }
-  }, [applyAuthSession]);
 
   const refreshSavedFilters = useCallback(async () => {
     try {
@@ -1265,47 +1264,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     },
     [],
   );
-
-  useEffect(() => {
-    void api
-      .getAuthSession()
-      .then((session) => {
-        applyAuthSession(session);
-      })
-      .catch(() => {
-        setAuthSession(null);
-        setAuthState("unauthenticated");
-      });
-  }, [applyAuthSession]);
-
-  // Large-model usage can change in a background worker, an Agent turn, or a
-  // second browser tab. Refresh the small server-owned trial snapshot while
-  // the workspace is open so the visible allowance does not drift for long.
-  useEffect(() => {
-    if (
-      authState !== "authenticated" ||
-      authRoute ||
-      authSession?.email_verification_required ||
-      authSession?.trial?.plan_status !== "trial"
-    ) {
-      return;
-    }
-    const refreshOnFocus = () => {
-      if (document.visibilityState === "visible") void refreshAuthSession();
-    };
-    const intervalId = window.setInterval(refreshOnFocus, 60_000);
-    window.addEventListener("focus", refreshOnFocus);
-    return () => {
-      window.clearInterval(intervalId);
-      window.removeEventListener("focus", refreshOnFocus);
-    };
-  }, [
-    authRoute,
-    authSession?.email_verification_required,
-    authSession?.trial?.plan_status,
-    authState,
-    refreshAuthSession,
-  ]);
 
   useEffect(() => {
     if (
@@ -1848,123 +1806,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     replaceFilterDraft(next);
     navigateToView("filter");
     void runSearch(next);
-  };
-
-  const establishSession = (session: AuthSession) => {
-    applyAuthSession(session);
-    if (session.authenticated) {
-      const nextPath = new URLSearchParams(window.location.search).get("next");
-      if (
-        nextPath &&
-        (
-          nextPath === "/platform" ||
-          nextPath.startsWith("/platform/") ||
-          nextPath === `${ROOT_WORKSPACE_BASE_PATH}/platform` ||
-          nextPath.startsWith(`${ROOT_WORKSPACE_BASE_PATH}/platform/`)
-        ) &&
-        session.is_platform_admin
-      ) {
-        window.location.assign(nextPath);
-        return session;
-      }
-      window.location.assign(
-        workspaceHref(session.email_verification_required ? "/verify-email" : ""),
-      );
-    }
-    return session;
-  };
-
-  const login = async (input: AuthLoginInput | string) => {
-    setAuthError(null);
-    setAuthLoading(true);
-    try {
-      return establishSession(await api.login(input));
-    } catch (error) {
-      setAuthError(humanizeError(error));
-      return null;
-    } finally {
-      setAuthLoading(false);
-    }
-  };
-
-  const register = async (input: AuthRegistrationInput) => {
-    setAuthError(null);
-    setAuthLoading(true);
-    try {
-      return establishSession(await api.register(input));
-    } catch (error) {
-      setAuthError(humanizeError(error));
-      return null;
-    } finally {
-      setAuthLoading(false);
-    }
-  };
-
-  const requestPasswordReset = async (email: string) => {
-    setAuthError(null);
-    setAuthLoading(true);
-    try {
-      return await api.requestPasswordReset(email);
-    } catch (error) {
-      setAuthError(humanizeError(error));
-      return null;
-    } finally {
-      setAuthLoading(false);
-    }
-  };
-
-  const completePasswordReset = async (token: string, password: string) => {
-    setAuthError(null);
-    setAuthLoading(true);
-    try {
-      await api.completePasswordReset({ token, password });
-      return true;
-    } catch (error) {
-      setAuthError(humanizeError(error));
-      return false;
-    } finally {
-      setAuthLoading(false);
-    }
-  };
-
-  const completeEmailVerification = async (token: string) => {
-    setAuthError(null);
-    setAuthLoading(true);
-    try {
-      // Keep the verification-link tab on its explicit confirmation page.
-      // The registration tab polls its own session and is the one that enters
-      // the workspace after this server-side verification succeeds.
-      const session = await api.completeEmailVerification(token);
-      applyAuthSession(session);
-      return session;
-    } catch (error) {
-      setAuthError(humanizeError(error));
-      return null;
-    } finally {
-      setAuthLoading(false);
-    }
-  };
-
-  const resendEmailVerification = async () => {
-    setAuthError(null);
-    setAuthLoading(true);
-    try {
-      return await api.resendEmailVerification();
-    } catch (error) {
-      setAuthError(humanizeError(error));
-      return null;
-    } finally {
-      setAuthLoading(false);
-    }
-  };
-
-  const logout = async () => {
-    await api.logout();
-    setSelectedResume(null);
-    setDrawerOpen(false);
-    setAuthSession(null);
-    setAuthState("unauthenticated");
-    window.location.assign(workspaceHref("/login"));
   };
 
   if (authState === "checking") {

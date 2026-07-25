@@ -30,36 +30,7 @@ import type {
 } from "./candidate-drawer-types";
 import "./candidate-drawer.css";
 
-export function CandidateDrawer({
-  candidate,
-  review,
-  reviewLoading,
-  isOpen,
-  drawerTab,
-  onTabChange,
-  onClose,
-  pdfUrl,
-  pdfLoading,
-  pdfDownloadLoading,
-  pdfError,
-  summaries,
-  summaryLoading,
-  scores,
-  languageCredentialOptions,
-  scoreLoading,
-  scoreError,
-  onGenerateSummary,
-  onCreateManualSummary,
-  onReparseSource,
-  reparsingSource,
-  onEnrichFacts,
-  enrichingFacts,
-  canManageCandidateData,
-  onPreviewOriginal,
-  onDownloadOriginal,
-  onRefreshScores,
-  onDeleteResume,
-}: {
+export interface CandidateDrawerProps {
   candidate: SelectedResume | null;
   review: ResumeReviewDetail | null;
   reviewLoading: boolean;
@@ -91,7 +62,38 @@ export function CandidateDrawer({
   onDownloadOriginal: () => void;
   onRefreshScores: () => void;
   onDeleteResume: () => Promise<void>;
-}) {
+}
+
+export function CandidateDrawer({
+  candidate,
+  review,
+  reviewLoading,
+  isOpen,
+  drawerTab,
+  onTabChange,
+  onClose,
+  pdfUrl,
+  pdfLoading,
+  pdfDownloadLoading,
+  pdfError,
+  summaries,
+  summaryLoading,
+  scores,
+  languageCredentialOptions,
+  scoreLoading,
+  scoreError,
+  onGenerateSummary,
+  onCreateManualSummary,
+  onReparseSource,
+  reparsingSource,
+  onEnrichFacts,
+  enrichingFacts,
+  canManageCandidateData,
+  onPreviewOriginal,
+  onDownloadOriginal,
+  onRefreshScores,
+  onDeleteResume,
+}: CandidateDrawerProps) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [deleting, setDeleting] = useState(false);
   const currentSummary =

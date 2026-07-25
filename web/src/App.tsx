@@ -33,22 +33,10 @@ import type {
   ScholarshipLevel,
   JobMatch,
   ResumeLibraryItem,
-  ResumeReviewDetail,
-  ResumeScore,
-  ResumeSummary,
   RecruitingAgentCandidate,
   SavedFilter,
   ScoreTemplate,
 } from "./types";
-import { formatLibraryDate } from "./backoffice/utils/formatters";
-import {
-  hasSourceTextQualityIssue,
-  hasSupersededReparseVersion,
-} from "./backoffice/utils/resume-source-quality";
-import {
-  canPreviewInline,
-  resumeFileExtension,
-} from "./backoffice/utils/resume-file";
 import { mailboxImportErrorMessages } from "./features/mailbox/mailbox-model";
 import { ResumeLibraryPage } from "./features/library/ResumeLibraryPage";
 import { CandidateDrawer } from "./features/candidate-drawer/CandidateDrawer";
@@ -68,6 +56,7 @@ import {
   ToastRegion,
 } from "./features/workspace-shell/WorkspaceFeedback";
 import { useWorkspaceAuth } from "./features/auth/useWorkspaceAuth";
+import { useCandidateDrawerController } from "./features/candidate-drawer/useCandidateDrawerController";
 import {
   EmailVerificationPage,
   ForgotPasswordPage,
@@ -87,7 +76,6 @@ import {
 } from "./features/filter/filter-model";
 import type {
   CandidateDrawerTab as DrawerTab,
-  SelectedResume,
 } from "./features/candidate-drawer/candidate-drawer-types";
 
 const AdminApp = lazy(() => import("./admin/AdminApp"));
@@ -930,25 +918,7 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
   const [search, setSearch] = useState<CandidateSearchResponse>(emptySearch);
   const [searching, setSearching] = useState(false);
   const [savedFilters, setSavedFilters] = useState<SavedFilter[]>([]);
-  const [selectedResume, setSelectedResume] = useState<SelectedResume | null>(
-    null,
-  );
-  const [review, setReview] = useState<ResumeReviewDetail | null>(null);
-  const [reviewLoading, setReviewLoading] = useState(false);
-  const [drawerOpen, setDrawerOpen] = useState(false);
   const [agentOpen, setAgentOpen] = useState(false);
-  const [drawerTab, setDrawerTab] = useState<DrawerTab>("original");
-  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
-  const [pdfLoading, setPdfLoading] = useState(false);
-  const [pdfDownloadLoading, setPdfDownloadLoading] = useState(false);
-  const [pdfError, setPdfError] = useState<string | null>(null);
-  const [summaries, setSummaries] = useState<ResumeSummary[]>([]);
-  const [summaryLoading, setSummaryLoading] = useState(false);
-  const [drawerScores, setDrawerScores] = useState<ResumeScore[]>([]);
-  const [drawerScoreLoading, setDrawerScoreLoading] = useState(false);
-  const [drawerScoreError, setDrawerScoreError] = useState<string | null>(null);
-  const [reparsingSource, setReparsingSource] = useState(false);
-  const [enrichingFacts, setEnrichingFacts] = useState(false);
   const [libraryRefreshToken, setLibraryRefreshToken] = useState(0);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [globalQuery, setGlobalQuery] = useState("");
@@ -957,17 +927,36 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
   const scoreTemplateIdRef = useRef<string | null>(null);
   const searchRequestRef = useRef(0);
   const scheduledFilterSearchRef = useRef<number | null>(null);
-  const reviewRequestRef = useRef(0);
-  const summaryRequestRef = useRef(0);
-  const drawerScoreRequestRef = useRef(0);
-  const originalFileRequestRef = useRef(0);
-  const originalFileRevokeRef = useRef<(() => void) | null>(null);
   const agentTriggerRef = useRef<HTMLButtonElement | null>(null);
 
-  const clearWorkspaceAfterLogout = useCallback(() => {
-    setSelectedResume(null);
-    setDrawerOpen(false);
+  const notify = useCallback((kind: ToastKind, message: string) => {
+    const id = Date.now() + Math.round(Math.random() * 1000);
+    setToasts((current) => [...current, { id, kind, message }]);
+    window.setTimeout(() => {
+      setToasts((current) => current.filter((toast) => toast.id !== id));
+    }, 5200);
   }, []);
+
+  const refreshLibraryScores = useCallback(() => {
+    setLibraryRefreshToken((current) => current + 1);
+  }, []);
+
+  const {
+    candidateDrawerProps,
+    closeDrawer,
+    isOpen: drawerOpen,
+    openResume,
+    resetDrawer,
+    selectedResumeId,
+  } = useCandidateDrawerController({
+    formatError: humanizeError,
+    notify,
+    onLibraryChanged: refreshLibraryScores,
+  });
+
+  const clearWorkspaceAfterLogout = useCallback(() => {
+    resetDrawer();
+  }, [resetDrawer]);
   const {
     authError,
     authLoading,
@@ -1056,17 +1045,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     setScoreTemplateId(next);
   }, []);
 
-  const selectedResumeId = selectedResume?.resumeId ?? null;
-
-  const releaseOriginalFile = useCallback((clearError = true) => {
-    originalFileRequestRef.current += 1;
-    originalFileRevokeRef.current?.();
-    originalFileRevokeRef.current = null;
-    setPdfUrl(null);
-    setPdfLoading(false);
-    if (clearError) setPdfError(null);
-  }, []);
-
   useEffect(() => {
     const titles: Record<AuthRoute, string> = {
       login: "登录｜GreatSell AI 招聘工具",
@@ -1077,18 +1055,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     };
     document.title = authRoute ? titles[authRoute] : "招聘工作台｜GreatSell AI";
   }, [authRoute]);
-
-  const notify = useCallback((kind: ToastKind, message: string) => {
-    const id = Date.now() + Math.round(Math.random() * 1000);
-    setToasts((current) => [...current, { id, kind, message }]);
-    window.setTimeout(() => {
-      setToasts((current) => current.filter((toast) => toast.id !== id));
-    }, 5200);
-  }, []);
-
-  const refreshLibraryScores = useCallback(() => {
-    setLibraryRefreshToken((current) => current + 1);
-  }, []);
 
   const refreshSavedFilters = useCallback(async () => {
     try {
@@ -1178,79 +1144,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     void runSearch(appliedFilterRef.current);
   }, [refreshLibraryScores, runSearch]);
 
-  const refreshReview = useCallback(
-    async (resumeId: string) => {
-      const requestId = ++reviewRequestRef.current;
-      setReviewLoading(true);
-      try {
-        const detail = await api.getReview(resumeId);
-        if (requestId === reviewRequestRef.current) {
-          setReview(detail);
-          setSelectedResume((current) => {
-            if (!current || current.resumeId !== detail.resume_id)
-              return current;
-            return {
-              ...current,
-              candidateName:
-                detail.candidate_display_name?.trim() || "未命名候选人",
-            };
-          });
-        }
-      } catch (error) {
-        if (requestId === reviewRequestRef.current) {
-          setReview(null);
-          notify("error", humanizeError(error));
-        }
-      } finally {
-        if (requestId === reviewRequestRef.current) setReviewLoading(false);
-      }
-    },
-    [notify],
-  );
-
-  const loadSummaries = useCallback(
-    async (resumeId: string) => {
-      const requestId = ++summaryRequestRef.current;
-      setSummaryLoading(true);
-      try {
-        const response = await api.listSummaries(resumeId);
-        if (requestId === summaryRequestRef.current) setSummaries(response);
-      } catch (error) {
-        if (requestId === summaryRequestRef.current) {
-          setSummaries([]);
-          notify("error", humanizeError(error));
-        }
-      } finally {
-        if (requestId === summaryRequestRef.current) setSummaryLoading(false);
-      }
-    },
-    [notify],
-  );
-
-  const loadDrawerScores = useCallback(
-    async (resumeId: string) => {
-      const requestId = ++drawerScoreRequestRef.current;
-      setDrawerScoreLoading(true);
-      setDrawerScoreError(null);
-      try {
-        const response = await api.listScores(resumeId);
-        if (requestId === drawerScoreRequestRef.current) {
-          setDrawerScores(response);
-        }
-      } catch (error) {
-        if (requestId === drawerScoreRequestRef.current) {
-          setDrawerScores([]);
-          setDrawerScoreError(humanizeError(error));
-        }
-      } finally {
-        if (requestId === drawerScoreRequestRef.current) {
-          setDrawerScoreLoading(false);
-        }
-      }
-    },
-    [],
-  );
-
   useEffect(() => {
     if (
       authState !== "authenticated" ||
@@ -1309,70 +1202,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
   }, [authRoute, authSession?.email_verification_required, authState]);
 
   useEffect(() => {
-    if (
-      !drawerOpen ||
-      drawerTab !== "summary" ||
-      !selectedResumeId ||
-      !review ||
-      review.resume_id !== selectedResumeId
-    )
-      return;
-    if (hasSourceTextQualityIssue(review.quality_flags)) {
-      setSummaries([]);
-      return;
-    }
-    void loadSummaries(selectedResumeId);
-  }, [drawerOpen, drawerTab, loadSummaries, review, selectedResumeId]);
-
-  useEffect(() => {
-    if (
-      !drawerOpen ||
-      drawerTab !== "score" ||
-      !selectedResumeId ||
-      !review ||
-      review.resume_id !== selectedResumeId
-    ) {
-      return;
-    }
-    if (
-      hasSourceTextQualityIssue(review.quality_flags) ||
-      hasSupersededReparseVersion(review.quality_flags)
-    ) {
-      setDrawerScores([]);
-      setDrawerScoreError(null);
-      return;
-    }
-    void loadDrawerScores(selectedResumeId);
-  }, [drawerOpen, drawerTab, loadDrawerScores, review, selectedResumeId]);
-
-  useEffect(() => {
-    drawerScoreRequestRef.current += 1;
-    setSummaries([]);
-    setDrawerScores([]);
-    setDrawerScoreError(null);
-    setDrawerScoreLoading(false);
-  }, [selectedResumeId]);
-
-  /**
-   * Keep protected originals scoped to the active original-file tab. Opening
-   * that tab creates a fresh, audited view grant; switching away, closing the
-   * drawer, or selecting another resume invalidates the local object URL and
-   * any in-flight request.
-   */
-  useEffect(() => {
-    releaseOriginalFile();
-  }, [drawerOpen, drawerTab, releaseOriginalFile, selectedResumeId]);
-
-  useEffect(
-    () => () => {
-      originalFileRequestRef.current += 1;
-      originalFileRevokeRef.current?.();
-      originalFileRevokeRef.current = null;
-    },
-    [],
-  );
-
-  useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (agentOpen) {
@@ -1380,11 +1209,11 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
         closeAgent();
         return;
       }
-      setDrawerOpen(false);
+      closeDrawer();
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [agentOpen, closeAgent]);
+  }, [agentOpen, closeAgent, closeDrawer]);
 
   useEffect(() => {
     const syncSettingsFromHash = () => {
@@ -1437,173 +1266,61 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
 
   const openCandidate = useCallback(
     (item: CandidateSearchItem, tab: DrawerTab = "summary") => {
-      summaryRequestRef.current += 1;
-      setReview(null);
-      setSummaries([]);
-      setSelectedResume({
+      openResume({
         resumeId: item.resume_id,
         candidateId: item.candidate_id,
         candidateName: item.display_name?.trim() || "未命名候选人",
-      });
-      setDrawerTab(tab);
-      setDrawerOpen(true);
-      void refreshReview(item.resume_id);
+      }, tab);
     },
-    [refreshReview],
+    [openResume],
   );
 
   const openUploadedResume = useCallback(
     (resumeId: string, candidateId: string) => {
-      summaryRequestRef.current += 1;
-      setReview(null);
-      setSummaries([]);
-      setSelectedResume({
+      openResume({
         resumeId,
         candidateId,
         candidateName: "未命名候选人",
       });
-      setDrawerTab("summary");
-      setDrawerOpen(true);
       navigateToView("library");
-      setLibraryRefreshToken((current) => current + 1);
-      void refreshReview(resumeId);
+      refreshLibraryScores();
     },
-    [navigateToView, refreshReview],
+    [navigateToView, openResume, refreshLibraryScores],
   );
 
   const openLibraryResume = useCallback(
     (item: ResumeLibraryItem) => {
-      summaryRequestRef.current += 1;
-      setReview(null);
-      setSummaries([]);
-      setSelectedResume({
+      openResume({
         resumeId: item.resume_id,
         candidateId: item.candidate_id,
         candidateName: item.display_name?.trim() || "未命名候选人",
       });
-      setDrawerTab("summary");
-      setDrawerOpen(true);
-      void refreshReview(item.resume_id);
     },
-    [refreshReview],
+    [openResume],
   );
 
   const openMatchedResume = useCallback(
     (match: JobMatch) => {
-      summaryRequestRef.current += 1;
-      setReview(null);
-      setSummaries([]);
-      setSelectedResume({
+      openResume({
         resumeId: match.resume_id,
         candidateId: match.candidate_id,
         candidateName: match.candidate_display_name?.trim() || "未命名候选人",
       });
-      setDrawerTab("summary");
-      setDrawerOpen(true);
-      void refreshReview(match.resume_id);
     },
-    [refreshReview],
+    [openResume],
   );
 
   const openAgentResume = useCallback(
     (item: RecruitingAgentCandidate) => {
-      summaryRequestRef.current += 1;
-      setReview(null);
-      setSummaries([]);
-      setSelectedResume({
+      openResume({
         resumeId: item.resume_id,
         candidateId: item.candidate_id,
         candidateName: item.display_name?.trim() || "未命名候选人",
       });
       setAgentOpen(false);
-      setDrawerTab("summary");
-      setDrawerOpen(true);
-      void refreshReview(item.resume_id);
     },
-    [refreshReview],
+    [openResume],
   );
-
-  const previewOriginalFile = useCallback(async () => {
-    if (!selectedResumeId || pdfLoading) return;
-    const requestId = ++originalFileRequestRef.current;
-    originalFileRevokeRef.current?.();
-    originalFileRevokeRef.current = null;
-    setPdfUrl(null);
-    setPdfError(null);
-    setPdfLoading(true);
-    try {
-      const access = await api.requestResumeOriginalFileAccess(
-        selectedResumeId,
-        "view",
-      );
-      const resource = await api.getAuthorizedFileObjectUrl(access.access_url);
-      if (requestId !== originalFileRequestRef.current) {
-        resource.revoke();
-        return;
-      }
-      originalFileRevokeRef.current = resource.revoke;
-      setPdfUrl(resource.url);
-    } catch (error) {
-      if (requestId === originalFileRequestRef.current) {
-        setPdfError(humanizeError(error));
-      }
-    } finally {
-      if (requestId === originalFileRequestRef.current) setPdfLoading(false);
-    }
-  }, [pdfLoading, selectedResumeId]);
-
-  useEffect(() => {
-    if (
-      !drawerOpen ||
-      drawerTab !== "original" ||
-      !selectedResumeId ||
-      !review ||
-      review.resume_id !== selectedResumeId ||
-      !canPreviewInline(review.original_filename) ||
-      pdfUrl ||
-      pdfLoading ||
-      pdfError
-    ) {
-      return;
-    }
-    // Opening the original-file tab is an intentional view action. Request a
-    // short-lived, audited grant and render the protected object URL directly.
-    void previewOriginalFile();
-  }, [
-    drawerOpen,
-    drawerTab,
-    pdfError,
-    pdfLoading,
-    pdfUrl,
-    previewOriginalFile,
-    review,
-    selectedResumeId,
-  ]);
-
-  const downloadOriginalFile = useCallback(async () => {
-    if (!selectedResumeId || pdfDownloadLoading) return;
-    setPdfDownloadLoading(true);
-    try {
-      const access = await api.requestResumeOriginalFileAccess(
-        selectedResumeId,
-        "download",
-      );
-      const blob = await api.getAuthorizedFileBlob(access.access_url);
-      const downloadUrl = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = downloadUrl;
-      link.download = review?.original_filename || "resume";
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 0);
-      notify("success", "已开始下载原始文件，系统已记录本次访问。");
-    } catch (error) {
-      notify("error", humanizeError(error));
-    } finally {
-      setPdfDownloadLoading(false);
-    }
-  }, [notify, pdfDownloadLoading, review?.original_filename, selectedResumeId]);
 
   const resetFilter = async () => {
     cancelScheduledFilterSearch();
@@ -1664,122 +1381,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
       notify("error", humanizeError(error));
     }
   };
-
-  const generateSummary = async () => {
-    if (!selectedResumeId) {
-      notify("error", "请先从筛选结果中打开一份简历。");
-      return;
-    }
-    setSummaryLoading(true);
-    try {
-      const summary = await api.generateSummary(selectedResumeId);
-      setSummaries((current) => [
-        summary,
-        ...current
-          .filter((item) => item.summary_id !== summary.summary_id)
-          .map((item) => ({ ...item, is_current: false })),
-      ]);
-      setLibraryRefreshToken((current) => current + 1);
-      notify("success", "AI 简历总结已生成。");
-    } catch (error) {
-      notify("error", humanizeError(error));
-    } finally {
-      setSummaryLoading(false);
-    }
-  };
-
-  const createManualSummary = async (
-    summaryId: string,
-    content: Record<string, string>,
-  ) => {
-    try {
-      const summary = await api.createManualSummaryVersion(summaryId, {
-        content,
-      });
-      setSummaries((current) => [
-        summary,
-        ...current
-          .filter((item) => item.summary_id !== summary.summary_id)
-          .map((item) => ({ ...item, is_current: false })),
-      ]);
-      setLibraryRefreshToken((current) => current + 1);
-      notify("success", "人工总结已保存为新的可追溯版本。");
-    } catch (error) {
-      notify("error", humanizeError(error));
-      throw error;
-    }
-  };
-
-  const reparseSelectedSource = useCallback(async () => {
-    if (!selectedResumeId || reparsingSource) return;
-    setReparsingSource(true);
-    try {
-      const parsed = await api.reparseSource(selectedResumeId);
-      summaryRequestRef.current += 1;
-      setReview(null);
-      setSummaries([]);
-      setSelectedResume((current) => ({
-        resumeId: parsed.resume_id,
-        candidateId: parsed.candidate_id,
-        candidateName:
-          parsed.candidate_display_name?.trim() ||
-          current?.candidateName ||
-          "未命名候选人",
-      }));
-      setDrawerTab("original");
-      setLibraryRefreshToken((current) => current + 1);
-      await refreshReview(parsed.resume_id);
-      notify(
-        "success",
-        "已创建新的解析版本，正在基于原件重新提取。原版本会保留，不会被覆盖。",
-      );
-    } catch (error) {
-      notify("error", humanizeError(error));
-    } finally {
-      setReparsingSource(false);
-    }
-  }, [notify, refreshReview, reparsingSource, selectedResumeId]);
-
-  const enrichSelectedFacts = useCallback(async () => {
-    if (!selectedResumeId || enrichingFacts) return;
-    setEnrichingFacts(true);
-    try {
-      await api.enrichFilterFacts(selectedResumeId);
-      await refreshReview(selectedResumeId);
-      notify("success", "已提交高级筛选事实补充任务，旧事实会保留。完成后可刷新查看。");
-    } catch (error) {
-      notify("error", humanizeError(error));
-    } finally {
-      setEnrichingFacts(false);
-    }
-  }, [enrichingFacts, notify, refreshReview, selectedResumeId]);
-
-  const deleteSelectedResumeData = useCallback(
-    async (): Promise<void> => {
-      if (!selectedResumeId) throw new Error("resume_not_found");
-      try {
-        const response = await api.deleteResumeCandidateData(selectedResumeId, {
-          reason: "other",
-          other_note: "simple_resume_delete",
-        });
-        releaseOriginalFile();
-        summaryRequestRef.current += 1;
-        setReview(null);
-        setSummaries([]);
-        setSelectedResume(null);
-        setDrawerOpen(false);
-        setLibraryRefreshToken((current) => current + 1);
-        notify(
-          "success",
-          `当前简历版本已移出工作台，可在 ${formatLibraryDate(response.recovery_deadline_at)} 前恢复。`,
-        );
-      } catch (error) {
-        notify("error", humanizeError(error));
-        throw error;
-      }
-    },
-    [notify, releaseOriginalFile, selectedResumeId],
-  );
 
   const handleGlobalSearch = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.key !== "Enter") return;
@@ -1883,7 +1484,7 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
         onGlobalQueryChange={setGlobalQuery}
         onGlobalSearchKeyDown={handleGlobalSearch}
         onOpenAgent={() => {
-            setDrawerOpen(false);
+            closeDrawer();
             setAgentOpen(true);
           }}
           agentTriggerRef={agentTriggerRef}
@@ -1982,39 +1583,12 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
         className={`drawer-scrim${drawerOpen || agentOpen ? " is-open" : ""}`}
         onClick={() => {
           if (agentOpen) closeAgent();
-          else setDrawerOpen(false);
+          else closeDrawer();
         }}
       />
       <CandidateDrawer
-        candidate={selectedResume}
-        drawerTab={drawerTab}
-        isOpen={drawerOpen}
-        pdfError={pdfError}
-        pdfDownloadLoading={pdfDownloadLoading}
-        pdfLoading={pdfLoading}
-        pdfUrl={pdfUrl}
-        review={review}
-        reviewLoading={reviewLoading}
-        scoreError={drawerScoreError}
-        scoreLoading={drawerScoreLoading}
-        scores={drawerScores}
+        {...candidateDrawerProps}
         languageCredentialOptions={filterOptions.language_credentials}
-        summaries={summaries}
-        summaryLoading={summaryLoading}
-        onClose={() => setDrawerOpen(false)}
-        onCreateManualSummary={createManualSummary}
-        onDeleteResume={deleteSelectedResumeData}
-        onDownloadOriginal={downloadOriginalFile}
-        onGenerateSummary={() => void generateSummary()}
-        onReparseSource={() => void reparseSelectedSource()}
-        onEnrichFacts={() => void enrichSelectedFacts()}
-        onPreviewOriginal={() => void previewOriginalFile()}
-        onRefreshScores={() => {
-          if (selectedResumeId) void loadDrawerScores(selectedResumeId);
-        }}
-        enrichingFacts={enrichingFacts}
-        onTabChange={setDrawerTab}
-        reparsingSource={reparsingSource}
         canManageCandidateData={canManageCandidateData}
       />
       <RecruitingAgentDrawer

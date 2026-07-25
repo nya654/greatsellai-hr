@@ -1,6 +1,7 @@
 import { Icon, type IconName } from "../../icons";
 import { CandidateDataLifecyclePage } from "../candidate-data/CandidateDataLifecyclePage";
 import { MailboxPage } from "../mailbox/MailboxPage";
+import "./workspace-settings.css";
 
 export type WorkspaceSettingsSection = "mailbox" | "data";
 
@@ -63,9 +64,9 @@ export function WorkspaceSettingsPage({
         </div>
       </header>
       <div className="settings-layout">
-        <nav aria-label="设置分类" className="panel settings-navigation">
+        <nav aria-label="设置分类" className="settings-navigation">
           <p className="settings-navigation-label">工作区设置</p>
-          <div aria-orientation="vertical" className="settings-navigation-list" role="tablist">
+          <div aria-orientation="horizontal" className="settings-navigation-list" role="tablist">
             {sections.map((section) => {
               const selected = section.id === currentSection;
               return (

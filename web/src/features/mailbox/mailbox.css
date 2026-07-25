@@ -820,87 +820,6 @@ details[open] > .mailbox-disclosure-heading::after {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.backoffice-ui-root .settings-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.backoffice-ui-root .settings-navigation {
-  padding: 0;
-  margin-bottom: 1.25rem;
-  overflow: visible;
-  background: transparent;
-  border: 0;
-  box-shadow: none;
-}
-
-.backoffice-ui-root .settings-navigation-label {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
-.backoffice-ui-root .settings-navigation-list {
-  display: inline-flex;
-  max-width: 100%;
-  gap: 0.25rem;
-  padding: 0.25rem;
-  overflow: auto;
-  background: #eaecf0;
-  border: 1px solid #e4e7ec;
-  border-radius: 0.5rem;
-}
-
-.backoffice-ui-root .settings-navigation-item {
-  width: auto;
-  min-height: 2.375rem;
-  grid-template-columns: 1.125rem auto;
-  gap: 0.4375rem;
-  padding: 0.5rem 0.75rem;
-  white-space: nowrap;
-  border-radius: 0.3125rem;
-}
-
-.backoffice-ui-root .settings-navigation-item > span:last-child {
-  display: block;
-}
-
-.backoffice-ui-root .settings-navigation-item strong {
-  font-size: 0.8125rem;
-}
-
-.backoffice-ui-root .settings-navigation-item small {
-  display: none;
-}
-
-.backoffice-ui-root .settings-navigation-icon {
-  width: 1.125rem;
-  height: 1.125rem;
-  color: #667085;
-  background: transparent;
-}
-
-.backoffice-ui-root .settings-navigation-item:hover {
-  background: rgb(255 255 255 / 0.58);
-}
-
-.backoffice-ui-root .settings-navigation-item.is-active {
-  color: #1d2939;
-  background: #fff;
-  border-color: #fff;
-  box-shadow: 0 1px 2px rgb(16 24 40 / 0.08);
-}
-
-.backoffice-ui-root .settings-navigation-item.is-active .settings-navigation-icon {
-  color: var(--red);
-  background: transparent;
-}
-
 .backoffice-ui-root .mailbox-page {
   display: grid;
   gap: 1.5rem;
@@ -1120,15 +1039,6 @@ details[open] > .mailbox-disclosure-heading::after {
 }
 
 @media (max-width: 47rem) {
-  .backoffice-ui-root .settings-navigation-list {
-    display: flex;
-    width: 100%;
-  }
-
-  .backoffice-ui-root .settings-navigation-item {
-    flex: 1 0 auto;
-  }
-
   .backoffice-ui-root .mailbox-page .page-heading,
   .backoffice-ui-root .mailbox-operation-heading,
   .backoffice-ui-root .mailbox-history-heading {

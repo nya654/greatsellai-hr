@@ -33,6 +33,7 @@ import {
   Topbar,
   TrialStatusBanner,
 } from "./features/workspace-shell/WorkspaceChrome";
+import { useWorkspaceNavigation } from "./features/workspace-shell/useWorkspaceNavigation";
 import {
   CandidateRequired,
   ToastRegion,
@@ -57,9 +58,6 @@ const BackofficeUiProvider = lazy(() =>
   })),
 );
 
-type View = "library" | "filter" | "upload" | "score" | "match" | "settings";
-type MainWorkspaceView = Exclude<View, "settings">;
-type SettingsSection = "mailbox" | "data";
 type ToastKind = "success" | "error";
 type AuthRoute = "login" | "register" | "forgot-password" | "reset-password" | "verify-email";
 type AppSurface =
@@ -71,22 +69,6 @@ interface ToastMessage {
   id: number;
   kind: ToastKind;
   message: string;
-}
-
-function settingsSectionFromHash(hash: string): SettingsSection | null {
-  const value = hash
-    .replace(/^#/, "")
-    .trim()
-    .replace(/^\/+|\/+$/g, "")
-    .toLowerCase();
-
-  if (value === "settings/mailbox" || value === "inbox") return "mailbox";
-  if (value === "settings/data" || value === "data") return "data";
-  return null;
-}
-
-function settingsHash(section: SettingsSection): string {
-  return `#settings/${section}`;
 }
 
 function humanizeError(error: unknown): string {
@@ -381,12 +363,6 @@ function App() {
 }
 
 function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
-  const [view, setView] = useState<View>(() =>
-    settingsSectionFromHash(window.location.hash) ? "settings" : "library",
-  );
-  const [settingsSection, setSettingsSection] = useState<SettingsSection>(
-    () => settingsSectionFromHash(window.location.hash) ?? "mailbox",
-  );
   const [agentOpen, setAgentOpen] = useState(false);
   const [libraryRefreshToken, setLibraryRefreshToken] = useState(0);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -479,41 +455,20 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     authSession?.role === "admin" &&
     authSession.plan?.feature_flags.mailbox_import === true;
   const canManageCandidateData = authSession?.role === "admin";
-  const canManageSettings = canManageMailbox || canManageCandidateData;
+  const {
+    canManageSettings,
+    navigateToView,
+    openSettings,
+    settingsSection,
+    view,
+  } = useWorkspaceNavigation({
+    canManageCandidateData,
+    canManageMailbox,
+    hasSession: Boolean(authSession),
+  });
   const canGenerateAiJd =
     authSession?.role === "admin" &&
     authSession.plan?.feature_flags.ai_jd_generation === true;
-
-  const updateSettingsHash = useCallback(
-    (section: SettingsSection | null, replace = false) => {
-      const nextHash = section ? settingsHash(section) : "";
-      if (window.location.hash === nextHash) return;
-      const nextLocation = `${window.location.pathname}${window.location.search}${nextHash}`;
-      if (replace) {
-        window.history.replaceState(window.history.state, "", nextLocation);
-      } else {
-        window.history.pushState(window.history.state, "", nextLocation);
-      }
-    },
-    [],
-  );
-
-  const navigateToView = useCallback(
-    (nextView: MainWorkspaceView) => {
-      setView(nextView);
-      updateSettingsHash(null);
-    },
-    [updateSettingsHash],
-  );
-
-  const openSettings = useCallback(
-    (section: SettingsSection) => {
-      setSettingsSection(section);
-      setView("settings");
-      updateSettingsHash(section);
-    },
-    [updateSettingsHash],
-  );
 
   const closeAgent = useCallback(() => {
     setAgentOpen(false);
@@ -555,55 +510,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [agentOpen, closeAgent, closeDrawer]);
-
-  useEffect(() => {
-    const syncSettingsFromHash = () => {
-      const section = settingsSectionFromHash(window.location.hash);
-      if (!section) {
-        setView((current) => current === "settings" ? "library" : current);
-        return;
-      }
-      setSettingsSection(section);
-      setView("settings");
-      updateSettingsHash(section, true);
-    };
-
-    syncSettingsFromHash();
-    window.addEventListener("hashchange", syncSettingsFromHash);
-    window.addEventListener("popstate", syncSettingsFromHash);
-    return () => {
-      window.removeEventListener("hashchange", syncSettingsFromHash);
-      window.removeEventListener("popstate", syncSettingsFromHash);
-    };
-  }, [updateSettingsHash]);
-
-  useEffect(() => {
-    if (!authSession || view !== "settings") return;
-    const sectionAllowed =
-      (settingsSection === "mailbox" && canManageMailbox) ||
-      (settingsSection === "data" && canManageCandidateData);
-    if (sectionAllowed) return;
-
-    const fallbackSection = canManageMailbox
-      ? "mailbox"
-      : canManageCandidateData
-        ? "data"
-        : null;
-    if (!fallbackSection) {
-      setView("library");
-      updateSettingsHash(null, true);
-      return;
-    }
-    setSettingsSection(fallbackSection);
-    updateSettingsHash(fallbackSection, true);
-  }, [
-    authSession,
-    canManageCandidateData,
-    canManageMailbox,
-    settingsSection,
-    updateSettingsHash,
-    view,
-  ]);
 
   const openCandidate = useCallback(
     (item: CandidateSearchItem, tab: DrawerTab = "summary") => {

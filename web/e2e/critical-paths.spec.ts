@@ -182,13 +182,121 @@ test.describe("招聘工作台关键路径", () => {
     await expect(page.getByRole("button", { name: "重新加载预览" })).toBeVisible();
   });
 
+  test("简历库可浏览已入库候选人并通过键盘打开详情", async ({ page }) => {
+    await registerAndVerify(page, "resume-library");
+    await seedWorkspaceFixture(page);
+    await page.reload();
+
+    await page.getByRole("button", { name: "简历库", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "简历库", exact: true })).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: "AI 总结", exact: true })).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: "AI 评分", exact: true })).toBeVisible();
+
+    const detailsButton = page.getByRole("button", {
+      name: "查看 E2E 推荐候选人 的简历详情",
+    });
+    await expect(detailsButton).toBeVisible();
+    await detailsButton.focus();
+    await page.keyboard.press("Enter");
+    const drawer = page.getByRole("dialog", { name: "E2E 推荐候选人 的简历详情" });
+    await expect(drawer).toBeVisible();
+
+    const summaryTab = drawer.getByRole("tab", { name: "AI 总结" });
+    await summaryTab.click();
+    await expect(summaryTab).toHaveAttribute("aria-selected", "true");
+    await expect(summaryTab).toHaveAttribute(
+      "aria-controls",
+      "candidate-drawer-panel-summary",
+    );
+    const summaryPanel = drawer.getByRole("tabpanel");
+    await expect(summaryPanel).toHaveAttribute(
+      "aria-labelledby",
+      "candidate-drawer-tab-summary",
+    );
+    await expect(
+      summaryPanel.getByRole("heading", { name: "还没有 AI 总结" }),
+    ).toBeVisible();
+
+    const evidenceTab = drawer.getByRole("tab", { name: "提取依据" });
+    await evidenceTab.click();
+    await expect(evidenceTab).toHaveAttribute("aria-selected", "true");
+    const evidencePanel = drawer.getByRole("tabpanel");
+    await expect(
+      evidencePanel.getByRole("heading", { name: "已提取的简历事实" }),
+    ).toBeVisible();
+    await expect(
+      evidencePanel.getByRole("heading", { name: "原文证据块" }),
+    ).toBeVisible();
+    await expect(evidencePanel.getByText("Python · 原文依据：page-001")).toBeVisible();
+  });
+
+  test("简历库窄屏保留查看入口且表格只在自身区域横向滚动", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await registerAndVerify(page, "resume-library-narrow");
+    await seedWorkspaceFixture(page);
+    await page.reload();
+
+    await page.getByRole("button", { name: "简历库", exact: true }).click();
+    const tableScroll = page.locator(".resume-library-page .table-scroll");
+    await expect(tableScroll).toBeVisible();
+    await expect.poll(() => page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    )).toBe(true);
+
+    const detailsButton = page.getByRole("button", {
+      name: "查看 E2E 推荐候选人 的简历详情",
+    });
+    await detailsButton.click();
+    await expect(page.getByRole("dialog", { name: "E2E 推荐候选人 的简历详情" })).toBeVisible();
+  });
+
+  test("岗位原样发布只提交原始输入，不调用 AI", async ({ page }) => {
+    await registerAndVerify(page, "publish-original-job");
+    await page.getByRole("button", { name: "招聘详情", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "招聘详情", exact: true })).toBeVisible();
+
+    const title = "E2E 原样发布岗位";
+    const originalJd = "负责招聘工作台内测。\n\n任职要求：能独立完成招聘流程。";
+    await page.locator("#job-title").fill(title);
+    await page.locator("#job-brief").fill(originalJd);
+
+    const originalPublishButton = page.getByRole("button", { name: "原样发布 JD" });
+    await expect(originalPublishButton).toBeVisible();
+    await expect(page.getByRole("button", { name: "AI 生成 JD" })).toBeVisible();
+
+    let generateRequests = 0;
+    page.on("request", (request) => {
+      if (
+        request.method() === "POST" &&
+        new URL(request.url()).pathname === "/v1/jobs/generate-jd"
+      ) {
+        generateRequests += 1;
+      }
+    });
+    const publishRequest = page.waitForRequest((request) =>
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/v1/jobs/publish-original",
+    );
+
+    await originalPublishButton.click();
+    const request = await publishRequest;
+    expect(request.postDataJSON()).toEqual({
+      jd_text: originalJd,
+      title,
+    });
+    await expect.poll(() => generateRequests).toBe(0);
+    await expect(page.getByText("原版已发布", { exact: true })).toBeVisible();
+  });
+
   test("评分不继承候选人，招聘详情按 JD 批量评估", async ({ page }) => {
     await registerAndVerify(page, "screen-score-match");
     const fixture = await seedWorkspaceFixture(page);
     await page.reload();
 
     await page.getByRole("button", { name: "筛选工作台", exact: true }).click();
-    await expect(page.getByLabel("综合评分排序规则")).not.toHaveValue("");
+    await expect(
+      page.getByRole("combobox", { name: "评分口径" }),
+    ).toContainText("E2E 评分规则 · v1");
     const institutionTypes = page.getByLabel("院校类型条件");
     await expect(institutionTypes).toBeVisible();
     await expect(page.getByLabel("院校类型快捷筛选")).toHaveCount(0);
@@ -212,6 +320,27 @@ test.describe("招聘工作台关键路径", () => {
     await institution985.check();
     await searchFor985;
     await expect(institution985).toBeChecked();
+    const appliedFilterBar = page.getByLabel("已应用的筛选条件");
+    await expect(appliedFilterBar).toContainText("院校：985");
+    const clearFiltersSearch = page.waitForResponse((response) => {
+      if (
+        response.request().method() !== "POST" ||
+        new URL(response.url()).pathname !== "/v1/candidates/search"
+      ) {
+        return false;
+      }
+      const request = response.request().postDataJSON() as {
+        education_any_of?: Array<{
+          institution_classifications_any_of?: string[];
+        }>;
+      };
+      return !request.education_any_of?.some((condition) =>
+        condition.institution_classifications_any_of?.includes("985"),
+      );
+    });
+    await page.getByRole("button", { name: "清空筛选条件" }).click();
+    await clearFiltersSearch;
+    await expect(appliedFilterBar).toHaveCount(0);
     await expect(page.getByRole("button", { name: "应用筛选条件" })).toHaveCount(0);
 
     const searchForTsinghua = page.waitForResponse((response) => {
@@ -241,15 +370,17 @@ test.describe("招聘工作台关键路径", () => {
     await expect(page.getByText("未设门槛")).toHaveCount(0);
 
     await page.getByRole("button", { name: "查看 E2E 推荐候选人 的评分详情" }).click();
-    await expect(page.getByRole("tab", { name: "评分详情" })).toHaveAttribute(
+    const drawer = page.getByRole("dialog", { name: "E2E 推荐候选人 的简历详情" });
+    await expect(drawer.getByRole("tab", { name: "评分详情" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
-    await expect(page.getByRole("heading", { name: "评分详情", exact: true })).toBeVisible();
-    await expect(page.getByText("AI 评分理由", { exact: true }).first()).toBeVisible();
-    await expect(page.getByText("简历事实依据", { exact: true }).first()).toBeVisible();
-    await expect(page.getByText("待确认项", { exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "关闭简历详情" }).click();
+    await expect(drawer.getByRole("heading", { name: "评分详情", exact: true })).toBeVisible();
+    await expect(drawer.getByText("AI 评分理由", { exact: true }).first()).toBeVisible();
+    await expect(drawer.getByText("简历事实依据", { exact: true }).first()).toBeVisible();
+    await expect(drawer.getByText("待确认项", { exact: true })).toBeVisible();
+    await drawer.getByRole("button", { name: "关闭简历详情" }).click();
+    await expect(drawer).toBeHidden();
 
     await page.getByRole("button", { name: "评分模板", exact: true }).click();
     await expect(page.getByRole("heading", { name: "通用评分模板", exact: true })).toBeVisible();
@@ -613,7 +744,7 @@ test.describe("招聘工作台关键路径", () => {
     await page.getByRole("button", { name: /^(保存收件通道|创建并开始接收)$/ }).click();
     await expect(page.getByText("收件通道已创建，只会入库从现在起收到的附件。")).toBeVisible();
     await expect(page.getByRole("heading", { name: "E2E 收件通道" })).toBeVisible();
-    await expect(page.locator("#mailbox-history-filter")).not.toHaveValue("");
+    await expect(page.getByLabel("来源", { exact: true })).toContainText("E2E 收件通道");
     await expect(page.getByRole("button", { name: "归档通道" })).toBeVisible();
     expect(await gridTrackCount(".mailbox-workspace")).toBe(1);
     await page.getByRole("button", { name: "编辑连接" }).click();
@@ -633,6 +764,8 @@ test.describe("招聘工作台关键路径", () => {
     await expect(page.getByText("已加入后台同步队列。")).toBeVisible();
     await page.getByRole("tab", { name: "候选人数据与保留", exact: true }).click();
     await expect(page.getByRole("heading", { name: "候选人数据与保留", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "候选人资料保留策略" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "刷新记录" })).toBeVisible();
     expect(await gridTrackCount(".settings-layout")).toBe(1);
   });
 

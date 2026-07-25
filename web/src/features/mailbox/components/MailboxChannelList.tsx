@@ -1,5 +1,6 @@
 import { Icon } from "../../../icons";
 import type { MailboxConfig } from "../../../types";
+import { BackofficeButton } from "../../../backoffice/ui/BackofficeButton";
 import { TableSkeleton } from "../../../backoffice/ui/TableSkeleton";
 import {
   mailboxChannelStatus,
@@ -67,9 +68,13 @@ export function MailboxChannelList({
           <span>新建后，系统从当前邮箱位置开始接收附件。</span>
         </div>
       )}
-      <button className="button button-ghost mailbox-add-channel" onClick={onCreate} type="button">
-        <Icon name="plus" size={16} />新建收件通道
-      </button>
+      <BackofficeButton
+        className="mailbox-add-channel"
+        icon={<Icon name="plus" size={16} />}
+        onClick={onCreate}
+      >
+        新建收件通道
+      </BackofficeButton>
     </section>
   );
 }

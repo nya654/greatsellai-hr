@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { Icon } from "../../icons";
 import { BackofficeButton } from "../../backoffice/ui/BackofficeButton";
+import { BackofficeInput } from "../../backoffice/ui/BackofficeInput";
+import { BackofficeSelect } from "../../backoffice/ui/BackofficeSelect";
 import { TableSkeleton } from "../../backoffice/ui/TableSkeleton";
 import { formatFileSize, formatLibraryDate } from "../../backoffice/utils/formatters";
 import type {
@@ -36,6 +38,7 @@ import {
   newMailboxDraft,
   type MailboxDraft,
 } from "./mailbox-model";
+import "./mailbox.css";
 
 export type MailboxToastKind = "success" | "error";
 
@@ -566,11 +569,25 @@ export function MailboxPage({
         <div className="form-grid mailbox-form-grid">
           <div className="field-stack">
             <label className="field-label" htmlFor="mailbox-display-name">通道名称</label>
-            <input className="field" disabled={selectedMailboxArchived || selectedSyncInProgress} id="mailbox-display-name" maxLength={32} onChange={(event) => updateDraft("displayName", event.target.value)} placeholder="例如：招聘邮箱" value={draft.displayName} />
+            <BackofficeInput
+              disabled={selectedMailboxArchived || selectedSyncInProgress}
+              id="mailbox-display-name"
+              maxLength={32}
+              onChange={(value) => updateDraft("displayName", value)}
+              placeholder="例如：招聘邮箱"
+              value={draft.displayName}
+            />
           </div>
           <div className="field-stack">
             <label className="field-label" htmlFor="imap-address">接收简历的邮箱</label>
-            <input autoComplete="email" className="field" disabled={selectedMailboxArchived || selectedSyncInProgress} id="imap-address" onChange={(event) => updateDraft("emailAddress", event.target.value)} type="email" value={draft.emailAddress} />
+            <BackofficeInput
+              autoComplete="email"
+              disabled={selectedMailboxArchived || selectedSyncInProgress}
+              id="imap-address"
+              onChange={(value) => updateDraft("emailAddress", value)}
+              type="email"
+              value={draft.emailAddress}
+            />
           </div>
         </div>
       </section>
@@ -585,25 +602,40 @@ export function MailboxPage({
         <div className="form-grid mailbox-form-grid">
           <div className="field-stack">
             <label className="field-label" htmlFor="imap-host">IMAP 地址</label>
-            <input className="field" disabled={selectedMailboxArchived || selectedSyncInProgress} id="imap-host" onChange={(event) => updateDraft("imapHost", event.target.value)} value={draft.imapHost} />
+            <BackofficeInput
+              disabled={selectedMailboxArchived || selectedSyncInProgress}
+              id="imap-host"
+              onChange={(value) => updateDraft("imapHost", value)}
+              value={draft.imapHost}
+            />
           </div>
           <div className="field-stack">
             <label className="field-label" htmlFor="imap-port">端口</label>
-            <input className="field" disabled={selectedMailboxArchived || selectedSyncInProgress} id="imap-port" inputMode="numeric" onChange={(event) => updateDraft("imapPort", event.target.value)} value={draft.imapPort} />
+            <BackofficeInput
+              disabled={selectedMailboxArchived || selectedSyncInProgress}
+              id="imap-port"
+              inputMode="numeric"
+              onChange={(value) => updateDraft("imapPort", value)}
+              value={draft.imapPort}
+            />
           </div>
           <div className="field-stack">
             <label className="field-label" htmlFor="imap-folder">邮箱文件夹</label>
-            <input className="field" disabled={selectedMailboxArchived || selectedSyncInProgress} id="imap-folder" onChange={(event) => updateDraft("mailbox", event.target.value)} value={draft.mailbox} />
+            <BackofficeInput
+              disabled={selectedMailboxArchived || selectedSyncInProgress}
+              id="imap-folder"
+              onChange={(value) => updateDraft("mailbox", value)}
+              value={draft.mailbox}
+            />
           </div>
           <div className="field-stack">
             <label className="field-label" htmlFor="imap-password">邮箱授权码</label>
-            <input
+            <BackofficeInput
               aria-describedby="imap-password-hint"
               autoComplete="new-password"
-              className="field"
               disabled={selectedMailboxArchived || selectedSyncInProgress}
               id="imap-password"
-              onChange={(event) => updateDraft("password", event.target.value)}
+              onChange={(value) => updateDraft("password", value)}
               placeholder={isCreating ? "首次保存必填" : "留空则保持原授权码"}
               type="password"
               value={draft.password}
@@ -625,36 +657,55 @@ export function MailboxPage({
   const mailboxFormActions = (
     <div className="review-actions mailbox-form-actions">
       {isCreating && hasMailboxChannels && (
-        <button
-          className="button button-ghost"
+        <BackofficeButton
           disabled={saving || archiving}
+          icon={<Icon name="arrow-left" size={16} />}
           onClick={() => {
             const fallback = mailboxes.find((item) => !item.archived_at) ?? mailboxes[0];
             if (fallback) selectMailbox(fallback);
           }}
-          type="button"
         >
-          <Icon name="arrow-left" size={16} />取消新建
-        </button>
+          取消新建
+        </BackofficeButton>
       )}
       {!isCreating && selectedConfig && isEditingConnection && (
-        <button className="button button-ghost" disabled={saving || archiving || selectedSyncInProgress} onClick={() => selectMailbox(selectedConfig)} type="button">
-          <Icon name="arrow-left" size={16} />返回概览
-        </button>
+        <BackofficeButton
+          disabled={saving || archiving || selectedSyncInProgress}
+          icon={<Icon name="arrow-left" size={16} />}
+          onClick={() => selectMailbox(selectedConfig)}
+        >
+          返回概览
+        </BackofficeButton>
       )}
       {!isCreating && selectedConfig && (
-        <button className="button button-ghost" disabled={archiving || saving || selectedSyncInProgress || !selectedConfig.enabled || Boolean(selectedConfig.archived_at)} onClick={() => void syncMailbox(selectedConfig)} type="button">
-          {enqueuingMailboxId === selectedConfig.mailbox_id ? <><i className="spinner" />正在加入队列</> : selectedSyncJob ? <><i className="spinner" />后台同步中</> : <><Icon name="refresh" size={16} />同步此通道</>}
-        </button>
+        <BackofficeButton
+          disabled={archiving || saving || selectedSyncInProgress || !selectedConfig.enabled || Boolean(selectedConfig.archived_at)}
+          icon={selectedSyncJob ? <i className="spinner" /> : <Icon name="refresh" size={16} />}
+          loading={enqueuingMailboxId === selectedConfig.mailbox_id}
+          onClick={() => void syncMailbox(selectedConfig)}
+        >
+          {enqueuingMailboxId === selectedConfig.mailbox_id ? "正在加入队列" : selectedSyncJob ? "后台同步中" : "同步此通道"}
+        </BackofficeButton>
       )}
       {!isCreating && selectedConfig && !selectedConfig.archived_at && (
-        <button className="button button-danger-ghost" disabled={archiving || saving || selectedSyncInProgress} onClick={() => void archiveMailbox()} type="button">
-          {archiving ? <><i className="spinner" />正在归档</> : "归档通道"}
-        </button>
+        <BackofficeButton
+          disabled={archiving || saving || selectedSyncInProgress}
+          loading={archiving}
+          onClick={() => void archiveMailbox()}
+          tone="danger"
+        >
+          {archiving ? "正在归档" : "归档通道"}
+        </BackofficeButton>
       )}
-      <button className="button button-primary" disabled={loading || saving || archiving || selectedSyncInProgress || (!isCreating && selectedMailboxArchived)} onClick={() => void saveMailbox()} type="button">
-        {saving ? <><i className="spinner" />正在保存</> : <><Icon name="check" size={16} />{isCreating ? "创建并开始接收" : selectedMailboxArchived ? "已归档" : "保存通道"}</>}
-      </button>
+      <BackofficeButton
+        disabled={loading || saving || archiving || selectedSyncInProgress || (!isCreating && selectedMailboxArchived)}
+        icon={saving ? undefined : <Icon name="check" size={16} />}
+        loading={saving}
+        onClick={() => void saveMailbox()}
+        tone="primary"
+      >
+        {saving ? "正在保存" : isCreating ? "创建并开始接收" : selectedMailboxArchived ? "已归档" : "保存通道"}
+      </BackofficeButton>
     </div>
   );
 
@@ -672,26 +723,31 @@ export function MailboxPage({
           </div>
         </div>
         <div className="mailbox-operation-actions">
-          <button
-            className="button button-primary"
+          <BackofficeButton
             disabled={!selectedConfig.enabled || Boolean(selectedConfig.archived_at) || selectedSyncInProgress}
+            icon={selectedSyncInProgress ? undefined : <Icon name="refresh" size={16} />}
+            loading={selectedSyncInProgress}
             onClick={() => void syncMailbox(selectedConfig)}
-            type="button"
+            tone="primary"
           >
-            {selectedSyncInProgress ? <><i className="spinner" />后台同步中</> : <><Icon name="refresh" size={16} />同步此通道</>}
-          </button>
-          <button className="button" disabled={Boolean(selectedConfig.archived_at) || selectedSyncInProgress} onClick={() => setIsEditingConnection(true)} type="button">
-            <Icon name="gear" size={16} />编辑连接
-          </button>
+            {selectedSyncInProgress ? "后台同步中" : "同步此通道"}
+          </BackofficeButton>
+          <BackofficeButton
+            disabled={Boolean(selectedConfig.archived_at) || selectedSyncInProgress}
+            icon={<Icon name="gear" size={16} />}
+            onClick={() => setIsEditingConnection(true)}
+          >
+            编辑连接
+          </BackofficeButton>
           {!selectedConfig.archived_at && (
-            <button
-              className="button button-danger-ghost"
+            <BackofficeButton
               disabled={archiving || selectedSyncInProgress}
+              loading={archiving}
               onClick={() => void archiveMailbox()}
-              type="button"
+              tone="danger"
             >
-              {archiving ? <><i className="spinner" />正在归档</> : "归档通道"}
-            </button>
+              {archiving ? "正在归档" : "归档通道"}
+            </BackofficeButton>
           )}
         </div>
       </div>
@@ -776,18 +832,19 @@ export function MailboxPage({
                     <span>{mailboxSyncAlertTitle(config)}，连续失败的后台同步任务 {alert.consecutive_failures} 次，最近一次 {formatLibraryDate(alert.last_failed_at)}。</span>
                     <small>{mailboxImportErrorLabel(alert.last_error_code)}</small>
                   </div>
-                  <button
-                    className="button button-danger-ghost"
+                  <BackofficeButton
                     disabled={!canSync}
+                    icon={activeSyncMailboxIds.has(config.mailbox_id) ? undefined : <Icon name="refresh" size={16} />}
+                    loading={enqueuingMailboxId === config.mailbox_id || activeSyncMailboxIds.has(config.mailbox_id)}
                     onClick={() => void syncMailbox(config)}
-                    type="button"
+                    tone="danger"
                   >
                     {enqueuingMailboxId === config.mailbox_id
-                      ? <><i className="spinner" />正在加入队列</>
+                      ? "正在加入队列"
                       : activeSyncMailboxIds.has(config.mailbox_id)
-                        ? <><i className="spinner" />后台同步中</>
-                        : <><Icon name="refresh" size={16} />同步此通道</>}
-                  </button>
+                        ? "后台同步中"
+                        : "同步此通道"}
+                  </BackofficeButton>
                 </div>
               );
             })}
@@ -866,14 +923,15 @@ export function MailboxPage({
                         <span>连续失败的后台同步任务 {selectedConfig.active_sync_alert.consecutive_failures} 次，最近一次 {formatLibraryDate(selectedConfig.active_sync_alert.last_failed_at)}。</span>
                         <small>{mailboxImportErrorLabel(selectedConfig.active_sync_alert.last_error_code)}</small>
                       </div>
-                      <button
-                        className="button button-danger-ghost"
+                      <BackofficeButton
                         disabled={!selectedConfig.enabled || Boolean(selectedConfig.archived_at) || selectedSyncInProgress}
+                        icon={selectedSyncInProgress ? undefined : <Icon name="refresh" size={16} />}
+                        loading={selectedSyncInProgress}
                         onClick={() => void syncMailbox(selectedConfig)}
-                        type="button"
+                        tone="danger"
                       >
-                        {selectedSyncInProgress ? <><i className="spinner" />后台同步中</> : <><Icon name="refresh" size={16} />立即同步</>}
-                      </button>
+                        {selectedSyncInProgress ? "后台同步中" : "立即同步"}
+                      </BackofficeButton>
                     </section>
                   )}
                 <div className="fact-list">
@@ -942,12 +1000,23 @@ export function MailboxPage({
                 <p className="mailbox-retention-notice">已删除的系统副本不可恢复。简历库中的候选人原始简历、AI 结论与邮箱服务商中的源邮件不受影响。</p>
                 {canManageRetention && (
                   <div className="review-actions mailbox-retention-actions">
-                    <button className="button button-primary" disabled={retentionSaving || !retention || !retentionPolicyChanged} onClick={() => void saveRetentionPolicy()} type="button">
-                      {retentionSaving ? <><i className="spinner" />正在保存</> : <><Icon name="check" size={16} />保存保留策略</>}
-                    </button>
-                    <button className="button" disabled={!retention || previewingRetention || retentionSaving || retentionPolicyChanged || retentionHasActiveRun} onClick={() => void previewRetentionCleanup()} type="button">
-                      {previewingRetention ? <><i className="spinner" />正在预览</> : <><Icon name="history" size={16} />预览已到期内容</>}
-                    </button>
+                    <BackofficeButton
+                      disabled={retentionSaving || !retention || !retentionPolicyChanged}
+                      icon={retentionSaving ? undefined : <Icon name="check" size={16} />}
+                      loading={retentionSaving}
+                      onClick={() => void saveRetentionPolicy()}
+                      tone="primary"
+                    >
+                      {retentionSaving ? "正在保存" : "保存保留策略"}
+                    </BackofficeButton>
+                    <BackofficeButton
+                      disabled={!retention || previewingRetention || retentionSaving || retentionPolicyChanged || retentionHasActiveRun}
+                      icon={previewingRetention ? undefined : <Icon name="history" size={16} />}
+                      loading={previewingRetention}
+                      onClick={() => void previewRetentionCleanup()}
+                    >
+                      {previewingRetention ? "正在预览" : "预览已到期内容"}
+                    </BackofficeButton>
                   </div>
                 )}
                 {retentionPreview && (
@@ -969,9 +1038,14 @@ export function MailboxPage({
                     </div>
                     {canManageRetention && mailboxRetentionDueCount(retentionPreview) > 0 && (
                       <div className="review-actions mailbox-retention-confirm-actions">
-                        <button className="button button-danger-ghost" disabled={cleaningRetention || retentionHasActiveRun} onClick={() => void startRetentionCleanup()} type="button">
-                          {cleaningRetention ? <><i className="spinner" />正在创建清理任务</> : "确认清理已到期内容"}
-                        </button>
+                        <BackofficeButton
+                          disabled={cleaningRetention || retentionHasActiveRun}
+                          loading={cleaningRetention}
+                          onClick={() => void startRetentionCleanup()}
+                          tone="danger"
+                        >
+                          {cleaningRetention ? "正在创建清理任务" : "确认清理已到期内容"}
+                        </BackofficeButton>
                       </div>
                     )}
                   </section>
@@ -984,18 +1058,24 @@ export function MailboxPage({
             <div className="panel-heading mailbox-history-heading">
               <div><h2>附件入库记录</h2><p>每封新邮件保留一条附件处理记录；相同内容只关联既有入库结果，不展示邮件正文或候选人信息。</p></div>
               <div className="mailbox-history-filter">
-                <label className="field-label" htmlFor="mailbox-history-filter">来源</label>
-                <div className="select-wrap">
-                  <select className="select-field" id="mailbox-history-filter" onChange={(event) => {
-                    const mailboxId = event.target.value || null;
-                    setHistoryFilterMailboxId(mailboxId);
-                    void loadHistory(mailboxId);
-                  }} value={historyFilterMailboxId ?? ""}>
-                    <option value="">全部收件通道</option>
-                    {historySourceOptions.map((item) => <option key={item.mailboxId} value={item.mailboxId}>{item.displayName}</option>)}
-                  </select>
-                  <Icon name="chevron-down" size={16} />
-                </div>
+                <label className="field-label" htmlFor="mailbox-history-filter" id="mailbox-history-filter-label">来源</label>
+                <BackofficeSelect
+                  ariaLabelledBy="mailbox-history-filter-label"
+                  id="mailbox-history-filter"
+                  onChange={(mailboxId) => {
+                    const nextMailboxId = mailboxId || null;
+                    setHistoryFilterMailboxId(nextMailboxId);
+                    void loadHistory(nextMailboxId);
+                  }}
+                  options={[
+                    { label: "全部收件通道", value: "" },
+                    ...historySourceOptions.map((item) => ({
+                      label: item.displayName,
+                      value: item.mailboxId,
+                    })),
+                  ]}
+                  value={historyFilterMailboxId ?? ""}
+                />
               </div>
             </div>
             <span aria-live="polite" className="sr-only">{activeRetryImportIds.size ? "附件正在后台重新入库。" : activeSyncMailboxIds.size ? "收件通道正在后台同步。" : ""}</span>
@@ -1040,9 +1120,15 @@ export function MailboxPage({
                             {isRetrying ? (
                               <span className="mailbox-retry-pending"><i className="spinner" />正在重试</span>
                             ) : item.can_retry ? (
-                              <button aria-label={`重新入库：${item.attachment_filename}`} className="button button-ghost upload-row-button mailbox-retry-button" disabled={activeRetryImportIds.has(item.import_id) || enqueuingRetryImportId === item.import_id} onClick={() => void retryImport(item)} type="button">
-                                <Icon name="refresh" size={15} />重新入库
-                              </button>
+                              <BackofficeButton
+                                ariaLabel={`重新入库：${item.attachment_filename}`}
+                                className="upload-row-button mailbox-retry-button"
+                                disabled={activeRetryImportIds.has(item.import_id) || enqueuingRetryImportId === item.import_id}
+                                icon={<Icon name="refresh" size={15} />}
+                                onClick={() => void retryImport(item)}
+                              >
+                                重新入库
+                              </BackofficeButton>
                             ) : <span className="candidate-meta">—</span>}
                           </td>
                         </tr>

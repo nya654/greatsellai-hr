@@ -45,7 +45,7 @@ import type {
   SavedFilter,
   ScoreTemplate,
 } from "./types";
-import { Icon, type IconName } from "./icons";
+import { Icon } from "./icons";
 import { formatLibraryDate } from "./backoffice/utils/formatters";
 import {
   hasSourceTextQualityIssue,
@@ -55,16 +55,15 @@ import {
   canPreviewInline,
   resumeFileExtension,
 } from "./backoffice/utils/resume-file";
-import { MailboxPage } from "./features/mailbox/MailboxPage";
 import { mailboxImportErrorMessages } from "./features/mailbox/mailbox-model";
 import { ResumeLibraryPage } from "./features/library/ResumeLibraryPage";
 import { CandidateDrawer } from "./features/candidate-drawer/CandidateDrawer";
 import { FilterWorkspace } from "./features/filter/FilterWorkspace";
 import { ScoreWorkspace } from "./features/scoring/ScoreWorkspace";
 import { MatchWorkspace } from "./features/job-match/MatchWorkspace";
-import { CandidateDataLifecyclePage } from "./features/candidate-data/CandidateDataLifecyclePage";
 import { RecruitingAgentDrawer } from "./features/recruiting-agent/RecruitingAgentDrawer";
 import { UploadPage } from "./features/upload/UploadPage";
+import { WorkspaceSettingsPage } from "./features/workspace-settings/WorkspaceSettingsPage";
 import {
   SideRail,
   Topbar,
@@ -2119,6 +2118,7 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
               activeSection={settingsSection}
               canManageCandidateData={canManageCandidateData}
               canManageMailbox={canManageMailbox}
+              formatError={humanizeError}
               notify={notify}
               onImported={() => setLibraryRefreshToken((current) => current + 1)}
               onOpenLibrary={() => navigateToView("library")}
@@ -2770,120 +2770,6 @@ function AuthPageLayout({
     </main>
   );
 }
-
-function WorkspaceSettingsPage({
-  activeSection,
-  canManageCandidateData,
-  canManageMailbox,
-  notify,
-  onImported,
-  onOpenLibrary,
-  onSelectSection,
-  role,
-}: {
-  activeSection: SettingsSection;
-  canManageCandidateData: boolean;
-  canManageMailbox: boolean;
-  notify: (kind: ToastKind, message: string) => void;
-  onImported: () => void;
-  onOpenLibrary: () => void;
-  onSelectSection: (section: SettingsSection) => void;
-  role: "admin" | "recruiter" | null;
-}) {
-  const sections: Array<{
-    id: SettingsSection;
-    label: string;
-    description: string;
-    icon: IconName;
-  }> = [];
-
-  if (canManageMailbox) {
-    sections.push({
-      id: "mailbox",
-      label: "收件邮箱",
-      description: "管理收件通道、同步和附件入库保留。",
-      icon: "inbox",
-    });
-  }
-  if (canManageCandidateData) {
-    sections.push({
-      id: "data",
-      label: "候选人数据与保留",
-      description: "管理资料保留、导出、删除和访问记录。",
-      icon: "gear",
-    });
-  }
-
-  const currentSection = sections.some((section) => section.id === activeSection)
-    ? activeSection
-    : sections[0]?.id;
-  if (!currentSection) return null;
-
-  return (
-    <div className="page-frame settings-page">
-      <header className="page-heading">
-        <div>
-          <h1>设置</h1>
-          <p>管理当前工作区的收件通道，以及候选人资料的保留和访问规则。</p>
-        </div>
-      </header>
-      <div className="settings-layout">
-        <nav aria-label="设置分类" className="panel settings-navigation">
-          <p className="settings-navigation-label">工作区设置</p>
-          <div aria-orientation="vertical" className="settings-navigation-list" role="tablist">
-            {sections.map((section) => {
-              const selected = section.id === currentSection;
-              return (
-                <button
-                  aria-controls={`settings-panel-${section.id}`}
-                  aria-label={section.label}
-                  aria-selected={selected}
-                  className={`settings-navigation-item${selected ? " is-active" : ""}`}
-                  id={`settings-tab-${section.id}`}
-                  key={section.id}
-                  onClick={() => onSelectSection(section.id)}
-                  role="tab"
-                  type="button"
-                >
-                  <span className="settings-navigation-icon"><Icon name={section.icon} size={17} /></span>
-                  <span>
-                    <strong>{section.label}</strong>
-                    <small>{section.description}</small>
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </nav>
-        <section
-          aria-labelledby={`settings-tab-${currentSection}`}
-          className="settings-content"
-          id={`settings-panel-${currentSection}`}
-          role="tabpanel"
-          tabIndex={-1}
-        >
-          {currentSection === "mailbox" ? (
-            <MailboxPage
-              embedded
-              humanizeError={humanizeError}
-              notify={notify}
-              onImported={onImported}
-              role={role}
-            />
-          ) : (
-            <CandidateDataLifecyclePage
-              embedded
-              formatError={humanizeError}
-              notify={notify}
-              onOpenLibrary={onOpenLibrary}
-            />
-          )}
-        </section>
-      </div>
-    </div>
-  );
-}
-
 
 function CandidateRequired({
   title,

@@ -65,6 +65,7 @@ export function FilterWorkspace({
         appliedDraft={appliedDraft}
         onLoadMore={onLoadMore}
         onOpenCandidate={onOpenCandidate}
+        onReset={onReset}
         onScoreTemplateChange={onScoreTemplateChange}
         onUpload={onUpload}
         search={search}

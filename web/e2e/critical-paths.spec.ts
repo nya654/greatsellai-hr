@@ -320,6 +320,27 @@ test.describe("招聘工作台关键路径", () => {
     await institution985.check();
     await searchFor985;
     await expect(institution985).toBeChecked();
+    const appliedFilterBar = page.getByLabel("已应用的筛选条件");
+    await expect(appliedFilterBar).toContainText("院校：985");
+    const clearFiltersSearch = page.waitForResponse((response) => {
+      if (
+        response.request().method() !== "POST" ||
+        new URL(response.url()).pathname !== "/v1/candidates/search"
+      ) {
+        return false;
+      }
+      const request = response.request().postDataJSON() as {
+        education_any_of?: Array<{
+          institution_classifications_any_of?: string[];
+        }>;
+      };
+      return !request.education_any_of?.some((condition) =>
+        condition.institution_classifications_any_of?.includes("985"),
+      );
+    });
+    await page.getByRole("button", { name: "清空筛选条件" }).click();
+    await clearFiltersSearch;
+    await expect(appliedFilterBar).toHaveCount(0);
     await expect(page.getByRole("button", { name: "应用筛选条件" })).toHaveCount(0);
 
     const searchForTsinghua = page.waitForResponse((response) => {

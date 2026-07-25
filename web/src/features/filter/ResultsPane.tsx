@@ -320,6 +320,74 @@ function CandidateSkillHighlights({ item }: { item: CandidateSearchItem }) {
   );
 }
 
+function compactFilterValue(values: readonly string[], limit = 2): string {
+  const uniqueValues = [
+    ...new Set(values.map((value) => value.trim()).filter(Boolean)),
+  ];
+  if (uniqueValues.length <= limit) return uniqueValues.join("、");
+  return `${uniqueValues.slice(0, limit).join("、")} 等 ${uniqueValues.length} 项`;
+}
+
+function appliedFilterLabels(draft: FilterDraft): string[] {
+  const labels: string[] = [];
+  const add = (label: string, value: string) => {
+    const normalizedValue = value.trim();
+    if (normalizedValue) labels.push(`${label}：${normalizedValue}`);
+  };
+
+  if (draft.institutionClassifications.length) {
+    add(
+      "院校",
+      compactFilterValue(
+        sortInstitutionClassifications(draft.institutionClassifications).map(
+          institutionClassificationLabel,
+        ),
+      ),
+    );
+  }
+  if (draft.degrees.length) {
+    add(
+      "学历",
+      compactFilterValue(draft.degrees.map((degree) => degreeLabels[degree])),
+    );
+  }
+  if (draft.schoolName.trim()) add("院校名称", draft.schoolName);
+  if (draft.major.trim()) add("专业", draft.major);
+  if (draft.graduationStatus === "fresh") add("毕业状态", "应届");
+  if (draft.graduationStatus === "previous") add("毕业状态", "非应届");
+  if (draft.minEmploymentMonths > 0) {
+    add("正式工作", `至少 ${formatDuration(draft.minEmploymentMonths)}`);
+  }
+  if (draft.minEmploymentOrInternshipMonths > 0) {
+    add(
+      "工作 + 实习",
+      `至少 ${formatDuration(draft.minEmploymentOrInternshipMonths)}`,
+    );
+  }
+  if (draft.experienceTypes.length) {
+    add(
+      "经历",
+      compactFilterValue(
+        draft.experienceTypes.map(
+          (type) =>
+            experienceTypeOptions.find((option) => option.value === type)
+              ?.label ?? type,
+        ),
+      ),
+    );
+  }
+  if (draft.company.trim()) add("公司", draft.company);
+  if (draft.title.trim()) add("职位", draft.title);
+  if (draft.skills.length || draft.skillCategories.length) {
+    add("技能", compactFilterValue([...draft.skills, ...draft.skillCategories]));
+  }
+  if (draft.keywords.length) {
+    add("关键词", compactFilterValue(draft.keywords));
+  }
+
+  return labels;
+}
+
 export function ResultsPane({
   appliedDraft,
   search,
@@ -328,6 +396,7 @@ export function ResultsPane({
   onOpenCandidate,
   onScoreTemplateChange,
   onLoadMore,
+  onReset,
   onUpload,
   scoreTemplateId,
   scoreTemplates,
@@ -339,6 +408,7 @@ export function ResultsPane({
   onOpenCandidate: (item: CandidateSearchItem, tab?: "score") => void;
   onScoreTemplateChange: (templateId: string | null) => void;
   onLoadMore: () => void;
+  onReset: () => void;
   onUpload: () => void;
   scoreTemplateId: string | null;
   scoreTemplates: ScoreTemplate[];
@@ -351,6 +421,11 @@ export function ResultsPane({
   const scoreOrderLabel = selectedScoreTemplate
     ? `按“${selectedScoreTemplate.name} · v${selectedScoreTemplate.version}”综合评分排序`
     : "未选择统一评分模板，按最近更新排序";
+
+  const appliedFilters = appliedFilterLabels(appliedDraft);
+  const visibleAppliedFilters = appliedFilters.slice(0, 4);
+  const hiddenAppliedFilterCount =
+    appliedFilters.length - visibleAppliedFilters.length;
 
   return (
     <section className="results-pane" aria-label="候选人结果">
@@ -394,6 +469,34 @@ export function ResultsPane({
           </BackofficeButton>
         </div>
       </header>
+      {appliedFilters.length > 0 && (
+        <div className="applied-filter-bar" aria-label="已应用的筛选条件">
+          <span className="applied-filter-label">已应用条件</span>
+          <div className="applied-filter-list">
+            {visibleAppliedFilters.map((label) => (
+              <span className="applied-filter-chip" key={label} title={label}>
+                {label}
+              </span>
+            ))}
+            {hiddenAppliedFilterCount > 0 && (
+              <span
+                className="applied-filter-chip applied-filter-chip-more"
+                title={`另有 ${hiddenAppliedFilterCount} 项已应用条件`}
+              >
+                +{hiddenAppliedFilterCount}
+              </span>
+            )}
+          </div>
+          <BackofficeButton
+            ariaLabel="清空筛选条件"
+            className="applied-filter-clear"
+            icon={<Icon name="close" size={14} />}
+            onClick={onReset}
+          >
+            清空条件
+          </BackofficeButton>
+        </div>
+      )}
       <div
         aria-label="候选人结果，可横向滚动查看筛选字段"
         className="table-scroll"

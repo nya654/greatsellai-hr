@@ -8,15 +8,12 @@ import {
 import { Icon, type IconName } from "../../icons";
 import { BackofficeButton } from "../../backoffice/ui/BackofficeButton";
 import type { TrialAccess } from "../../types";
+import type {
+  WorkspaceNavigationView,
+  WorkspaceView,
+} from "./workspace-navigation-types";
 
-export type WorkspaceNavigationView =
-  | "library"
-  | "filter"
-  | "upload"
-  | "score"
-  | "match";
-
-type WorkspaceView = WorkspaceNavigationView | "settings";
+export type { WorkspaceNavigationView } from "./workspace-navigation-types";
 
 const navigation: Array<{
   view: WorkspaceNavigationView;

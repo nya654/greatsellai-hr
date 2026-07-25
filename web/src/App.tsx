@@ -19,25 +19,17 @@ import type {
   RecruitingAgentCandidate,
 } from "./types";
 import { mailboxImportErrorMessages } from "./features/mailbox/mailbox-model";
-import { ResumeLibraryPage } from "./features/library/ResumeLibraryPage";
 import { CandidateDrawer } from "./features/candidate-drawer/CandidateDrawer";
-import { FilterWorkspace } from "./features/filter/FilterWorkspace";
 import { useCandidateSearchController } from "./features/filter/useCandidateSearchController";
-import { ScoreWorkspace } from "./features/scoring/ScoreWorkspace";
-import { MatchWorkspace } from "./features/job-match/MatchWorkspace";
 import { RecruitingAgentDrawer } from "./features/recruiting-agent/RecruitingAgentDrawer";
-import { UploadPage } from "./features/upload/UploadPage";
-import { WorkspaceSettingsPage } from "./features/workspace-settings/WorkspaceSettingsPage";
 import {
   SideRail,
   Topbar,
   TrialStatusBanner,
 } from "./features/workspace-shell/WorkspaceChrome";
 import { useWorkspaceNavigation } from "./features/workspace-shell/useWorkspaceNavigation";
-import {
-  CandidateRequired,
-  ToastRegion,
-} from "./features/workspace-shell/WorkspaceFeedback";
+import { WorkspaceViewRouter } from "./features/workspace-shell/WorkspaceViewRouter";
+import { ToastRegion } from "./features/workspace-shell/WorkspaceFeedback";
 import { useWorkspaceAuth } from "./features/auth/useWorkspaceAuth";
 import { useCandidateDrawerController } from "./features/candidate-drawer/useCandidateDrawerController";
 import {
@@ -690,73 +682,47 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
         />
         <TrialStatusBanner trial={authSession?.trial ?? null} />
         <main className="main-content" id="main-content">
-          {view === "library" && (
-            <ResumeLibraryPage
-              formatError={humanizeError}
-              refreshToken={libraryRefreshToken}
-              selectedResumeId={selectedResumeId}
-              onOpenResume={openLibraryResume}
-              onUpload={() => navigateToView("upload")}
-            />
-          )}
-          {view === "filter" && (
-            <FilterWorkspace
-              appliedDraft={appliedFilter}
-              draft={filterDraft}
-              filterOptions={filterOptions}
-              onDraftChange={updateFilterDraft}
-              savedFilters={savedFilters}
-              search={search}
-              searching={searching}
-              selectedResumeId={selectedResumeId}
-              onReset={resetFilter}
-              onSave={saveCurrentFilter}
-              onApplySaved={applySavedFilter}
-              onDeleteSaved={deleteSavedFilter}
-              onOpenCandidate={openCandidate}
-              onScoreTemplateChange={changeScoreTemplate}
-              onLoadMore={loadMore}
-              onUpload={() => navigateToView("upload")}
-              scoreTemplateId={scoreTemplateId}
-              scoreTemplates={scoreTemplates}
-            />
-          )}
-          <div hidden={view !== "upload"}>
-            <UploadPage
-              formatError={humanizeError}
-              notify={notify}
-              onComplete={openUploadedResume}
-            />
-          </div>
-          {view === "score" && (
-            <ScoreWorkspace
-              formatError={humanizeError}
-              notify={notify}
-              onScoreCreated={handleScoreCreated}
-              onTemplateCreated={registerScoreTemplate}
-            />
-          )}
-          {view === "match" && (
-            <MatchWorkspace
-              canGenerateAiJd={canGenerateAiJd}
-              formatError={humanizeError}
-              notify={notify}
-              onOpenMatchedResume={openMatchedResume}
-            />
-          )}
-          {view === "settings" && canManageSettings && (
-            <WorkspaceSettingsPage
-              activeSection={settingsSection}
-              canManageCandidateData={canManageCandidateData}
-              canManageMailbox={canManageMailbox}
-              formatError={humanizeError}
-              notify={notify}
-              onImported={() => setLibraryRefreshToken((current) => current + 1)}
-              onOpenLibrary={() => navigateToView("library")}
-              onSelectSection={openSettings}
-              role={authSession?.role ?? null}
-            />
-          )}
+          <WorkspaceViewRouter
+            feedback={{ formatError: humanizeError, notify }}
+            filter={{
+              appliedFilter,
+              applySavedFilter,
+              changeScoreTemplate,
+              deleteSavedFilter,
+              filterDraft,
+              filterOptions,
+              loadMore,
+              resetFilter,
+              savedFilters,
+              saveCurrentFilter,
+              scoreTemplateId,
+              scoreTemplates,
+              search,
+              searching,
+              updateFilterDraft,
+            }}
+            library={{
+              refreshToken: libraryRefreshToken,
+              selectedResumeId,
+            }}
+            navigation={{ navigateToView, openSettings }}
+            permissions={{
+              canGenerateAiJd,
+              canManageCandidateData,
+              canManageMailbox,
+              canManageSettings,
+              role: authSession?.role ?? null,
+            }}
+            settingsSection={settingsSection}
+            view={view}
+            onLibraryChanged={refreshLibraryScores}
+            onOpenCandidate={openCandidate}
+            onOpenLibraryResume={openLibraryResume}
+            onOpenMatchedResume={openMatchedResume}
+            onScoreCreated={handleScoreCreated}
+            onTemplateCreated={registerScoreTemplate}
+            onUploadedResume={openUploadedResume}
+          />
         </main>
       </div>
 

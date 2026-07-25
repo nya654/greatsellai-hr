@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
+import type {
+  WorkspaceNavigationView,
+  WorkspaceSettingsSection,
+  WorkspaceView,
+} from "./workspace-navigation-types";
 
-export type WorkspaceNavigationView =
-  | "library"
-  | "filter"
-  | "upload"
-  | "score"
-  | "match";
-export type WorkspaceView = WorkspaceNavigationView | "settings";
-export type WorkspaceSettingsSection = "mailbox" | "data";
+export type {
+  WorkspaceNavigationView,
+  WorkspaceSettingsSection,
+  WorkspaceView,
+} from "./workspace-navigation-types";
 
 function settingsSectionFromHash(
   hash: string,

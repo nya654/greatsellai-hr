@@ -1,9 +1,10 @@
 import { Icon, type IconName } from "../../icons";
 import { CandidateDataLifecyclePage } from "../candidate-data/CandidateDataLifecyclePage";
 import { MailboxPage } from "../mailbox/MailboxPage";
+import type { WorkspaceSettingsSection } from "../workspace-shell/workspace-navigation-types";
 import "./workspace-settings.css";
 
-export type WorkspaceSettingsSection = "mailbox" | "data";
+export type { WorkspaceSettingsSection } from "../workspace-shell/workspace-navigation-types";
 
 export function WorkspaceSettingsPage({
   activeSection,

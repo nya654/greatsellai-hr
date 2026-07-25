@@ -7,40 +7,22 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import {
-  api,
-  isApiError,
-} from "./api";
+import { isApiError } from "./api";
 import {
   LandingPage,
   ROOT_WORKSPACE_BASE_PATH,
 } from "./landing";
 import type {
-  AiExtractionStatus,
-  CandidateSearchDisplayFieldKey,
   CandidateSearchItem,
-  CandidateSearchRequest,
-  CandidateSearchResponse,
-  AwardLevel,
-  DegreeLevel,
-  ExperienceType,
-  FilterOptions,
-  InstitutionClassification,
-  InstitutionTier,
-  LanguageCredentialCode,
-  LeadershipContext,
-  PresenceStatus,
-  ScholarshipLevel,
   JobMatch,
   ResumeLibraryItem,
   RecruitingAgentCandidate,
-  SavedFilter,
-  ScoreTemplate,
 } from "./types";
 import { mailboxImportErrorMessages } from "./features/mailbox/mailbox-model";
 import { ResumeLibraryPage } from "./features/library/ResumeLibraryPage";
 import { CandidateDrawer } from "./features/candidate-drawer/CandidateDrawer";
 import { FilterWorkspace } from "./features/filter/FilterWorkspace";
+import { useCandidateSearchController } from "./features/filter/useCandidateSearchController";
 import { ScoreWorkspace } from "./features/scoring/ScoreWorkspace";
 import { MatchWorkspace } from "./features/job-match/MatchWorkspace";
 import { RecruitingAgentDrawer } from "./features/recruiting-agent/RecruitingAgentDrawer";
@@ -64,16 +46,6 @@ import {
   RegistrationPage,
   ResetPasswordPage,
 } from "./features/auth/AuthPages";
-import {
-  degreeLabels,
-  experienceTypeOptions,
-  formatDuration,
-  institutionClassificationLabel,
-  institutionClassificationLabels,
-  institutionClassificationOptions,
-  sortInstitutionClassifications,
-  type FilterDraft,
-} from "./features/filter/filter-model";
 import type {
   CandidateDrawerTab as DrawerTab,
 } from "./features/candidate-drawer/candidate-drawer-types";
@@ -101,173 +73,6 @@ interface ToastMessage {
   message: string;
 }
 
-const emptySearch: CandidateSearchResponse = {
-  items: [],
-  next_cursor: null,
-  needs_review_count: 0,
-  total_count: 0,
-};
-
-const defaultFilterDraft: FilterDraft = {
-  minEmploymentMonths: 0,
-  minEmploymentOrInternshipMonths: 0,
-  degrees: [],
-  institutionClassifications: [],
-  graduationStatus: "any",
-  freshGraduateStartMonth: `${new Date().getFullYear()}-01`,
-  freshGraduateEndMonth: `${new Date().getFullYear() + 1}-12`,
-  schoolName: "",
-  major: "",
-  minAverageScore: "",
-  minGpaPercent: "",
-  maxRankPosition: "",
-  maxRankPercent: "",
-  experienceTypes: [],
-  experienceName: "",
-  company: "",
-  title: "",
-  experienceAwardLevels: [],
-  experienceAwardResult: "",
-  skills: [],
-  skillCategories: [],
-  skillsMode: "all",
-  languageCredentials: [],
-  languageScores: {},
-  customLanguageName: "",
-  scholarshipStatus: "any",
-  scholarshipName: "",
-  scholarshipLevels: [],
-  competitionStatus: "any",
-  competitionAwardStatus: "any",
-  leadershipContexts: [],
-  leadershipRoles: [],
-  keywords: [],
-  keywordsMode: "broad",
-};
-
-function aiExtractionStatusLabel(status: AiExtractionStatus): string {
-  switch (status) {
-    case "queued":
-      return "已排队";
-    case "running":
-      return "提取中";
-    case "completed":
-      return "已完成，已启用";
-    case "needs_attention":
-      return "需要处理";
-    case "unavailable":
-      return "等待服务配置";
-  }
-}
-
-const degreeOptions: Array<{ value: DegreeLevel; label: string }> = [
-  { value: "doctor", label: "博士" },
-  { value: "master", label: "硕士" },
-  { value: "bachelor", label: "本科" },
-  { value: "associate", label: "大专" },
-  { value: "high_school", label: "高中" },
-  { value: "vocational_or_below", label: "中专/职高及以下" },
-];
-
-const legacyInstitutionTierLabels: Record<InstitutionTier, string> = {
-  ...institutionClassificationLabels,
-  "211": "211",
-  "985": "985",
-  double_first_class: "双一流",
-  key_undergraduate: "重本",
-  first_tier: "一本",
-  second_tier: "二本",
-  regular_undergraduate: "普通本科",
-  private_undergraduate: "民办本科",
-  higher_vocational: "高职/高专",
-  overseas: "海外院校",
-};
-
-/**
- * A small subset of historical tiers is semantically identical to a new
- * classification. Everything else must be reselected rather than widened.
- */
-const legacyTierClassificationMap: Partial<
-  Record<InstitutionTier, InstitutionClassification[]>
-> = {
-  "985": ["985"],
-  // The product now defines 211 as 211-only. A legacy saved "211" condition
-  // therefore adopts the explicit new meaning instead of silently widening
-  // back to 985 candidates.
-  "211": ["211"],
-  regular_undergraduate: ["undergraduate"],
-  higher_vocational: ["associate"],
-  overseas: ["overseas"],
-};
-
-const fallbackFilterOptions: FilterOptions = {
-  schema_version: "filter-options.v2.fallback",
-  degrees: degreeOptions,
-  institution_classifications: institutionClassificationOptions,
-  institution_tiers: [],
-  experience_types: experienceTypeOptions,
-  skill_categories: [
-    { value: "software", label: "编程与开发" },
-    { value: "data_ai", label: "数据与 AI" },
-    { value: "product_project", label: "产品与项目" },
-    { value: "design_content", label: "设计与内容" },
-    { value: "marketing_ecommerce_operations", label: "市场、电商与运营" },
-    { value: "sales_customer_service", label: "销售与客户服务" },
-    { value: "supply_chain_logistics", label: "供应链与物流" },
-    { value: "finance_legal_hr", label: "财务、法务与人力资源" },
-    { value: "office_collaboration", label: "办公与协作工具" },
-    { value: "industry_professional", label: "行业专业技能" },
-  ],
-  leadership_contexts: [
-    { value: "class", label: "班级" },
-    { value: "student_org", label: "学生会/校内组织" },
-    { value: "club", label: "社团" },
-    { value: "project_team", label: "项目组" },
-    { value: "company", label: "公司" },
-  ],
-  award_levels: [
-    { value: "national", label: "国家级" },
-    { value: "provincial", label: "省级" },
-    { value: "school", label: "校级" },
-    { value: "department", label: "院系级" },
-    { value: "other", label: "其他明确级别" },
-  ],
-  scholarship_levels: [
-    { value: "national", label: "国家级" },
-    { value: "provincial", label: "省级" },
-    { value: "school", label: "校级" },
-    { value: "department", label: "院系级" },
-    { value: "enterprise", label: "企业/社会奖学金" },
-    { value: "other", label: "其他明确级别" },
-  ],
-  language_credentials: [
-    { value: "cet4", label: "大学英语四级（CET-4）" },
-    { value: "cet6", label: "大学英语六级（CET-6）" },
-    { value: "ielts", label: "雅思（IELTS）" },
-    { value: "toefl", label: "托福（TOEFL）" },
-    { value: "tem4", label: "英语专业四级（TEM-4）" },
-    { value: "tem8", label: "英语专业八级（TEM-8）" },
-    { value: "bec", label: "剑桥商务英语（BEC）" },
-    { value: "toeic", label: "托业（TOEIC）" },
-    { value: "custom", label: "其他英语证书（自定义填写）" },
-  ],
-  graduation_statuses: [
-    { value: "any", label: "不限" },
-    { value: "fresh", label: "应届" },
-    { value: "previous", label: "往届" },
-  ],
-  presence_statuses: [
-    { value: "any", label: "不限" },
-    { value: "present", label: "有明确记录" },
-    { value: "unknown", label: "未知" },
-  ],
-  keyword_modes: [
-    { value: "broad", label: "泛匹配" },
-    { value: "precise", label: "精准匹配" },
-  ],
-};
-
-
 function settingsSectionFromHash(hash: string): SettingsSection | null {
   const value = hash
     .replace(/^#/, "")
@@ -282,50 +87,6 @@ function settingsSectionFromHash(hash: string): SettingsSection | null {
 
 function settingsHash(section: SettingsSection): string {
   return `#settings/${section}`;
-}
-
-const AUTO_FILTER_SEARCH_DELAY_MS = 350;
-
-function freshDefaultFilter(): FilterDraft {
-  return {
-    ...defaultFilterDraft,
-    degrees: [],
-    institutionClassifications: [],
-    experienceTypes: [],
-    experienceAwardLevels: [],
-    skills: [],
-    skillCategories: [],
-    languageCredentials: [],
-    languageScores: {},
-    scholarshipLevels: [],
-    leadershipContexts: [],
-    leadershipRoles: [],
-    keywords: [],
-  };
-}
-
-/**
- * The result table must describe the request that produced the rows, rather
- * than the controls a recruiter may be editing for their next search.  Keep a
- * shallow object copy plus copies of every mutable collection so the applied
- * request remains stable while the left-hand form changes.
- */
-function snapshotFilterDraft(draft: FilterDraft): FilterDraft {
-  return {
-    ...draft,
-    degrees: [...draft.degrees],
-    institutionClassifications: [...draft.institutionClassifications],
-    experienceTypes: [...draft.experienceTypes],
-    experienceAwardLevels: [...draft.experienceAwardLevels],
-    skills: [...draft.skills],
-    skillCategories: [...draft.skillCategories],
-    languageCredentials: [...draft.languageCredentials],
-    languageScores: { ...draft.languageScores },
-    scholarshipLevels: [...draft.scholarshipLevels],
-    leadershipContexts: [...draft.leadershipContexts],
-    leadershipRoles: [...draft.leadershipRoles],
-    keywords: [...draft.keywords],
-  };
 }
 
 function humanizeError(error: unknown): string {
@@ -455,286 +216,6 @@ function humanizeError(error: unknown): string {
     return `操作没有完成：${error.message}`;
   }
   return "操作没有完成。请检查网络后重试。";
-}
-
-function draftToSearchRequest(
-  draft: FilterDraft,
-  cursor: string | null = null,
-  scoreTemplateId: string | null = null,
-): CandidateSearchRequest {
-  const request: CandidateSearchRequest = {
-    schema_version: "candidate_filter.v2",
-    limit: 50,
-    cursor,
-  };
-
-  if (draft.minEmploymentMonths > 0) {
-    request.min_employment_months = draft.minEmploymentMonths;
-  }
-  if (draft.minEmploymentOrInternshipMonths > 0) {
-    request.min_employment_or_internship_months =
-      draft.minEmploymentOrInternshipMonths;
-  }
-  if (draft.degrees.length) request.highest_degree_in = draft.degrees;
-  if (draft.graduationStatus !== "any") {
-    request.graduation_status = draft.graduationStatus;
-    request.fresh_graduate_start_month =
-      draft.freshGraduateStartMonth || defaultFilterDraft.freshGraduateStartMonth;
-    request.fresh_graduate_end_month =
-      draft.freshGraduateEndMonth || defaultFilterDraft.freshGraduateEndMonth;
-  }
-  if (
-    draft.institutionClassifications.length ||
-    draft.schoolName.trim() ||
-    draft.major.trim() ||
-    draft.minAverageScore ||
-    draft.minGpaPercent ||
-    draft.maxRankPosition ||
-    draft.maxRankPercent
-  ) {
-    request.education_any_of = [
-      {
-        school_name_contains: draft.schoolName.trim()
-          ? [draft.schoolName.trim()]
-          : [],
-        major_contains: draft.major.trim() ? [draft.major.trim()] : [],
-        institution_classifications_any_of: draft.institutionClassifications,
-        min_average_score: draft.minAverageScore
-          ? Number(draft.minAverageScore)
-          : null,
-        min_gpa_percent: draft.minGpaPercent
-          ? Number(draft.minGpaPercent)
-          : null,
-        max_rank_position: draft.maxRankPosition
-          ? Number(draft.maxRankPosition)
-          : null,
-        max_rank_percent: draft.maxRankPercent
-          ? Number(draft.maxRankPercent)
-          : null,
-      },
-    ];
-  }
-  if (
-    draft.experienceTypes.length ||
-    draft.experienceName.trim() ||
-    draft.company.trim() ||
-    draft.title.trim() ||
-    draft.experienceAwardLevels.length ||
-    draft.experienceAwardResult.trim()
-  ) {
-    request.experience_any_of = [
-      {
-        experience_types: draft.experienceTypes.length
-          ? draft.experienceTypes
-          : experienceTypeOptions.map((option) => option.value),
-        experience_name_contains: draft.experienceName.trim()
-          ? [draft.experienceName.trim()]
-          : [],
-        organization_name_contains: draft.company.trim()
-          ? [draft.company.trim()]
-          : [],
-        title_contains: draft.title.trim() ? [draft.title.trim()] : [],
-        award_levels_any_of: draft.experienceAwardLevels,
-        award_result_contains: draft.experienceAwardResult.trim()
-          ? [draft.experienceAwardResult.trim()]
-          : [],
-      },
-    ];
-  }
-  if (draft.skillCategories.length) {
-    request.skill_categories_any_of = draft.skillCategories;
-  }
-  if (draft.skills.length) {
-    if (draft.skillsMode === "all") request.skills_all_of = draft.skills;
-    else request.skills_any_of = draft.skills;
-  }
-  const validLanguageCredentials = draft.languageCredentials.filter(
-    (code) => code !== "custom" || Boolean(draft.customLanguageName.trim()),
-  );
-  if (validLanguageCredentials.length) {
-    request.language_credentials_any_of = validLanguageCredentials.map(
-      (credential_code) => ({
-        credential_code,
-        custom_name_contains:
-          credential_code === "custom"
-            ? draft.customLanguageName.trim()
-            : null,
-        min_score: draft.languageScores[credential_code]
-          ? Number(draft.languageScores[credential_code])
-          : null,
-      }),
-    );
-  }
-  if (draft.scholarshipStatus !== "any" || draft.scholarshipName.trim()) {
-    request.scholarship_status = draft.scholarshipStatus;
-    request.scholarship_name_contains =
-      draft.scholarshipStatus === "present" && draft.scholarshipName.trim()
-      ? [draft.scholarshipName.trim()]
-      : [];
-    request.scholarship_levels_any_of =
-      draft.scholarshipStatus === "present" ? draft.scholarshipLevels : [];
-  }
-  if (draft.competitionStatus !== "any") {
-    request.competition_status = draft.competitionStatus;
-  }
-  if (draft.competitionAwardStatus !== "any") {
-    request.competition_award_status = draft.competitionAwardStatus;
-  }
-  if (draft.leadershipContexts.length || draft.leadershipRoles.length) {
-    request.leadership_any_of = [
-      {
-        contexts_any_of: draft.leadershipContexts,
-        roles_any_of: draft.leadershipRoles,
-      },
-    ];
-  }
-  if (draft.keywords.length) {
-    request.keywords = draft.keywords;
-    request.keyword_match_mode = draft.keywordsMode;
-  }
-  if (scoreTemplateId) request.score_template_id = scoreTemplateId;
-  return request;
-}
-
-type SavedFilterDraftResult =
-  | { draft: FilterDraft; error: null }
-  | { draft: null; error: string };
-
-function savedInstitutionClassifications(
-  request: CandidateSearchRequest,
-): { classifications: InstitutionClassification[]; error: string | null } {
-  const education = request.education_any_of?.[0];
-  const currentClassifications =
-    education?.institution_classifications_any_of ?? [];
-  const legacyTiers = education?.institution_tiers_any_of ?? [];
-
-  if (request.is_985_211 === false) {
-    return {
-      classifications: [],
-      error: "该历史筛选含有已下线的“非 985/211”条件，无法无损迁移。请重新设置院校类型后保存。",
-    };
-  }
-
-  const unsupportedTiers = legacyTiers.filter(
-    (tier) => !legacyTierClassificationMap[tier],
-  );
-  if (unsupportedTiers.length) {
-    return {
-      classifications: [],
-      error: `该历史筛选包含已下线的院校层级（${unsupportedTiers
-        .map((tier) => legacyInstitutionTierLabels[tier])
-        .join("、")}），无法无损迁移。请重新设置院校类型后保存。`,
-    };
-  }
-
-  if (currentClassifications.length) {
-    if (legacyTiers.length) {
-      return {
-        classifications: [],
-        error: "该历史筛选同时包含新旧院校条件，无法无损迁移。请重新设置院校类型后保存。",
-      };
-    }
-    if (
-      request.is_985_211 === true &&
-      currentClassifications.some(
-        (classification) => classification !== "985" && classification !== "211",
-      )
-    ) {
-      return {
-        classifications: [],
-        error: "该历史筛选同时包含旧版 985/211 与其他院校条件，无法无损迁移。请重新设置院校类型后保存。",
-      };
-    }
-    return {
-      classifications: sortInstitutionClassifications(currentClassifications),
-      error: null,
-    };
-  }
-
-  if (request.is_985_211 === true && legacyTiers.some(
-    (tier) => tier !== "985" && tier !== "211",
-  )) {
-    return {
-      classifications: [],
-      error: "该历史筛选同时包含旧版 985/211 与其他院校条件，无法无损迁移。请重新设置院校类型后保存。",
-    };
-  }
-
-  // A saved tier and the old top-level flag were combined with AND. When a
-  // tier is present it is therefore more specific than the old aggregate flag.
-  const classifications = legacyTiers.length
-    ? legacyTiers.flatMap((tier) => legacyTierClassificationMap[tier] ?? [])
-    : request.is_985_211 === true
-      ? (["985", "211"] as InstitutionClassification[])
-      : [];
-  return {
-    classifications: sortInstitutionClassifications(classifications),
-    error: null,
-  };
-}
-
-function searchRequestToDraft(
-  request: CandidateSearchRequest,
-): SavedFilterDraftResult {
-  const education = request.education_any_of?.[0];
-  const experience = request.experience_any_of?.[0];
-  const savedDegrees = request.highest_degree_in ?? education?.degree_in ?? [];
-  const institutionMigration = savedInstitutionClassifications(request);
-  if (institutionMigration.error) {
-    return { draft: null, error: institutionMigration.error };
-  }
-  return {
-    draft: {
-      minEmploymentMonths: request.min_employment_months ?? 0,
-      minEmploymentOrInternshipMonths:
-        request.min_employment_or_internship_months ?? 0,
-      degrees: savedDegrees.filter((degree) => degree !== "unknown"),
-      institutionClassifications: institutionMigration.classifications,
-      graduationStatus: request.graduation_status ?? "any",
-      freshGraduateStartMonth:
-        request.fresh_graduate_start_month ?? defaultFilterDraft.freshGraduateStartMonth,
-      freshGraduateEndMonth:
-        request.fresh_graduate_end_month ?? defaultFilterDraft.freshGraduateEndMonth,
-      schoolName: education?.school_name_contains?.[0] ?? "",
-      major: education?.major_contains?.[0] ?? "",
-      minAverageScore: education?.min_average_score?.toString() ?? "",
-      minGpaPercent: education?.min_gpa_percent?.toString() ?? "",
-      maxRankPosition: education?.max_rank_position?.toString() ?? "",
-      maxRankPercent: education?.max_rank_percent?.toString() ?? "",
-      experienceTypes: experience?.experience_types ?? [],
-      experienceName: experience?.experience_name_contains?.[0] ?? "",
-      company: experience?.organization_name_contains?.[0] ?? "",
-      title: experience?.title_contains?.[0] ?? "",
-      experienceAwardLevels: experience?.award_levels_any_of ?? [],
-      experienceAwardResult: experience?.award_result_contains?.[0] ?? "",
-      skills: request.skills_all_of ?? request.skills_any_of ?? [],
-      skillCategories: request.skill_categories_any_of ?? [],
-      skillsMode: request.skills_any_of?.length ? "any" : "all",
-      languageCredentials:
-        request.language_credentials_any_of?.map((item) => item.credential_code) ?? [],
-      languageScores: Object.fromEntries(
-        (request.language_credentials_any_of ?? [])
-          .filter((item) => item.min_score != null)
-          .map((item) => [item.credential_code, String(item.min_score)]),
-      ),
-      customLanguageName:
-        request.language_credentials_any_of?.find(
-          (item) => item.credential_code === "custom",
-        )?.custom_name_contains ?? "",
-      scholarshipStatus: request.scholarship_status ?? "any",
-      scholarshipName: request.scholarship_name_contains?.[0] ?? "",
-      scholarshipLevels: request.scholarship_levels_any_of ?? [],
-      competitionStatus: request.competition_status ?? "any",
-      competitionAwardStatus: request.competition_award_status ?? "any",
-      leadershipContexts: request.leadership_any_of?.[0]?.contexts_any_of ?? [],
-      leadershipRoles: request.leadership_any_of?.[0]?.roles_any_of ?? [],
-      keywords: request.keywords ?? request.keywords_all_of ?? request.keywords_any_of ?? [],
-      keywordsMode:
-        request.keyword_match_mode ??
-        (request.keywords_all_of?.length ? "precise" : "broad"),
-    },
-    error: null,
-  };
 }
 
 function isLocalDevelopmentHost(hostname: string) {
@@ -906,27 +387,10 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
   const [settingsSection, setSettingsSection] = useState<SettingsSection>(
     () => settingsSectionFromHash(window.location.hash) ?? "mailbox",
   );
-  const [filterDraft, setFilterDraft] =
-    useState<FilterDraft>(freshDefaultFilter);
-  const [appliedFilter, setAppliedFilter] =
-    useState<FilterDraft>(freshDefaultFilter);
-  const [filterOptions, setFilterOptions] = useState<FilterOptions>(
-    fallbackFilterOptions,
-  );
-  const [scoreTemplates, setScoreTemplates] = useState<ScoreTemplate[]>([]);
-  const [scoreTemplateId, setScoreTemplateId] = useState<string | null>(null);
-  const [search, setSearch] = useState<CandidateSearchResponse>(emptySearch);
-  const [searching, setSearching] = useState(false);
-  const [savedFilters, setSavedFilters] = useState<SavedFilter[]>([]);
   const [agentOpen, setAgentOpen] = useState(false);
   const [libraryRefreshToken, setLibraryRefreshToken] = useState(0);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [globalQuery, setGlobalQuery] = useState("");
-  const filterDraftRef = useRef(filterDraft);
-  const appliedFilterRef = useRef(appliedFilter);
-  const scoreTemplateIdRef = useRef<string | null>(null);
-  const searchRequestRef = useRef(0);
-  const scheduledFilterSearchRef = useRef<number | null>(null);
   const agentTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   const notify = useCallback((kind: ToastKind, message: string) => {
@@ -978,6 +442,39 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     workspaceHref,
   });
 
+  const {
+    appliedFilter,
+    applySavedFilter,
+    changeScoreTemplate,
+    deleteSavedFilter,
+    filterDraft,
+    filterOptions,
+    loadMore,
+    refreshCurrentResults,
+    registerScoreTemplate,
+    resetFilter,
+    savedFilters,
+    scoreTemplateId,
+    scoreTemplates,
+    search,
+    searchKeywords,
+    searching,
+    saveCurrentFilter,
+    updateFilterDraft,
+  } = useCandidateSearchController({
+    enabled:
+      authState === "authenticated" &&
+      !authRoute &&
+      !authSession?.email_verification_required,
+    formatError: humanizeError,
+    notify,
+  });
+
+  const handleScoreCreated = useCallback(() => {
+    refreshLibraryScores();
+    refreshCurrentResults();
+  }, [refreshCurrentResults, refreshLibraryScores]);
+
   const canManageMailbox =
     authSession?.role === "admin" &&
     authSession.plan?.feature_flags.mailbox_import === true;
@@ -1023,28 +520,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     window.requestAnimationFrame(() => agentTriggerRef.current?.focus());
   }, []);
 
-  const replaceFilterDraft = useCallback((next: FilterDraft) => {
-    filterDraftRef.current = next;
-    setFilterDraft(next);
-  }, []);
-
-  const cancelScheduledFilterSearch = useCallback(() => {
-    if (scheduledFilterSearchRef.current === null) return;
-    window.clearTimeout(scheduledFilterSearchRef.current);
-    scheduledFilterSearchRef.current = null;
-  }, []);
-
-  const replaceAppliedFilter = useCallback((next: FilterDraft) => {
-    const snapshot = snapshotFilterDraft(next);
-    appliedFilterRef.current = snapshot;
-    setAppliedFilter(snapshot);
-  }, []);
-
-  const replaceScoreTemplateId = useCallback((next: string | null) => {
-    scoreTemplateIdRef.current = next;
-    setScoreTemplateId(next);
-  }, []);
-
   useEffect(() => {
     const titles: Record<AuthRoute, string> = {
       login: "登录｜GreatSell AI 招聘工具",
@@ -1055,140 +530,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     };
     document.title = authRoute ? titles[authRoute] : "招聘工作台｜GreatSell AI";
   }, [authRoute]);
-
-  const refreshSavedFilters = useCallback(async () => {
-    try {
-      setSavedFilters(await api.listSavedFilters());
-    } catch (error) {
-      notify("error", humanizeError(error));
-    }
-  }, [notify]);
-
-  const runSearch = useCallback(
-    async (
-      draft: FilterDraft,
-      append = false,
-      cursor: string | null = null,
-      selectedScoreTemplateId: string | null = scoreTemplateIdRef.current,
-    ) => {
-      const requestId = ++searchRequestRef.current;
-      setSearching(true);
-      try {
-        const response = await api.searchCandidates(
-          draftToSearchRequest(draft, cursor, selectedScoreTemplateId),
-        );
-        if (requestId !== searchRequestRef.current) return;
-        setSearch((current) => ({
-          ...response,
-          items: append
-            ? [...current.items, ...response.items]
-            : response.items,
-        }));
-        if (!append) replaceAppliedFilter(draft);
-      } catch (error) {
-        if (requestId === searchRequestRef.current) {
-          notify("error", humanizeError(error));
-        }
-      } finally {
-        if (requestId === searchRequestRef.current) setSearching(false);
-      }
-    },
-    [notify, replaceAppliedFilter],
-  );
-
-  const updateFilterDraft = useCallback(
-    (next: FilterDraft, timing: "immediate" | "debounced" = "immediate") => {
-      replaceFilterDraft(next);
-      cancelScheduledFilterSearch();
-      if (timing === "immediate") {
-        void runSearch(next);
-        return;
-      }
-
-      // Invalidate an in-flight result while the recruiter keeps typing, so
-      // an older request cannot briefly present rows for stale conditions.
-      searchRequestRef.current += 1;
-      setSearching(true);
-      scheduledFilterSearchRef.current = window.setTimeout(() => {
-        scheduledFilterSearchRef.current = null;
-        void runSearch(next);
-      }, AUTO_FILTER_SEARCH_DELAY_MS);
-    },
-    [cancelScheduledFilterSearch, replaceFilterDraft, runSearch],
-  );
-
-  useEffect(
-    () => () => cancelScheduledFilterSearch(),
-    [cancelScheduledFilterSearch],
-  );
-
-  const registerScoreTemplate = useCallback(
-    (template: ScoreTemplate) => {
-      setScoreTemplates((current) => [
-        template,
-        ...current.filter((item) => item.template_id !== template.template_id),
-      ]);
-      replaceScoreTemplateId(template.template_id);
-      void runSearch(
-        appliedFilterRef.current,
-        false,
-        null,
-        template.template_id,
-      );
-    },
-    [replaceScoreTemplateId, runSearch],
-  );
-
-  const handleScoreCreated = useCallback(() => {
-    refreshLibraryScores();
-    void runSearch(appliedFilterRef.current);
-  }, [refreshLibraryScores, runSearch]);
-
-  useEffect(() => {
-    if (
-      authState !== "authenticated" ||
-      authRoute ||
-      authSession?.email_verification_required
-    )
-      return;
-    void runSearch(defaultFilterDraft);
-    void refreshSavedFilters();
-    void api.getFilterOptions().then((options) => {
-      setFilterOptions({
-        ...fallbackFilterOptions,
-        ...options,
-        institution_classifications:
-          options.institution_classifications?.length
-            ? options.institution_classifications
-            : fallbackFilterOptions.institution_classifications,
-      });
-    }).catch(() => {
-      setFilterOptions(fallbackFilterOptions);
-    });
-    void api.listScoreTemplates().then((templates) => {
-      setScoreTemplates(templates);
-      const defaultTemplateId = templates[0]?.template_id ?? null;
-      replaceScoreTemplateId(defaultTemplateId);
-      if (defaultTemplateId) {
-        void runSearch(
-          appliedFilterRef.current,
-          false,
-          null,
-          defaultTemplateId,
-        );
-      }
-    }).catch(() => {
-      setScoreTemplates([]);
-      replaceScoreTemplateId(null);
-    });
-  }, [
-    authRoute,
-    authSession?.email_verification_required,
-    authState,
-    refreshSavedFilters,
-    replaceScoreTemplateId,
-    runSearch,
-  ]);
 
   useEffect(() => {
     if (
@@ -1322,77 +663,14 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     [openResume],
   );
 
-  const resetFilter = async () => {
-    cancelScheduledFilterSearch();
-    const clean = freshDefaultFilter();
-    replaceFilterDraft(clean);
-    await runSearch(clean);
-  };
-
-  const changeScoreTemplate = useCallback(
-    (nextTemplateId: string | null) => {
-      replaceScoreTemplateId(nextTemplateId);
-      void runSearch(
-        appliedFilterRef.current,
-        false,
-        null,
-        nextTemplateId,
-      );
-    },
-    [replaceScoreTemplateId, runSearch],
-  );
-
-  const saveCurrentFilter = async (name: string) => {
-    const normalized = name.trim();
-    if (!normalized) {
-      notify("error", "请为这组筛选条件填写一个名称。");
-      return;
-    }
-    try {
-      await api.createSavedFilter({
-        name: normalized,
-        filters: draftToSearchRequest(filterDraftRef.current),
-      });
-      await refreshSavedFilters();
-      notify("success", `已保存“${normalized}”。`);
-    } catch (error) {
-      notify("error", humanizeError(error));
-    }
-  };
-
-  const applySavedFilter = (filter: SavedFilter): boolean => {
-    const result = searchRequestToDraft(filter.filters);
-    if (!result.draft) {
-      notify("error", result.error);
-      return false;
-    }
-    cancelScheduledFilterSearch();
-    replaceFilterDraft(result.draft);
-    void runSearch(result.draft);
-    return true;
-  };
-
-  const deleteSavedFilter = async (filter: SavedFilter) => {
-    try {
-      await api.deleteSavedFilter(filter.saved_filter_id);
-      await refreshSavedFilters();
-      notify("success", `已删除“${filter.name}”。`);
-    } catch (error) {
-      notify("error", humanizeError(error));
-    }
-  };
-
   const handleGlobalSearch = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.key !== "Enter") return;
     const terms = globalQuery
       .split(/[、,，\s]+/)
       .map((term) => term.trim())
       .filter(Boolean);
-    const next = { ...filterDraftRef.current, keywords: terms };
-    cancelScheduledFilterSearch();
-    replaceFilterDraft(next);
     navigateToView("filter");
-    void runSearch(next);
+    searchKeywords(terms);
   };
 
   if (authState === "checking") {
@@ -1531,9 +809,7 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
               onDeleteSaved={deleteSavedFilter}
               onOpenCandidate={openCandidate}
               onScoreTemplateChange={changeScoreTemplate}
-              onLoadMore={() =>
-                void runSearch(appliedFilterRef.current, true, search.next_cursor)
-              }
+              onLoadMore={loadMore}
               onUpload={() => navigateToView("upload")}
               scoreTemplateId={scoreTemplateId}
               scoreTemplates={scoreTemplates}

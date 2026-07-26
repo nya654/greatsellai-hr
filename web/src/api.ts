@@ -63,6 +63,8 @@ import type {
   ResumeSummary,
   ResumeSummaryManualCreate,
   ResumeUploadResponse,
+  RecruitingAgentContextBindInput,
+  RecruitingAgentConversation,
   RecruitingAgentTurn,
   RecruitingAgentTurnInput,
   TalentSearchProfile,
@@ -392,6 +394,28 @@ export function createApiClient(options: ApiClientOptions = {}) {
         method: "POST",
         body: input,
       });
+    },
+
+    getRecruitingAgentConversation(conversationId: string): Promise<RecruitingAgentConversation> {
+      return request<RecruitingAgentConversation>(
+        `/recruiting-agent/conversations/${resourcePath(conversationId)}`,
+      );
+    },
+
+    bindRecruitingAgentContext(
+      input: RecruitingAgentContextBindInput,
+    ): Promise<RecruitingAgentConversation> {
+      return request<RecruitingAgentConversation>("/recruiting-agent/conversations/context", {
+        method: "POST",
+        body: input,
+      });
+    },
+
+    deleteRecruitingAgentConversation(conversationId: string): Promise<void> {
+      return request<void>(
+        `/recruiting-agent/conversations/${resourcePath(conversationId)}`,
+        { method: "DELETE" },
+      );
     },
 
     async health(): Promise<{ status: string }> {

@@ -848,16 +848,19 @@ def test_agent_rejects_client_supplied_candidate_binding(client: TestClient) -> 
 def test_agent_context_reference_rejects_browser_candidate_or_resume_ids(
     client: TestClient,
 ) -> None:
+    payload = {
+        "context_ref": {
+            "kind": "talent_search_run",
+            "run_id": "profile-run-001",
+            "resume_ids": ["browser-supplied-resume"],
+            "candidate_ids": ["browser-supplied-candidate"],
+        },
+    }
     response = client.post(
         "/v1/recruiting-agent/turns",
         json={
             "message": "在上次人才画像结果中比较",
-            "context_ref": {
-                "kind": "talent_search_run",
-                "run_id": "profile-run-001",
-                "resume_ids": ["browser-supplied-resume"],
-                "candidate_ids": ["browser-supplied-candidate"],
-            },
+            **payload,
         },
     )
 
@@ -865,6 +868,17 @@ def test_agent_context_reference_rejects_browser_candidate_or_resume_ids(
     locations = {tuple(item["loc"]) for item in response.json()["detail"]}
     assert ("body", "context_ref", "resume_ids") in locations
     assert ("body", "context_ref", "candidate_ids") in locations
+
+    binding_response = client.post(
+        "/v1/recruiting-agent/conversations/context",
+        json=payload,
+    )
+    assert binding_response.status_code == 422
+    binding_locations = {
+        tuple(item["loc"]) for item in binding_response.json()["detail"]
+    }
+    assert ("body", "context_ref", "resume_ids") in binding_locations
+    assert ("body", "context_ref", "candidate_ids") in binding_locations
 
 
 def test_agent_rejects_a_stale_conversation_context_version(

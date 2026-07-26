@@ -141,6 +141,7 @@ from app.schemas import (
     ResumeScholarshipResponse,
     ResumeSkillResponse,
     ResumeUploadResponse,
+    RecruitingAgentContextBindRequest,
     RecruitingAgentConversationResponse,
     RecruitingAgentRequest,
     RecruitingAgentResponse,
@@ -289,6 +290,7 @@ from app.services.recruiting_agent_service import (
     RecruitingAgentConversationNotFoundError,
     RecruitingAgentContextReferenceNotFoundError,
     RecruitingAgentServiceError,
+    bind_recruiting_agent_context,
     delete_recruiting_agent_conversation,
     get_recruiting_agent_conversation,
     run_recruiting_agent_turn,
@@ -2767,6 +2769,57 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="agent_conversation_not_found",
             ) from exc
+
+    @app.post(
+        "/v1/recruiting-agent/conversations/context",
+        response_model=RecruitingAgentConversationResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def bind_recruiting_agent_work_context(
+        payload: RecruitingAgentContextBindRequest,
+        principal: AuthPrincipal = Depends(require_single_admin),
+        session: Session = Depends(get_session),
+    ) -> RecruitingAgentConversationResponse:
+        """Use one verified talent-profile run as the private Agent scope.
+
+        This is intentionally not an AI turn: it lets the recruiter choose a
+        visible result set before asking a follow-up question, without storing
+        browser candidate IDs or spending an LLM call.
+        """
+
+        try:
+            response = bind_recruiting_agent_context(
+                session,
+                payload=payload,
+                actor_user_id=principal.user.id,
+            )
+            _commit_or_raise(session)
+        except (
+            RecruitingAgentConversationNotFoundError,
+            RecruitingAgentContextReferenceNotFoundError,
+        ) as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    "agent_context_reference_not_found"
+                    if isinstance(exc, RecruitingAgentContextReferenceNotFoundError)
+                    else "agent_conversation_not_found"
+                ),
+            ) from exc
+        except RecruitingAgentConversationConflictError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="agent_conversation_stale",
+            ) from exc
+        except StaleDataError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="agent_conversation_stale",
+            ) from exc
+        return response
 
     @app.delete(
         "/v1/recruiting-agent/conversations/{conversation_id}",

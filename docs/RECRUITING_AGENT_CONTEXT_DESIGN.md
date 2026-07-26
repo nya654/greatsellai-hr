@@ -48,6 +48,8 @@ LangGraph 不配置 checkpointer。持久化真相仍是带组织范围约束的
 
 `POST /v1/recruiting-agent/turns` 返回 `conversation_id`、`context_version` 与安全摘要。首次回合不传版本；后续回合携带 `conversation_id` 时必须同时携带最新 `context_version`。数据库行锁与乐观版本共同阻止两个标签页静默覆盖范围。
 
-已提供 `GET` / `DELETE /v1/recruiting-agent/conversations/{id}` 供新的前端接入恢复或清除会话。当前旧前端正在重构，本分支不改动其界面或浏览器存储；新的前端应只保存不透明会话 ID，不保存候选人 ID、简历内容或聊天记录。
+`POST /v1/recruiting-agent/conversations/context` 可在不调用模型的前提下，把一个当前工作区内的 `talent_search_run` 设为 Agent 工作范围。它同样使用会话版本保护，并且只接受受控的 `run_id`；前端不能借此提交候选人 ID 或简历内容。
+
+已提供 `GET` / `DELETE /v1/recruiting-agent/conversations/{id}` 供前端恢复或清除会话。前端只在 `sessionStorage` 保存按“工作区 + 用户”分隔的不透明会话 ID；刷新后只恢复当前候选范围和 JD 摘要，不恢复聊天记录、候选人 ID、简历内容或模型输出。人才画像结果只有在招聘人员明确点选后才会调用上下文绑定接口。
 
 会话不存在、已过期、跨工作区或非所有者访问统一按不可访问处理；上下文版本过期返回冲突，前端先重新读取当前安全摘要再允许用户重试。

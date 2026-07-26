@@ -32,6 +32,7 @@ from app.schemas import (
     RecruitingAgentActiveContext,
     RecruitingAgentAction,
     RecruitingAgentCandidate,
+    RecruitingAgentContextBindRequest,
     RecruitingAgentConversationResponse,
     RecruitingAgentRequest,
     RecruitingAgentResponse,
@@ -1008,10 +1009,61 @@ def _set_conversation_job(
 
     if "job_version_id" not in payload.model_fields_set:
         return
+    _set_explicit_conversation_job(conversation, job=job)
+
+
+def _set_explicit_conversation_job(
+    conversation: RecruitingAgentConversation,
+    *,
+    job: ResolvedJob | None,
+) -> None:
+    """Apply an explicit recruiter JD choice to a private work session."""
+
     job_version_id = job.job_version_id if job is not None else None
     if conversation.active_job_version_id != job_version_id:
         conversation.active_job_version_id = job_version_id
         _advance_conversation_context(conversation)
+
+
+def bind_recruiting_agent_context(
+    session: Session,
+    *,
+    payload: RecruitingAgentContextBindRequest,
+    actor_user_id: str,
+) -> RecruitingAgentConversationResponse:
+    """Bind a verified talent-profile result set without invoking the model.
+
+    The UI uses this deliberate action when a recruiter asks to continue a
+    confirmed talent-search result in the Agent.  The server validates the
+    run in the current workspace and freezes opaque resume references; it
+    never accepts a browser-provided candidate selection.
+    """
+
+    conversation = _conversation_or_create(
+        session,
+        conversation_id=payload.conversation_id,
+        context_version=payload.context_version,
+        actor_user_id=actor_user_id,
+        require_context_version=True,
+    )
+    requested_job_version_id = (payload.job_version_id or "").strip()
+    job = (
+        _resolve_job(session, requested_job_version_id)
+        if requested_job_version_id
+        else None
+    )
+    _set_explicit_conversation_job(conversation, job=job)
+    _bind_talent_search_run_context(
+        session,
+        conversation=conversation,
+        run_id=payload.context_ref.run_id,
+    )
+    _touch_conversation(session, conversation=conversation)
+    return _conversation_response(
+        session,
+        conversation=conversation,
+        current_job=job,
+    )
 
 
 def _deduplicate_resume_ids(values: list[str]) -> list[str]:
@@ -3176,6 +3228,7 @@ __all__ = [
     "RecruitingAgentConversationNotFoundError",
     "RecruitingAgentContextReferenceNotFoundError",
     "RecruitingAgentServiceError",
+    "bind_recruiting_agent_context",
     "delete_recruiting_agent_conversation",
     "get_recruiting_agent_conversation",
     "purge_expired_recruiting_agent_conversations",

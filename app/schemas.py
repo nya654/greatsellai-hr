@@ -1208,6 +1208,32 @@ class RecruitingAgentConversationResponse(ApiModel):
     active_context: RecruitingAgentActiveContext
 
 
+class RecruitingAgentContextBindRequest(ApiModel):
+    """Bind a server-owned talent-search run without spending an AI turn.
+
+    This keeps the browser interaction explicit: selecting a result scope in
+    the recruiting UI updates only the private work session.  It cannot carry
+    candidate IDs, chat history, source text, or arbitrary model instructions.
+    """
+
+    context_ref: RecruitingAgentContextReference
+    # Unlike a normal turn, this action always applies the visible JD choice:
+    # null deliberately clears a previously selected JD from the work scope.
+    job_version_id: str | None = Field(default=None, max_length=64)
+    conversation_id: str | None = Field(default=None, min_length=1, max_length=64)
+    context_version: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def require_version_for_existing_conversation(
+        self,
+    ) -> "RecruitingAgentContextBindRequest":
+        if self.conversation_id is not None and self.context_version is None:
+            raise ValueError("context_version_required_for_conversation")
+        if self.conversation_id is None and self.context_version is not None:
+            raise ValueError("context_version_requires_conversation")
+        return self
+
+
 class RecruitingAgentRequest(ApiModel):
     """One bounded recruiting-assistant turn.
 

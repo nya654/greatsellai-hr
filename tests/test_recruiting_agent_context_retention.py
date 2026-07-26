@@ -205,6 +205,7 @@ def _seed_talent_search_run_for_workspace(
     client: TestClient,
     *,
     organization_id: str,
+    recalled_resume_ids: tuple[str, ...] = (),
 ) -> str:
     """Seed one synthetic, server-owned RAG run in the specified workspace."""
 
@@ -240,15 +241,97 @@ def _seed_talent_search_run_for_workspace(
                 profile_id=profile.id,
                 revision_id=revision.id,
                 status="completed",
-                recalled_resume_ids=[],
+                recalled_resume_ids=list(recalled_resume_ids),
                 recall_diagnostics={},
-                total_recalled_count=0,
+                total_recalled_count=len(recalled_resume_ids),
             )
             session.add(run)
             session.commit()
             return run.id
         finally:
             clear_organization_context(session)
+
+
+def test_talent_search_run_binds_agent_context_without_an_ai_turn(
+    ai_client: TestClient,
+    monkeypatch,
+) -> None:
+    """A visible talent-search result becomes a private scope without model cost."""
+
+    _, resume_id = _save_ready_agent_resume(ai_client)
+    workspace = ai_client.get("/v1/auth/session")
+    assert workspace.status_code == 200, workspace.text
+    organization_id = str(workspace.json()["organization"]["organization_id"])
+    run_id = _seed_talent_search_run_for_workspace(
+        ai_client,
+        organization_id=organization_id,
+        recalled_resume_ids=(resume_id,),
+    )
+    job = ai_client.post(
+        "/v1/jobs",
+        json={
+            "title": "Context bind job",
+            "jd_text": "Python service development.",
+            "requirements": {"must_have": ["Python"], "preferred": []},
+        },
+    )
+    assert job.status_code == 200, job.text
+
+    def model_must_not_run(*args, **kwargs):
+        raise AssertionError("binding an Agent context must not invoke the model")
+
+    monkeypatch.setattr(
+        "app.services.recruiting_agent_service._model_completion",
+        model_must_not_run,
+    )
+    bound = ai_client.post(
+        "/v1/recruiting-agent/conversations/context",
+        json={
+            "context_ref": {"kind": "talent_search_run", "run_id": run_id},
+            "job_version_id": job.json()["job_version_id"],
+        },
+    )
+
+    assert bound.status_code == 200, bound.text
+    payload = bound.json()
+    assert payload["active_context"]["candidate_set_source"] == "talent_search_run"
+    assert payload["active_context"]["candidate_count"] == 1
+    assert payload["active_context"]["active_job_version_id"] == job.json()["job_version_id"]
+
+    restored = ai_client.get(
+        f"/v1/recruiting-agent/conversations/{payload['conversation_id']}"
+    )
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["context_version"] == payload["context_version"]
+    restored_context = restored.json()["active_context"]
+    bound_context = payload["active_context"]
+    for key in (
+        "candidate_set_source",
+        "candidate_count",
+        "active_job_version_id",
+        "active_job_title",
+    ):
+        assert restored_context[key] == bound_context[key]
+
+    stale = ai_client.post(
+        "/v1/recruiting-agent/conversations/context",
+        json={
+            "context_ref": {"kind": "talent_search_run", "run_id": run_id},
+            "conversation_id": payload["conversation_id"],
+            "context_version": payload["context_version"] - 1,
+        },
+    )
+    assert stale.status_code == 409, stale.text
+    assert stale.json()["detail"] == "agent_conversation_stale"
+
+    missing_version = ai_client.post(
+        "/v1/recruiting-agent/conversations/context",
+        json={
+            "context_ref": {"kind": "talent_search_run", "run_id": run_id},
+            "conversation_id": payload["conversation_id"],
+        },
+    )
+    assert missing_version.status_code == 422, missing_version.text
 
 
 def test_worker_purges_expired_agent_contexts_across_workspaces_and_cascades_items() -> None:
@@ -805,6 +888,17 @@ def test_foreign_talent_search_context_is_rejected_before_agent_model(
 
             assert rejected.status_code == 404, rejected.text
             assert rejected.json()["detail"] == "agent_context_reference_not_found"
+            bind_rejected = client_a.post(
+                "/v1/recruiting-agent/conversations/context",
+                json={
+                    "context_ref": {
+                        "kind": "talent_search_run",
+                        "run_id": foreign_run_id,
+                    },
+                },
+            )
+            assert bind_rejected.status_code == 404, bind_rejected.text
+            assert bind_rejected.json()["detail"] == "agent_context_reference_not_found"
             assert str(session_a["organization"]["organization_id"]) != str(
                 session_b["organization"]["organization_id"]
             )

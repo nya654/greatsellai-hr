@@ -906,7 +906,7 @@ export function RecruitingAgentDrawer({
     if (!isApiError(error)) return null;
     if (error.status === 409 && error.message === "agent_conversation_stale") {
       try {
-        const restored = await restoreConversation();
+        const restored = await restoreConversation(conversation?.conversation_id);
         return restored
           ? "当前工作范围已在另一页面更新，现已同步。请重新发送这条问题。"
           : "上次的助手工作范围已失效，请重新发送这条问题。";

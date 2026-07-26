@@ -637,6 +637,25 @@ test.describe("招聘工作台关键路径", () => {
         },
       });
     });
+    await page.route("**/v1/recruiting-agent/conversations/context", async (route) => {
+      expect(route.request().postDataJSON()).toEqual({
+        context_ref: { kind: "talent_search_run", run_id: "e2e-profile-run" },
+        job_version_id: null,
+      });
+      await route.fulfill({
+        json: {
+          conversation_id: "e2e-profile-agent-context",
+          context_version: 2,
+          active_context: {
+            candidate_set_source: "talent_search_run",
+            candidate_count: 0,
+            active_job_version_id: null,
+            active_job_title: null,
+            expires_at: "2026-07-25T10:00:00Z",
+          },
+        },
+      });
+    });
 
     await page.getByRole("button", { name: "招聘助手", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "招聘助手" });
@@ -658,6 +677,8 @@ test.describe("招聘工作台关键路径", () => {
     await expect(dialog.getByText("没有候选人同时满足本次严格条件")).toBeVisible();
     await expect(dialog.getByText("筛掉 3，剩余 0")).toBeVisible();
     await expect(dialog.getByRole("button", { name: "调整条件" })).toBeVisible();
+    await dialog.getByRole("button", { name: "将本次人才画像结果设为助手工作范围" }).click();
+    await expect(dialog.getByText("人才画像找人结果 · 0 位候选人")).toBeVisible();
   });
 
   test("招聘助手将简历依据和未确认状态以招聘语言展示", async ({ page }) => {
@@ -666,6 +687,15 @@ test.describe("招聘工作台关键路径", () => {
       await route.fulfill({
         contentType: "application/json",
         body: JSON.stringify({
+          conversation_id: "e2e-agent-evidence-conversation",
+          context_version: 2,
+          active_context: {
+            candidate_set_source: "agent_search",
+            candidate_count: 1,
+            active_job_version_id: null,
+            active_job_title: null,
+            expires_at: "2026-07-25T10:00:00Z",
+          },
           message: "找到 1 位简历明确提到英语四级的候选人。",
           intent: "search_candidates",
           job_version_id: null,
@@ -717,6 +747,81 @@ test.describe("招聘工作台关键路径", () => {
     await expect(dialog.getByText("language_credentials_any_of", { exact: false })).toHaveCount(0);
     await expect(
       dialog.getByRole("button", { name: "查看候选人甲详情" }),
+    ).toBeVisible();
+  });
+
+  test("招聘助手恢复安全工作范围，并在后续提问携带最新会话版本", async ({ page }) => {
+    await registerAndVerify(page, "agent-context");
+    const turnRequests: Array<Record<string, unknown>> = [];
+    const context = {
+      candidate_set_source: "agent_search",
+      candidate_count: 2,
+      active_job_version_id: null,
+      active_job_title: null,
+      expires_at: "2026-07-25T10:00:00Z",
+    };
+    await page.route("**/v1/recruiting-agent/turns", async (route) => {
+      turnRequests.push(route.request().postDataJSON() as Record<string, unknown>);
+      const contextVersion = turnRequests.length + 1;
+      await route.fulfill({
+        json: {
+          conversation_id: "e2e-agent-context-conversation",
+          context_version: contextVersion,
+          active_context: context,
+          message: turnRequests.length === 1
+            ? "已保存当前筛选范围。"
+            : "已在当前范围内继续处理。",
+          intent: "search_candidates",
+          job_version_id: null,
+          candidates: [],
+          actions: [],
+          tool_trace: [],
+          search_summary: null,
+          batch_id: null,
+        },
+      });
+    });
+    await page.route(
+      "**/v1/recruiting-agent/conversations/e2e-agent-context-conversation",
+      async (route) => {
+        if (route.request().method() === "DELETE") {
+          await route.fulfill({ status: 204 });
+          return;
+        }
+        await route.fulfill({
+          json: {
+            conversation_id: "e2e-agent-context-conversation",
+            context_version: 4,
+            active_context: context,
+          },
+        });
+      },
+    );
+
+    await page.getByRole("button", { name: "招聘助手", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "招聘助手" });
+    await dialog.getByLabel("向招聘助手提问").fill("先筛选符合条件的人");
+    await dialog.getByRole("button", { name: "发送提问" }).click();
+    await expect(dialog.getByText("助手筛选结果 · 2 位候选人")).toBeVisible();
+
+    await dialog.getByLabel("向招聘助手提问").fill("在刚才这些人中继续比较");
+    await dialog.getByRole("button", { name: "发送提问" }).click();
+    await expect.poll(() => turnRequests.length).toBe(2);
+    expect(turnRequests[0]).not.toHaveProperty("conversation_id");
+    expect(turnRequests[1]).toMatchObject({
+      conversation_id: "e2e-agent-context-conversation",
+      context_version: 2,
+    });
+
+    await page.reload();
+    await page.getByRole("button", { name: "招聘助手", exact: true }).click();
+    const reloadedDialog = page.getByRole("dialog", { name: "招聘助手" });
+    await expect(reloadedDialog.getByText("助手筛选结果 · 2 位候选人")).toBeVisible();
+    await expect(reloadedDialog.getByText("已在当前范围内继续处理。")).toHaveCount(0);
+
+    await reloadedDialog.getByRole("button", { name: "清除范围" }).click();
+    await expect(
+      reloadedDialog.getByText("尚未设置工作范围；筛选或选择人才画像结果后可继续追问。"),
     ).toBeVisible();
   });
 

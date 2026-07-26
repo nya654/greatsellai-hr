@@ -333,9 +333,40 @@ export type RecruitingAgentIntent =
   | "sync_mailbox"
   | "help";
 
+/** A safe, server-verified source for an Agent candidate scope. */
+export interface RecruitingAgentContextReference {
+  kind: "talent_search_run";
+  run_id: string;
+}
+
+/** The only durable Agent state shown back to a recruiter. */
+export interface RecruitingAgentActiveContext {
+  candidate_set_source: "agent_search" | "talent_search_run" | null;
+  candidate_count: number;
+  active_job_version_id: string | null;
+  active_job_title: string | null;
+  expires_at: string;
+}
+
+export interface RecruitingAgentConversation {
+  conversation_id: string;
+  context_version: number;
+  active_context: RecruitingAgentActiveContext;
+}
+
 export interface RecruitingAgentTurnInput {
   message: string;
   job_version_id?: string | null;
+  conversation_id?: string | null;
+  context_version?: number | null;
+  context_ref?: RecruitingAgentContextReference | null;
+}
+
+export interface RecruitingAgentContextBindInput {
+  context_ref: RecruitingAgentContextReference;
+  job_version_id?: string | null;
+  conversation_id?: string | null;
+  context_version?: number | null;
 }
 
 export interface RecruitingAgentCandidate {
@@ -376,6 +407,9 @@ export interface RecruitingAgentToolTrace {
 }
 
 export interface RecruitingAgentTurn {
+  conversation_id: string;
+  context_version: number;
+  active_context: RecruitingAgentActiveContext;
   message: string;
   intent: RecruitingAgentIntent;
   job_version_id: string | null;

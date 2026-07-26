@@ -740,6 +740,11 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
         canManageCandidateData={canManageCandidateData}
       />
       <RecruitingAgentDrawer
+        conversationStorageScope={
+          authSession?.organization?.organization_id && authSession.user?.user_id
+            ? `${authSession.organization.organization_id}:${authSession.user.user_id}`
+            : null
+        }
         formatError={humanizeError}
         isOpen={agentOpen}
         onClose={closeAgent}

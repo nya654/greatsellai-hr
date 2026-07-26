@@ -94,6 +94,61 @@
   font-size: 0.6875rem;
 }
 
+.backoffice-ui-root .agent-work-context {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.4375rem 0.5rem;
+  color: var(--ink-muted);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+}
+
+.backoffice-ui-root .agent-work-context > div {
+  display: grid;
+  min-width: 0;
+  gap: 0.0625rem;
+}
+
+.backoffice-ui-root .agent-work-context span,
+.backoffice-ui-root .agent-work-context small {
+  overflow-wrap: anywhere;
+  color: var(--ink-muted);
+  font-size: 0.625rem;
+}
+
+.backoffice-ui-root .agent-work-context strong {
+  overflow-wrap: anywhere;
+  color: var(--ink-soft);
+  font-size: 0.6875rem;
+  font-weight: 700;
+}
+
+.backoffice-ui-root .agent-work-context .text-button {
+  flex: 0 0 auto;
+  color: var(--ink-soft);
+  font-size: 0.625rem;
+}
+
+.backoffice-ui-root .agent-work-context .text-button:hover:not(:disabled) {
+  color: var(--red-pressed);
+}
+
+.backoffice-ui-root .agent-work-context.is-error {
+  color: #8f1719;
+  background: #fff7f7;
+  border-color: #f0c7c7;
+}
+
+.backoffice-ui-root .agent-work-context.is-error > span,
+.backoffice-ui-root .agent-work-context.is-error .text-button {
+  color: #8f1719;
+}
+
 .backoffice-ui-root .agent-profile-context {
   display: flex;
   gap: 0.5rem;
@@ -655,6 +710,20 @@
 }
 
 .backoffice-ui-root .talent-profile-refresh {
+  min-height: 2.5rem;
+  padding: 0.25rem 0.4375rem;
+  font-size: 0.625rem;
+}
+
+.backoffice-ui-root .talent-profile-run-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 0.3125rem;
+  justify-content: flex-end;
+}
+
+.backoffice-ui-root .talent-profile-use-context {
   min-height: 2.5rem;
   padding: 0.25rem 0.4375rem;
   font-size: 0.625rem;

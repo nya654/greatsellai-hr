@@ -155,47 +155,14 @@ def _persist_legacy_job_match_batch_route_pin(
     return batch.ai_route_policy_version_id
 
 
-def enqueue_job_version_match_batch(
+def _eligible_batch_snapshots(
     session: Session,
     *,
-    job_version_id: str,
-    settings: AppSettings,
-    resume_ids: Sequence[str] | None = None,
-    allow_internal_job: bool = False,
-) -> JobMatchBatchResponse:
-    """Persist one full N×M side of the matrix without calling the model in HTTP."""
+    organization_id: str,
+    resume_ids: Sequence[str] | None,
+) -> list[tuple[str, str, int]]:
+    """Return current, tenant-visible resumé fact snapshots for a batch scope."""
 
-    job_version = session.get(JobVersion, job_version_id)
-    if job_version is None or (
-        job_version.job.kind != "job" and not allow_internal_job
-    ):
-        raise JobVersionNotFoundError("job_version_not_found")
-    _require_ai_gateway_credentials(settings)
-    if job_version.status != "confirmed":
-        raise JobServiceError("job_version_must_be_confirmed_for_matching")
-    if not job_version.requirements:
-        raise JobServiceError("job_version_has_no_requirements")
-    organization_id = job_version.organization_id
-
-    existing = session.scalar(
-        select(JobMatchBatch)
-        .where(
-            JobMatchBatch.job_version_id == job_version.id,
-            JobMatchBatch.organization_id == organization_id,
-            JobMatchBatch.status.in_((BATCH_QUEUED, BATCH_RUNNING)),
-        )
-        .order_by(JobMatchBatch.requested_at.desc())
-    )
-    if existing is not None:
-        return _batch_response(existing)
-
-    # A queued/retried batch must keep the same approved route even if the
-    # platform owner later switches the active JD-match model. The pin lives
-    # on the durable batch (not an individual in-memory worker claim), so a
-    # lease recovery or retry cannot silently move to a new model.
-    route_policy_version_id = _route_pin_for_new_batch(session, settings=settings)
-
-    now = _utcnow()
     snapshot_statement = (
         select(
             Resume.id,
@@ -217,14 +184,10 @@ def enqueue_job_version_match_batch(
         )
         .order_by(Resume.created_at.asc(), Resume.id.asc())
     )
-    # A confirmed talent-search profile performs its costly semantic pass only
-    # for the server-derived hard-filter recall set.  ``resume_ids`` is an
-    # internal service argument, never browser input; the organization filters
-    # above remain in force as defence in depth.
     if resume_ids is not None:
         normalized_resume_ids = sorted({value for value in resume_ids if value})
         if not normalized_resume_ids:
-            snapshot_rows = []
+            snapshot_rows: list[tuple[str, str, int, list[str] | None]] = []
         else:
             snapshot_rows = session.execute(
                 snapshot_statement.where(Resume.id.in_(normalized_resume_ids))
@@ -232,13 +195,187 @@ def enqueue_job_version_match_batch(
     else:
         snapshot_rows = session.execute(snapshot_statement).all()
     # Do not queue a model call when the parser has declared the source text
-    # untrustworthy.  This also prevents a cached old match from re-entering a
+    # untrustworthy. This also prevents a cached old match from re-entering a
     # new recruiter-facing batch.
-    snapshots = [
+    return [
         (resume_id, snapshot_id, facts_version)
         for resume_id, snapshot_id, facts_version, quality_flags in snapshot_rows
         if not has_unreliable_source_text(quality_flags)
     ]
+
+
+def _cached_matches_by_snapshot(
+    session: Session,
+    *,
+    job_version: JobVersion,
+    organization_id: str,
+    snapshots: Sequence[tuple[str, str, int]],
+) -> dict[str, str]:
+    snapshot_ids = [snapshot_id for _, snapshot_id, _ in snapshots]
+    if not snapshot_ids:
+        return {}
+    cached = session.execute(
+        select(JobMatch.fact_snapshot_id, JobMatch.id)
+        .where(
+            JobMatch.job_version_id == job_version.id,
+            JobMatch.organization_id == organization_id,
+            JobMatch.fact_snapshot_id.in_(snapshot_ids),
+            JobMatch.status.in_(("succeeded", "needs_review")),
+        )
+        .order_by(JobMatch.created_at.desc(), JobMatch.id.desc())
+    ).all()
+    cached_by_snapshot: dict[str, str] = {}
+    for snapshot_id, match_id in cached:
+        if snapshot_id is not None:
+            cached_by_snapshot.setdefault(snapshot_id, match_id)
+    return cached_by_snapshot
+
+
+def _append_snapshots_to_active_batch(
+    session: Session,
+    *,
+    batch: JobMatchBatch,
+    job_version: JobVersion,
+    organization_id: str,
+    snapshots: Sequence[tuple[str, str, int]],
+    now: datetime,
+) -> None:
+    """Add missing scope members to a coalesced active JD batch.
+
+    An active batch is shared per JD to avoid duplicate provider work. Its
+    membership must still grow when a later private candidate scope contains
+    resumés that the earlier scope did not queue.
+    """
+
+    if not snapshots:
+        return
+    cached_by_snapshot = _cached_matches_by_snapshot(
+        session,
+        job_version=job_version,
+        organization_id=organization_id,
+        snapshots=snapshots,
+    )
+    batch.total_count += len(snapshots)
+    batch.completed_at = None
+    for resume_id, snapshot_id, facts_version in snapshots:
+        cached_match_id = cached_by_snapshot.get(snapshot_id)
+        session.add(
+            JobMatchBatchItem(
+                organization_id=organization_id,
+                batch_id=batch.id,
+                resume_id=resume_id,
+                fact_snapshot_id=snapshot_id,
+                facts_version=facts_version,
+                status=ITEM_COMPLETED if cached_match_id else ITEM_QUEUED,
+                next_attempt_at=None if cached_match_id else now,
+                job_match_id=cached_match_id,
+                completed_at=now if cached_match_id else None,
+            )
+        )
+        if cached_match_id:
+            batch.completed_count += 1
+    session.flush()
+
+
+def enqueue_job_version_match_batch(
+    session: Session,
+    *,
+    job_version_id: str,
+    settings: AppSettings,
+    resume_ids: Sequence[str] | None = None,
+    allow_internal_job: bool = False,
+) -> JobMatchBatchResponse:
+    """Persist one full N×M side of the matrix without calling the model in HTTP."""
+
+    # Serialize both “find active batch” and “create a new batch” by the
+    # current JD version. Locking only an already-existing batch leaves a race
+    # where two HTTP requests both see no active row and each enqueue the same
+    # work. The JD row is stable for the whole transaction and is available on
+    # every database we support, so it is the shared creation mutex.
+    job_version = session.scalar(
+        select(JobVersion)
+        .where(JobVersion.id == job_version_id)
+        .options(selectinload(JobVersion.job))
+        .with_for_update(of=JobVersion)
+    )
+    if job_version is None or (
+        job_version.job.kind != "job" and not allow_internal_job
+    ):
+        raise JobVersionNotFoundError("job_version_not_found")
+    _require_ai_gateway_credentials(settings)
+    if job_version.status != "confirmed":
+        raise JobServiceError("job_version_must_be_confirmed_for_matching")
+    if not job_version.requirements:
+        raise JobServiceError("job_version_has_no_requirements")
+    organization_id = job_version.organization_id
+
+    existing = session.scalar(
+        select(JobMatchBatch)
+        .where(
+            JobMatchBatch.job_version_id == job_version.id,
+            JobMatchBatch.organization_id == organization_id,
+            JobMatchBatch.status.in_((BATCH_QUEUED, BATCH_RUNNING)),
+        )
+        .order_by(JobMatchBatch.requested_at.desc())
+        .with_for_update()
+    )
+    if existing is not None:
+        # Coalescing may only reuse a batch after it contains this caller's
+        # server-derived scope. Otherwise a later private ranking would stay
+        # pending forever for candidates absent from the first request.
+        existing_resume_ids = set(
+            session.scalars(
+                select(JobMatchBatchItem.resume_id).where(
+                    JobMatchBatchItem.batch_id == existing.id
+                )
+            ).all()
+        )
+        requested_resume_ids: Sequence[str] | None
+        if resume_ids is None:
+            requested_resume_ids = None
+        else:
+            requested_resume_ids = [
+                resume_id
+                for resume_id in resume_ids
+                if resume_id and resume_id not in existing_resume_ids
+            ]
+        snapshots = _eligible_batch_snapshots(
+            session,
+            organization_id=organization_id,
+            resume_ids=requested_resume_ids,
+        )
+        if resume_ids is None:
+            snapshots = [
+                snapshot
+                for snapshot in snapshots
+                if snapshot[0] not in existing_resume_ids
+            ]
+        _append_snapshots_to_active_batch(
+            session,
+            batch=existing,
+            job_version=job_version,
+            organization_id=organization_id,
+            snapshots=snapshots,
+            now=_utcnow(),
+        )
+        return _batch_response(existing)
+
+    # A queued/retried batch must keep the same approved route even if the
+    # platform owner later switches the active JD-match model. The pin lives
+    # on the durable batch (not an individual in-memory worker claim), so a
+    # lease recovery or retry cannot silently move to a new model.
+    route_policy_version_id = _route_pin_for_new_batch(session, settings=settings)
+
+    now = _utcnow()
+    # A confirmed talent-search profile performs its costly semantic pass only
+    # for the server-derived hard-filter recall set. ``resume_ids`` is an
+    # internal service argument, never browser input; the organization filters
+    # above remain in force as defence in depth.
+    snapshots = _eligible_batch_snapshots(
+        session,
+        organization_id=organization_id,
+        resume_ids=resume_ids,
+    )
     batch = JobMatchBatch(
         organization_id=organization_id,
         job_version_id=job_version.id,
@@ -254,22 +391,12 @@ def enqueue_job_version_match_batch(
     session.add(batch)
     session.flush()
 
-    snapshot_ids = [snapshot_id for _, snapshot_id, _ in snapshots]
-    cached_by_snapshot: dict[str, str] = {}
-    if snapshot_ids:
-        cached = session.execute(
-            select(JobMatch.fact_snapshot_id, JobMatch.id)
-            .where(
-                JobMatch.job_version_id == job_version.id,
-                JobMatch.organization_id == organization_id,
-                JobMatch.fact_snapshot_id.in_(snapshot_ids),
-                JobMatch.status.in_(("succeeded", "needs_review")),
-            )
-            .order_by(JobMatch.created_at.desc(), JobMatch.id.desc())
-        ).all()
-        for snapshot_id, match_id in cached:
-            if snapshot_id is not None:
-                cached_by_snapshot.setdefault(snapshot_id, match_id)
+    cached_by_snapshot = _cached_matches_by_snapshot(
+        session,
+        job_version=job_version,
+        organization_id=organization_id,
+        snapshots=snapshots,
+    )
 
     for resume_id, snapshot_id, facts_version in snapshots:
         cached_match_id = cached_by_snapshot.get(snapshot_id)
@@ -357,6 +484,7 @@ def _recover_expired_items(session: Session, *, now: datetime) -> None:
         # Worker lease recovery is the only global scan.  Each recovered row
         # below is immediately re-bound to its own workspace before state is
         # changed or aggregate progress is recalculated.
+        .with_for_update(of=JobMatchBatchItem, skip_locked=True)
         .execution_options(skip_organization_scope=True)
     ).all()
     for item, batch in expired_rows:
@@ -398,6 +526,30 @@ def _recover_expired_items(session: Session, *, now: datetime) -> None:
             session.flush()
 
 
+def _claimable_job_match_item_statement(*, now: datetime):
+    """Build the lease-claim query with PostgreSQL-safe worker locking."""
+
+    return (
+        select(JobMatchBatchItem, JobMatchBatch)
+        .join(JobMatchBatch)
+        .where(
+            JobMatchBatch.status.in_((BATCH_QUEUED, BATCH_RUNNING)),
+            JobMatchBatchItem.status == ITEM_QUEUED,
+            or_(
+                JobMatchBatchItem.next_attempt_at.is_(None),
+                JobMatchBatchItem.next_attempt_at <= now,
+            ),
+        )
+        .order_by(
+            JobMatchBatch.requested_at.asc(),
+            JobMatchBatchItem.next_attempt_at.asc(),
+            JobMatchBatchItem.id.asc(),
+        )
+        .with_for_update(of=JobMatchBatchItem, skip_locked=True)
+        .execution_options(skip_organization_scope=True)
+    )
+
+
 def _claim_next_item(
     database: Database,
     *,
@@ -410,23 +562,12 @@ def _claim_next_item(
         if not ai_gateway_credentials_configured(settings):
             session.commit()
             return None
+        # The lease transition is a distributed-work mutex. PostgreSQL skips
+        # an item another worker is already claiming, so only the winning
+        # worker may invoke the model for it. SQLite safely ignores this lock
+        # clause in local tests; production uses PostgreSQL row locks.
         row = session.execute(
-            select(JobMatchBatchItem, JobMatchBatch)
-            .join(JobMatchBatch)
-            .where(
-                JobMatchBatch.status.in_((BATCH_QUEUED, BATCH_RUNNING)),
-                JobMatchBatchItem.status == ITEM_QUEUED,
-                or_(
-                    JobMatchBatchItem.next_attempt_at.is_(None),
-                    JobMatchBatchItem.next_attempt_at <= now,
-                ),
-            )
-            .order_by(
-                JobMatchBatch.requested_at.asc(),
-                JobMatchBatchItem.next_attempt_at.asc(),
-                JobMatchBatchItem.id.asc(),
-            )
-            .execution_options(skip_organization_scope=True)
+            _claimable_job_match_item_statement(now=now)
         ).first()
         if row is None:
             session.commit()
@@ -736,10 +877,25 @@ def _finish_item_failure(
 
 
 def _refresh_batch_progress(session: Session, *, batch: JobMatchBatch, now: datetime) -> None:
-    # The just-finished item must be visible to the aggregate query.  An
+    # The just-finished item must be visible to the aggregate query. An
     # explicit flush also keeps this correct when the session was previously
-    # used by the matching persistence path.
+    # used by the matching persistence path. Then lock and refresh the parent
+    # batch on the same row used by enqueue/append. Without that serialization,
+    # a worker can mark a batch completed while another request appends a new
+    # queued scope member, leaving that member forever unclaimable.
     session.flush()
+    locked_batch = session.scalar(
+        select(JobMatchBatch)
+        .where(
+            JobMatchBatch.id == batch.id,
+            JobMatchBatch.organization_id == batch.organization_id,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if locked_batch is None:
+        return
+    batch = locked_batch
     counts = dict(
         session.execute(
             select(JobMatchBatchItem.status, func.count())
@@ -755,6 +911,7 @@ def _refresh_batch_progress(session: Session, *, batch: JobMatchBatch, now: date
     pending = counts.get(ITEM_QUEUED, 0) + counts.get(ITEM_RUNNING, 0)
     if pending:
         batch.status = BATCH_RUNNING
+        batch.completed_at = None
         return
     batch.status = BATCH_PARTIAL if batch.failed_count else BATCH_COMPLETED
     batch.completed_at = now

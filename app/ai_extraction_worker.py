@@ -29,6 +29,9 @@ from app.services.candidate_data_export_service import (
     run_candidate_data_export_worker_once,
 )
 from app.services.resume_score_batch_service import run_resume_score_batch_worker_once
+from app.services.recruiting_agent_service import (
+    purge_expired_recruiting_agent_conversations,
+)
 from app.services.transactional_email_outbox_service import (
     run_transactional_email_outbox_worker_once,
 )
@@ -124,6 +127,9 @@ def run_forever(settings: AppSettings) -> None:
                 database,
                 settings=settings,
             )
+            purged_recruiting_agent_contexts = (
+                purge_expired_recruiting_agent_conversations(database)
+            )
             if (
                 not ran_extraction
                 and not ran_document_extraction
@@ -137,6 +143,7 @@ def run_forever(settings: AppSettings) -> None:
                 and not ran_candidate_data_purge
                 and not ran_candidate_data_export
                 and not cleaned_candidate_data_exports
+                and not purged_recruiting_agent_contexts
             ):
                 time.sleep(settings.ai_extraction_worker_poll_seconds)
     finally:
@@ -212,6 +219,7 @@ def main() -> None:
             worker_id=_worker_id(),
         )
         cleanup_expired_candidate_data_exports(database, settings=settings)
+        purge_expired_recruiting_agent_conversations(database)
     finally:
         database.dispose()
 

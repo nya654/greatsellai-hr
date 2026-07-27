@@ -10,13 +10,14 @@ from app.models import (
     RecruitingAgentCandidateSetItem,
     RecruitingAgentConversation,
     RecruitingAgentConversationTurn,
+    TalentSearchRun,
 )
 
 
 def test_alembic_history_has_one_canonical_head() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert script.get_heads() == ["20260727_0041"]
+    assert script.get_heads() == ["20260727_0042"]
 
 
 def test_recruiting_agent_context_ddl_identifiers_fit_postgresql() -> None:
@@ -28,6 +29,7 @@ def test_recruiting_agent_context_ddl_identifiers_fit_postgresql() -> None:
         RecruitingAgentConversationTurn.__table__,
         RecruitingAgentCandidateSet.__table__,
         RecruitingAgentCandidateSetItem.__table__,
+        TalentSearchRun.__table__,
     ):
         CreateTable(table).compile(dialect=dialect)
         for index in table.indexes:

@@ -261,6 +261,38 @@ def test_keyword_filter_and_cursor_pagination_use_active_ready_resumes(client) -
     assert invalid_cursor.json()["detail"] == "invalid_cursor"
 
 
+def test_contact_values_cannot_be_used_as_candidate_search_keywords(client) -> None:
+    _, resume_id = _save_ready_resume(
+        client,
+        source_text=(
+            "Email: private-contact@example.test, Phone: 138 0000 0000, "
+            "Mobile: +1 415 555 2671, Tel: 0086 138-0013-8000. "
+            "教育经历 清华大学 计算机 本科。工作经历 Acme Python Engineer。"
+            "Skills Python SQL Kubernetes."
+        ),
+    )
+
+    for payload in (
+        {"keywords_all_of": ["private-contact@example.test"]},
+        {"keywords": ["13800000000"], "keyword_match_mode": "precise"},
+        {"keywords_any_of": ["+1 415 555 2671", "private-contact@example.test"]},
+        {"keywords_all_of": ["008613800138000"]},
+        # Labels and former placeholders must not become a side channel for
+        # contact-data searches either.
+        {"keywords_any_of": ["email", "phone", "tel", "mobile", "redacted"]},
+    ):
+        response = client.post("/v1/candidates/search", json=payload)
+        assert response.status_code == 200, response.text
+        assert response.json()["items"] == []
+
+    safe_response = client.post(
+        "/v1/candidates/search",
+        json={"keywords_all_of": ["Kubernetes"]},
+    )
+    assert safe_response.status_code == 200, safe_response.text
+    assert [item["resume_id"] for item in safe_response.json()["items"]] == [resume_id]
+
+
 def test_saved_filter_keeps_filter_payload_without_cursor(client) -> None:
     created = client.post(
         "/v1/saved-filters",

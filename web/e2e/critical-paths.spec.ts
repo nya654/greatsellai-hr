@@ -155,6 +155,18 @@ test.describe("招聘工作台关键路径", () => {
     await registerAndVerify(page, "upload");
     await page.getByRole("button", { name: "上传简历", exact: true }).first().click();
     await expect(page.getByRole("heading", { name: "批量上传简历" })).toBeVisible();
+    await expect(
+      page.getByText(
+        "上传后自动入库并进入 AI 处理，完成后可在简历库查看、筛选、评分和匹配岗位。",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(page.getByText("批量处理路径", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "上传后会发生什么" })).toHaveCount(0);
+    const uploadGridTracks = await page
+      .locator(".upload-workspace .page-layout")
+      .evaluate((element) => getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).length);
+    expect(uploadGridTracks).toBe(1);
 
     await page.locator('input[type="file"]').setInputFiles({
       name: "e2e-resume.pdf",
@@ -295,12 +307,31 @@ test.describe("招聘工作台关键路径", () => {
 
     await page.getByRole("button", { name: "筛选工作台", exact: true }).click();
     await expect(
-      page.getByRole("combobox", { name: "评分口径" }),
-    ).toContainText("E2E 评分规则 · v1");
+      page.getByText("E2E 评分规则 · v1", { exact: true }),
+    ).toBeVisible();
+    const matchRules = page.locator("details.filter-match-rules");
+    await expect(matchRules).toBeVisible();
+    await expect(matchRules).not.toHaveAttribute("open");
+    await matchRules.locator("summary").click();
+    await expect(matchRules).toHaveAttribute("open", "");
+    await expect(matchRules).toContainText(
+      "项目/竞赛名称、公司、职位和获奖条件会在同一条经历中联合匹配。",
+    );
+    await expect(matchRules).toContainText(
+      "英语证书支持常见别名归一，例如四级、英语四级、CET4、CET-4；已选证书按任一项匹配。",
+    );
     const institutionTypes = page.getByLabel("院校类型条件");
     await expect(institutionTypes).toBeVisible();
+    await expect(institutionTypes).toHaveAttribute(
+      "aria-describedby",
+      "filter-rule-education",
+    );
     await expect(page.getByLabel("院校类型快捷筛选")).toHaveCount(0);
     const institution985 = institutionTypes.getByRole("checkbox", { name: "985" });
+    await expect(institution985).toHaveAttribute(
+      "aria-describedby",
+      "filter-rule-education",
+    );
     const searchFor985 = page.waitForResponse((response) => {
       if (
         response.request().method() !== "POST" ||
@@ -366,8 +397,21 @@ test.describe("招聘工作台关键路径", () => {
     await expect(page.getByRole("columnheader", { name: "经历", exact: true })).toBeVisible();
     await expect(page.getByRole("columnheader", { name: "核心技能", exact: true })).toBeVisible();
     await expect(page.getByText("e2e-fixture-1.pdf", { exact: true })).toHaveCount(0);
-    await expect(page.getByText("正式工作年限待核实").first()).toBeVisible();
+    await expect(page.getByText("待核实", { exact: true }).first()).toBeVisible();
     await expect(page.getByText("未设门槛")).toHaveCount(0);
+    await expect(page.getByText("当前已加载", { exact: false })).toHaveCount(0);
+    await expect(page.getByText("评分口径", { exact: true })).toHaveCount(0);
+
+    const candidateTableFillsResultsPane = await page
+      .locator(".filter-workspace .candidate-table")
+      .evaluate((table) => {
+        const scrollRegion = table.parentElement;
+        return Boolean(
+          scrollRegion &&
+            table.getBoundingClientRect().width >= scrollRegion.clientWidth - 1,
+        );
+      });
+    expect(candidateTableFillsResultsPane).toBeTruthy();
 
     await page.getByRole("button", { name: "查看 E2E 推荐候选人 的评分详情" }).click();
     const drawer = page.getByRole("dialog", { name: "E2E 推荐候选人 的简历详情" });
@@ -375,15 +419,19 @@ test.describe("招聘工作台关键路径", () => {
       "aria-selected",
       "true",
     );
-    await expect(drawer.getByRole("heading", { name: "评分详情", exact: true })).toBeVisible();
-    await expect(drawer.getByText("AI 评分理由", { exact: true }).first()).toBeVisible();
-    await expect(drawer.getByText("简历事实依据", { exact: true }).first()).toBeVisible();
+    await expect(drawer.getByRole("heading", { name: "E2E 评分规则", exact: true })).toBeVisible();
+    await expect(drawer.getByText("AI 判断", { exact: true }).first()).toBeVisible();
+    await expect(drawer.getByText("简历事实", { exact: true }).first()).toBeVisible();
     await expect(drawer.getByText("待确认项", { exact: true })).toBeVisible();
+    await expect(
+      drawer.locator(".drawer-title-wrap").getByText("e2e-fixture-1.pdf", { exact: true }),
+    ).toHaveCount(0);
     await drawer.getByRole("button", { name: "关闭简历详情" }).click();
     await expect(drawer).toBeHidden();
 
     await page.getByRole("button", { name: "评分模板", exact: true }).click();
     await expect(page.getByRole("heading", { name: "通用评分模板", exact: true })).toBeVisible();
+    await expect(page.getByText("在这里维护维度和权重", { exact: false })).toHaveCount(0);
     await expect(page.locator("#main-content").getByText(/当前简历：|尚未选择简历/)).toHaveCount(0);
     await expect(page.locator("#main-content").getByRole("button", { name: /生成当前候选人评分/ })).toHaveCount(0);
     await expect(page.getByRole("button", { name: /通用候选人初筛/ })).toBeVisible();
@@ -452,6 +500,116 @@ test.describe("招聘工作台关键路径", () => {
     } finally {
       page.off("request", observeCandidateRequests);
     }
+  });
+
+  test("筛选结果完整显示评分可信度的三档状态", async ({ page }) => {
+    await page.route("**/v1/candidates/search", async (route) => {
+      await route.fulfill({
+        json: {
+          items: [
+            {
+              candidate_id: "e2e-confidence-grounded-candidate",
+              display_name: "E2E 高可信度候选人",
+              resume_id: "e2e-confidence-grounded-resume",
+              original_filename: "e2e-confidence-grounded.pdf",
+              is_985_211: false,
+              institution_classifications: [],
+              highest_degree: "bachelor",
+              employment_months: 24,
+              employment_or_internship_months: 24,
+              education_school: "E2E 大学",
+              education_major: "软件工程",
+              latest_experience_title: "后端工程师",
+              latest_experience_organization: "E2E 公司",
+              latest_experience_type: "employment",
+              skill_highlights: ["Python"],
+              summary_preview: null,
+              score_id: "e2e-confidence-grounded-score",
+              score_template_id: null,
+              score_total: 88,
+              score_status: "succeeded",
+              score_template_name: null,
+              score_confidence: 80,
+              display_fields: [],
+              matched_filters: [],
+              matched_evidence: [],
+            },
+            {
+              candidate_id: "e2e-confidence-partial-candidate",
+              display_name: "E2E 部分可信度候选人",
+              resume_id: "e2e-confidence-partial-resume",
+              original_filename: "e2e-confidence-partial.pdf",
+              is_985_211: false,
+              institution_classifications: [],
+              highest_degree: "bachelor",
+              employment_months: 12,
+              employment_or_internship_months: 12,
+              education_school: "E2E 大学",
+              education_major: "计算机科学",
+              latest_experience_title: "开发工程师",
+              latest_experience_organization: "E2E 公司",
+              latest_experience_type: "employment",
+              skill_highlights: ["TypeScript"],
+              summary_preview: null,
+              score_id: "e2e-confidence-partial-score",
+              score_template_id: null,
+              score_total: 72,
+              score_status: "succeeded",
+              score_template_name: null,
+              score_confidence: 79,
+              display_fields: [],
+              matched_filters: [],
+              matched_evidence: [],
+            },
+            {
+              candidate_id: "e2e-confidence-unknown-candidate",
+              display_name: "E2E 待核实候选人",
+              resume_id: "e2e-confidence-unknown-resume",
+              original_filename: "e2e-confidence-unknown.pdf",
+              is_985_211: false,
+              institution_classifications: [],
+              highest_degree: "bachelor",
+              employment_months: 6,
+              employment_or_internship_months: 6,
+              education_school: "E2E 大学",
+              education_major: "信息管理",
+              latest_experience_title: "实习生",
+              latest_experience_organization: "E2E 公司",
+              latest_experience_type: "internship",
+              skill_highlights: ["SQL"],
+              summary_preview: null,
+              score_id: "e2e-confidence-unknown-score",
+              score_template_id: null,
+              score_total: 64,
+              score_status: "succeeded",
+              score_template_name: null,
+              score_confidence: null,
+              display_fields: [],
+              matched_filters: [],
+              matched_evidence: [],
+            },
+          ],
+          next_cursor: null,
+          needs_review_count: 1,
+          total_count: 3,
+        },
+      });
+    });
+
+    await registerAndVerify(page, "score-confidence");
+    await page.getByRole("button", { name: "筛选工作台", exact: true }).click();
+
+    const grounded = page.locator("tr", { hasText: "E2E 高可信度候选人" });
+    await expect(grounded.locator(".score-confidence")).toHaveText("可信度 80%");
+    await expect(grounded.locator(".score-confidence")).toHaveClass(/is-grounded/);
+
+    const partial = page.locator("tr", { hasText: "E2E 部分可信度候选人" });
+    await expect(partial.locator(".score-confidence")).toHaveText("可信度 79%");
+    await expect(partial.locator(".score-confidence")).toHaveClass(/is-partial/);
+
+    const unknown = page.locator("tr", { hasText: "E2E 待核实候选人" });
+    await expect(unknown.locator(".score-confidence")).toHaveText("待核实");
+    await expect(unknown.locator(".score-confidence")).toHaveClass(/is-unknown/);
   });
 
   test("联系方式只在受保护的简历详情中展示并可复制", async ({ page, context }) => {
@@ -541,6 +699,9 @@ test.describe("招聘工作台关键路径", () => {
     await registerAndVerify(page, "agent-focus");
 
     const trigger = page.getByRole("button", { name: "招聘助手", exact: true });
+    await expect(trigger).toBeVisible();
+    await expect(trigger).toHaveClass(/semi-button-primary/);
+    await expect(trigger).toHaveCSS("background-color", "rgb(215, 22, 24)");
     await trigger.click();
     const dialog = page.getByRole("dialog", { name: "招聘助手" });
     const closeButton = dialog.getByRole("button", { name: "关闭招聘助手" });
@@ -552,6 +713,18 @@ test.describe("招聘工作台关键路径", () => {
 
     await page.keyboard.press("Escape");
     await expect(trigger).toBeFocused();
+  });
+
+  test("窄屏保留招聘助手入口", async ({ page }) => {
+    await registerAndVerify(page, "agent-mobile-entry");
+    await page.setViewportSize({ width: 390, height: 844 });
+
+    const trigger = page.getByRole("button", { name: "招聘助手", exact: true });
+    await expect(trigger).toBeVisible();
+    await expect(trigger).toHaveClass(/semi-button-primary/);
+    await expect(trigger).toHaveCSS("background-color", "rgb(215, 22, 24)");
+    await trigger.click();
+    await expect(page.getByRole("dialog", { name: "招聘助手" })).toBeVisible();
   });
 
   test("招聘助手错误说明 AI 服务，并在重发时不重复用户消息", async ({ page }) => {

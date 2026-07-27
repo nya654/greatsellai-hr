@@ -13,7 +13,7 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, joinedload
 
 from app.models import (
@@ -433,6 +433,55 @@ def principal_from_session(session: Session, values: dict[str, object]) -> AuthP
     return principal
 
 
+def principal_from_mailbox_oauth_callback(
+    session: Session,
+    *,
+    user_id: str,
+    organization_id: str,
+    membership_id: str,
+    auth_session_version: int,
+    legacy_compatibility: bool = False,
+) -> AuthPrincipal | None:
+    """Rebuild a revoked-session-safe principal for one mailbox OAuth callback.
+
+    OAuth providers return to the application from another site, so the main
+    strict session cookie is intentionally unavailable on that first request.
+    The callback supplies only values from a short-lived, signed correlation
+    cookie and a matching persisted intent.  This helper still reloads the
+    membership from the database and verifies the current account session
+    version, active membership and active user before the callback may issue a
+    fresh browser session.
+
+    ``legacy_compatibility`` is accepted only for the deterministic historical
+    workspace used by local/transition deployments.  Callers remain
+    responsible for allowing that bridge in their deployment settings.
+    """
+
+    if isinstance(auth_session_version, bool) or not isinstance(auth_session_version, int):
+        return None
+    if auth_session_version < 1:
+        return None
+
+    if legacy_compatibility:
+        if (
+            user_id != LEGACY_USER_ID
+            or organization_id != LEGACY_ORGANIZATION_ID
+            or membership_id != LEGACY_MEMBERSHIP_ID
+        ):
+            return None
+        principal = legacy_principal(session)
+    else:
+        principal = _membership_with_context(
+            session,
+            membership_id=membership_id,
+            user_id=user_id,
+            organization_id=organization_id,
+        )
+    if principal is None or principal.user.auth_session_version != auth_session_version:
+        return None
+    return principal
+
+
 def establish_session(values: dict[str, object], principal: AuthPrincipal) -> None:
     values.clear()
     values["resume_v3_user_id"] = principal.user.id
@@ -447,6 +496,33 @@ def establish_session(values: dict[str, object], principal: AuthPrincipal) -> No
 
 def clear_session(values: dict[str, object]) -> None:
     values.clear()
+
+
+def revoke_user_auth_sessions(session: Session, *, principal: AuthPrincipal) -> bool:
+    """Invalidate every signed browser session for one account.
+
+    Browser sessions are stateless signed cookies.  A mailbox OAuth callback
+    deliberately survives the provider's cross-site redirect through a
+    short-lived, separately signed correlation cookie, so merely deleting the
+    current browser cookie is not enough to make logout final.  Advancing the
+    account version makes a delayed callback (and every pre-existing session)
+    fail closed on its next server-side identity check.
+
+    This is intentionally account-wide, matching password-reset revocation:
+    the project does not retain a server-side per-browser session registry.
+    The caller owns the transaction and still clears its browser cookie even
+    when this update cannot be applied.
+    """
+
+    revoked = session.execute(
+        update(UserAccount)
+        .where(
+            UserAccount.id == principal.user.id,
+            UserAccount.is_active.is_(True),
+        )
+        .values(auth_session_version=UserAccount.auth_session_version + 1)
+    )
+    return bool(revoked.rowcount)
 
 
 def create_registration(session: Session, payload: AuthRegistration) -> AuthPrincipal:

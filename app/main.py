@@ -4,13 +4,15 @@ import asyncio
 import hashlib
 import hmac
 import secrets
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from ipaddress import ip_address, ip_network
 import logging
 import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Callable, Literal
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from fastapi import (
     Depends,
@@ -20,10 +22,12 @@ from fastapi import (
     HTTPException,
     Query,
     Request,
+    Response,
     UploadFile,
     status,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
+from itsdangerous import BadData, URLSafeTimedSerializer
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
@@ -33,7 +37,14 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.config import AppSettings
 from app.database import Database, get_session
 from app.filter_options import filter_options_payload
-from app.models import Candidate, MailboxConfig, Organization, ProductPlan, Resume
+from app.models import (
+    Candidate,
+    MailboxConfig,
+    MailboxOAuthConnectIntent,
+    Organization,
+    ProductPlan,
+    Resume,
+)
 from app.schemas import (
     AuthLogin,
     AuthRegistration,
@@ -76,6 +87,9 @@ from app.schemas import (
     MailboxConfigPatch,
     MailboxConfigResponse,
     MailboxConfigUpdate,
+    MailboxOAuthStartRequest,
+    MailboxOAuthStartResponse,
+    MailboxProviderListResponse,
     MailboxBackgroundJobBatchResponse,
     MailboxBackgroundJobHistoryResponse,
     MailboxBackgroundJobResponse,
@@ -179,9 +193,11 @@ from app.services.identity_service import (
     legacy_principal_from_session,
     list_product_plans,
     normalize_email,
+    principal_from_mailbox_oauth_callback,
     principal_from_session,
     registration_offer,
     record_email_verification_delivery,
+    revoke_user_auth_sessions,
     require_feature,
     trial_access,
     update_product_plan,
@@ -364,13 +380,20 @@ from app.services.job_match_batch_service import (
 )
 from app.services.mailbox_import_service import (
     MailboxImportError,
+    abandon_mailbox_oauth_connection,
     archive_mailbox_config,
+    complete_mailbox_oauth_connection,
     create_mailbox_config,
     get_mailbox_config,
     get_mailbox_config_by_id,
     list_mailbox_configs,
     list_mailbox_imports,
+    mailbox_oauth_reauthorization_provider_key,
+    mailbox_provider_list,
+    revoke_pending_mailbox_oauth_intents,
     save_mailbox_config,
+    start_mailbox_oauth_connection,
+    start_mailbox_oauth_reauthorization,
     update_mailbox_config,
 )
 from app.services.mailbox_background_job_service import (
@@ -558,6 +581,505 @@ def _mailbox_error_http_exception(exc: MailboxImportError) -> HTTPException:
     else:
         response_status = status.HTTP_422_UNPROCESSABLE_CONTENT
     return HTTPException(status_code=response_status, detail=code)
+
+
+# ``__Secure-`` keeps the browser-enforced Secure requirement while still
+# allowing the compatibility entry on ``greatsellai.net`` to set a cookie that
+# the canonical ``hr.greatsellai.net`` callback can receive. ``__Host-`` would
+# forbid the required, narrowly scoped parent-domain cookie.
+_MAILBOX_OAUTH_CALLBACK_COOKIE_NAME = "__Secure-resume_v3_mailbox_oauth"
+_MAILBOX_OAUTH_CALLBACK_COOKIE_SALT = "greatsell-hr-mailbox-oauth-callback-v1"
+_MAILBOX_OAUTH_PROVIDER_REDIRECT_URIS = {
+    "gmail_oauth": "mailbox_google_oauth_redirect_uri",
+    "microsoft_oauth": "mailbox_microsoft_oauth_redirect_uri",
+}
+
+
+@dataclass(frozen=True)
+class _MailboxOAuthCallbackCorrelation:
+    """Signed browser-only binding for one cross-site OAuth return."""
+
+    intent_id: str
+    state_hash: str
+    organization_id: str
+    user_id: str
+    membership_id: str
+    provider_key: str
+    auth_session_version: int
+    legacy_compatibility: bool
+    cookie_domain: str | None
+
+
+def _normalized_http_origin(value: str) -> tuple[str, str, int] | None:
+    """Parse one absolute HTTP(S) origin without accepting URL-userinfo tricks."""
+
+    raw_value = value.strip()
+    if not raw_value or any(ord(character) < 32 or character.isspace() for character in raw_value):
+        return None
+    try:
+        parsed = urlsplit(raw_value)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return None
+    scheme = parsed.scheme.casefold()
+    if (
+        scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or hostname is None
+    ):
+        return None
+    normalized_host = hostname.rstrip(".").casefold()
+    if not normalized_host:
+        return None
+    return scheme, normalized_host, port or (443 if scheme == "https" else 80)
+
+
+def _mailbox_oauth_request_origin(request: Request) -> tuple[str, str, int] | None:
+    """Read the public callback origin through the trusted reverse proxy."""
+
+    forwarded_scheme = request.headers.get("x-forwarded-proto")
+    if forwarded_scheme is None:
+        scheme = request.url.scheme
+    else:
+        scheme = forwarded_scheme.casefold()
+        if scheme not in {"http", "https"}:
+            return None
+    host = request.headers.get("host")
+    if not host:
+        return None
+    return _normalized_http_origin(f"{scheme}://{host}")
+
+
+def _mailbox_oauth_callback_origin(
+    settings: AppSettings,
+    *,
+    provider_key: str,
+) -> tuple[str, str, int] | None:
+    setting_name = _MAILBOX_OAUTH_PROVIDER_REDIRECT_URIS.get(provider_key)
+    if setting_name is None:
+        return None
+    redirect_uri = getattr(settings, setting_name, None)
+    if not isinstance(redirect_uri, str):
+        return None
+    return _normalized_http_origin(redirect_uri)
+
+
+def _mailbox_oauth_callback_origin_matches(
+    request: Request,
+    settings: AppSettings,
+    *,
+    provider_key: str,
+) -> bool:
+    expected_origin = _mailbox_oauth_callback_origin(settings, provider_key=provider_key)
+    actual_origin = _mailbox_oauth_request_origin(request)
+    return expected_origin is not None and actual_origin == expected_origin
+
+
+def _mailbox_oauth_cookie_domain_for_start(
+    request: Request,
+    settings: AppSettings,
+    *,
+    provider_key: str,
+) -> tuple[bool, str | None]:
+    """Return the only safe cookie scope for a configured OAuth callback.
+
+    The canonical entry and the legacy compatibility entry are deliberately
+    separate hosts.  A host-only cookie works for the canonical entry.  The
+    compatibility entry may set a parent-domain cookie only when its host is a
+    real parent of the configured callback host (for example
+    ``greatsellai.net`` -> ``hr.greatsellai.net``).  Sibling or unrelated
+    hosts must never receive a silent, weak fallback.
+    """
+
+    expected_origin = _mailbox_oauth_callback_origin(
+        settings,
+        provider_key=provider_key,
+    )
+    actual_origin = _mailbox_oauth_request_origin(request)
+    public_origin = _normalized_http_origin(settings.public_app_url or "")
+    if (
+        expected_origin is None
+        or actual_origin is None
+        or public_origin != expected_origin
+        or actual_origin[0] != expected_origin[0]
+        or actual_origin[2] != expected_origin[2]
+    ):
+        return False, None
+    if actual_origin == expected_origin:
+        return True, None
+
+    actual_host = actual_origin[1]
+    callback_host = expected_origin[1]
+    if (
+        actual_host.count(".") < 1
+        or actual_host.replace(".", "").isdigit()
+        or not callback_host.endswith("." + actual_host)
+    ):
+        return False, None
+    return True, actual_host
+
+
+def _mailbox_oauth_callback_cookie_domain_matches(
+    request: Request,
+    correlation: _MailboxOAuthCallbackCorrelation,
+) -> bool:
+    """Defend against a manually supplied cookie outside its permitted scope."""
+
+    if correlation.cookie_domain is None:
+        return True
+    actual_origin = _mailbox_oauth_request_origin(request)
+    if actual_origin is None:
+        return False
+    return actual_origin[1].endswith("." + correlation.cookie_domain)
+
+
+def _safe_mailbox_oauth_public_app_base(settings: AppSettings):
+    """Return only a safe deployment-owned target for OAuth completion redirects."""
+
+    raw_base = (settings.public_app_url or "").strip()
+    if _normalized_http_origin(raw_base) is None:
+        return None
+    try:
+        parsed = urlsplit(raw_base)
+    except ValueError:
+        return None
+    if parsed.fragment:
+        return None
+    return parsed
+
+
+def _mailbox_oauth_return_url(
+    settings: AppSettings,
+    *,
+    outcome: Literal["connected", "failed"],
+    provider_key: str | None,
+) -> str:
+    """Return to the canonical app without placing OAuth material in its URL."""
+
+    parsed = _safe_mailbox_oauth_public_app_base(settings)
+    if parsed is None:
+        parsed = urlsplit("/")
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["mailbox_oauth"] = outcome
+    if provider_key:
+        query["mailbox_provider"] = provider_key
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path or "/",
+            urlencode(query),
+            # Keep the completion target compatible with the existing
+            # settings route while the mailbox frontend is being refactored.
+            # The future UI may additionally understand ``#mailbox``, but
+            # the server must not depend on an unmerged frontend change.
+            "settings/mailbox",
+        )
+    )
+
+
+def _mailbox_oauth_response_headers() -> dict[str, str]:
+    """Prevent one-time OAuth material from being cached or forwarded."""
+
+    return {
+        "Cache-Control": "no-store, private",
+        "Pragma": "no-cache",
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+    }
+
+
+def _mailbox_oauth_redirect_response(
+    settings: AppSettings,
+    *,
+    outcome: Literal["connected", "failed"],
+    provider_key: str | None,
+    cookie_domain: str | None = None,
+) -> RedirectResponse:
+    """Redirect after a callback while always retiring its correlation cookie."""
+
+    response = RedirectResponse(
+        _mailbox_oauth_return_url(
+            settings,
+            outcome=outcome,
+            provider_key=provider_key,
+        ),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+    response.headers.update(_mailbox_oauth_response_headers())
+    response.delete_cookie(
+        _MAILBOX_OAUTH_CALLBACK_COOKIE_NAME,
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="lax",
+        domain=cookie_domain,
+    )
+    return response
+
+
+def _mailbox_oauth_callback_cookie_serializer(settings: AppSettings) -> URLSafeTimedSerializer:
+    return URLSafeTimedSerializer(
+        settings.session_signing_secret(),
+        salt=_MAILBOX_OAUTH_CALLBACK_COOKIE_SALT,
+    )
+
+
+def _mailbox_oauth_state_from_authorization_url(authorization_url: str) -> str | None:
+    """Extract the single state that the domain service placed in its URL."""
+
+    try:
+        states = [
+            value
+            for key, value in parse_qsl(
+                urlsplit(authorization_url).query,
+                keep_blank_values=True,
+            )
+            if key == "state"
+        ]
+    except ValueError:
+        return None
+    if len(states) != 1 or not states[0] or len(states[0]) > 512:
+        return None
+    return states[0]
+
+
+def _mailbox_oauth_callback_cookie_value(
+    settings: AppSettings,
+    *,
+    intent: MailboxOAuthConnectIntent,
+    auth_session_version: int,
+    legacy_compatibility: bool,
+    cookie_domain: str | None,
+) -> str:
+    """Sign only a state digest and current identity binding, never raw tokens."""
+
+    return _mailbox_oauth_callback_cookie_serializer(settings).dumps(
+        {
+            "intent_id": intent.id,
+            "state_hash": intent.state_hash,
+            "organization_id": intent.organization_id,
+            "user_id": intent.user_id,
+            "membership_id": intent.membership_id,
+            "provider_key": intent.provider_key,
+            "auth_session_version": auth_session_version,
+            "legacy_compatibility": legacy_compatibility,
+            "cookie_domain": cookie_domain,
+        }
+    )
+
+
+def _mailbox_oauth_cookie_domain_for_browser_start(
+    request: Request,
+    settings: AppSettings,
+    *,
+    provider_key: str,
+) -> str | None:
+    """Validate callback origin before creating a browser OAuth intent.
+
+    A non-empty but malformed provider redirect URI must fail closed.  An
+    absent URI still lets the domain service return its more useful
+    ``mailbox_oauth_not_configured`` error.
+    """
+
+    setting_name = _MAILBOX_OAUTH_PROVIDER_REDIRECT_URIS.get(provider_key)
+    if setting_name is None:
+        return None
+    configured_redirect_uri = getattr(settings, setting_name, None)
+    if not isinstance(configured_redirect_uri, str) or not configured_redirect_uri.strip():
+        return None
+    if _mailbox_oauth_callback_origin(settings, provider_key=provider_key) is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="mailbox_oauth_callback_origin_invalid",
+        )
+    callback_origin_valid, callback_cookie_domain = _mailbox_oauth_cookie_domain_for_start(
+        request,
+        settings,
+        provider_key=provider_key,
+    )
+    if not callback_origin_valid:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="mailbox_oauth_callback_origin_invalid",
+        )
+    return callback_cookie_domain
+
+
+def _start_mailbox_oauth_browser_flow(
+    *,
+    request: Request,
+    response: Response,
+    session: Session,
+    settings: AppSettings,
+    principal: AuthPrincipal,
+    provider_key: str,
+    begin_intent: Callable[[], MailboxOAuthStartResponse],
+) -> MailboxOAuthStartResponse:
+    """Start either OAuth flow with one shared callback-correlation contract."""
+
+    callback_cookie_domain = _mailbox_oauth_cookie_domain_for_browser_start(
+        request,
+        settings,
+        provider_key=provider_key,
+    )
+    result = begin_intent()
+    state_value = _mailbox_oauth_state_from_authorization_url(result.authorization_url)
+    if state_value is None:
+        raise MailboxImportError("mailbox_oauth_callback_invalid")
+    state_hash = hashlib.sha256(state_value.encode("utf-8")).hexdigest()
+    intent = session.scalar(
+        select(MailboxOAuthConnectIntent).where(
+            MailboxOAuthConnectIntent.state_hash == state_hash,
+            MailboxOAuthConnectIntent.organization_id == principal.organization_id,
+            MailboxOAuthConnectIntent.user_id == principal.user.id,
+            MailboxOAuthConnectIntent.membership_id == principal.membership.id,
+            MailboxOAuthConnectIntent.provider_key == provider_key,
+            MailboxOAuthConnectIntent.consumed_at.is_(None),
+            MailboxOAuthConnectIntent.expires_at > datetime.now(timezone.utc),
+        )
+    )
+    if intent is None:
+        raise MailboxImportError("mailbox_oauth_callback_invalid")
+    response.headers.update(_mailbox_oauth_response_headers())
+    response.set_cookie(
+        _MAILBOX_OAUTH_CALLBACK_COOKIE_NAME,
+        _mailbox_oauth_callback_cookie_value(
+            settings,
+            intent=intent,
+            auth_session_version=principal.user.auth_session_version,
+            legacy_compatibility=principal.legacy_compatibility,
+            cookie_domain=callback_cookie_domain,
+        ),
+        max_age=settings.mailbox_oauth_state_ttl_seconds,
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="lax",
+        domain=callback_cookie_domain,
+    )
+    return result
+
+
+def _mailbox_oauth_callback_correlation(
+    request: Request,
+    settings: AppSettings,
+) -> _MailboxOAuthCallbackCorrelation | None:
+    """Verify and bound the callback-only cookie before looking up any intent."""
+
+    raw_cookie = request.cookies.get(_MAILBOX_OAUTH_CALLBACK_COOKIE_NAME)
+    if not raw_cookie or len(raw_cookie) > 4096:
+        return None
+    try:
+        payload = _mailbox_oauth_callback_cookie_serializer(settings).loads(
+            raw_cookie,
+            max_age=settings.mailbox_oauth_state_ttl_seconds,
+        )
+    except (BadData, TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    required_text_fields = (
+        "intent_id",
+        "state_hash",
+        "organization_id",
+        "user_id",
+        "membership_id",
+        "provider_key",
+    )
+    values = {field: payload.get(field) for field in required_text_fields}
+    if any(
+        not isinstance(value, str) or not value or len(value) > 128
+        for value in values.values()
+    ):
+        return None
+    state_hash = values["state_hash"]
+    if len(state_hash) != 64 or any(character not in "0123456789abcdef" for character in state_hash):
+        return None
+    auth_session_version = payload.get("auth_session_version")
+    if (
+        isinstance(auth_session_version, bool)
+        or not isinstance(auth_session_version, int)
+        or auth_session_version < 1
+    ):
+        return None
+    legacy_compatibility = payload.get("legacy_compatibility")
+    if not isinstance(legacy_compatibility, bool):
+        return None
+    cookie_domain = payload.get("cookie_domain")
+    if cookie_domain is not None:
+        if (
+            not isinstance(cookie_domain, str)
+            or not cookie_domain
+            or len(cookie_domain) > 253
+            or cookie_domain != cookie_domain.casefold()
+            or cookie_domain.count(".") < 1
+            or any(
+                not (character.isascii() and (character.isalnum() or character in {"-", "."}))
+                for character in cookie_domain
+            )
+        ):
+            return None
+    return _MailboxOAuthCallbackCorrelation(
+        intent_id=values["intent_id"],
+        state_hash=state_hash,
+        organization_id=values["organization_id"],
+        user_id=values["user_id"],
+        membership_id=values["membership_id"],
+        provider_key=values["provider_key"],
+        auth_session_version=auth_session_version,
+        legacy_compatibility=legacy_compatibility,
+        cookie_domain=cookie_domain,
+    )
+
+
+def _mailbox_oauth_callback_intent(
+    session: Session,
+    *,
+    correlation: _MailboxOAuthCallbackCorrelation,
+) -> MailboxOAuthConnectIntent | None:
+    """Load only the still-live intent bound to this signed browser context."""
+
+    set_organization_context(session, correlation.organization_id)
+    return session.scalar(
+        select(MailboxOAuthConnectIntent).where(
+            MailboxOAuthConnectIntent.id == correlation.intent_id,
+            MailboxOAuthConnectIntent.state_hash == correlation.state_hash,
+            MailboxOAuthConnectIntent.organization_id == correlation.organization_id,
+            MailboxOAuthConnectIntent.user_id == correlation.user_id,
+            MailboxOAuthConnectIntent.membership_id == correlation.membership_id,
+            MailboxOAuthConnectIntent.provider_key == correlation.provider_key,
+            MailboxOAuthConnectIntent.consumed_at.is_(None),
+            MailboxOAuthConnectIntent.expires_at > datetime.now(timezone.utc),
+        )
+    )
+
+
+def _mailbox_oauth_callback_current_principal(
+    session: Session,
+    *,
+    correlation: _MailboxOAuthCallbackCorrelation,
+) -> AuthPrincipal | None:
+    """Reload the callback owner after cross-request security boundaries.
+
+    OAuth code exchange can take seconds.  A logout or password reset in a
+    second browser advances ``auth_session_version`` while that call is in
+    flight.  Expiring this request's identity map is required: otherwise an
+    already loaded ``UserAccount`` could make a stale callback look current.
+    """
+
+    session.expire_all()
+    return principal_from_mailbox_oauth_callback(
+        session,
+        user_id=correlation.user_id,
+        organization_id=correlation.organization_id,
+        membership_id=correlation.membership_id,
+        auth_session_version=correlation.auth_session_version,
+        legacy_compatibility=correlation.legacy_compatibility,
+    )
 
 
 def _mailbox_retention_error_http_exception(exc: MailboxRetentionError) -> HTTPException:
@@ -1535,8 +2057,43 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
             ) from exc
 
     @app.post("/v1/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
-    async def post_auth_logout(request: Request) -> None:
-        clear_session(request.session)
+    async def post_auth_logout(
+        request: Request,
+        session: Session = Depends(get_session),
+        x_admin_token: Annotated[str | None, Header()] = None,
+    ) -> None:
+        """End the browser session and cancel its unfinished OAuth handoffs."""
+
+        principal = (
+            legacy_principal(session)
+            if settings.allow_unauthenticated
+            else principal_from_session(session, request.session)
+        )
+        if principal is None:
+            principal = legacy_principal_from_session(session, request.session)
+        if (
+            principal is None
+            and settings.legacy_admin_token_enabled
+            and settings.admin_token
+            and x_admin_token
+            and hmac.compare_digest(x_admin_token, settings.admin_token)
+        ):
+            principal = legacy_principal(session)
+
+        try:
+            if principal is not None:
+                revoke_pending_mailbox_oauth_intents(session, principal=principal)
+                # A mailbox OAuth callback crosses sites without the normal
+                # strict browser cookie.  Advance the account-wide signed
+                # session version before clearing this browser so any callback
+                # already in flight fails its final identity check instead of
+                # recreating a session after logout.
+                revoke_user_auth_sessions(session, principal=principal)
+                _commit_or_raise(session)
+        finally:
+            # Always clear the normal browser session, even if a transient
+            # database failure prevented intent revocation.
+            clear_session(request.session)
 
     @app.get(
         "/v1/organization/plan",
@@ -2265,6 +2822,212 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         ]
 
     @app.get(
+        "/v1/mailbox-providers",
+        response_model=MailboxProviderListResponse,
+        dependencies=[Depends(require_mailbox_feature)],
+    )
+    def get_mailbox_providers() -> MailboxProviderListResponse:
+        return mailbox_provider_list(settings)
+
+    @app.post(
+        "/v1/mailbox-oauth/start",
+        response_model=MailboxOAuthStartResponse,
+        dependencies=[Depends(require_mailbox_feature)],
+    )
+    def post_mailbox_oauth_start(
+        payload: MailboxOAuthStartRequest,
+        request: Request,
+        response: Response,
+        principal: AuthPrincipal = Depends(require_mailbox_feature),
+        session: Session = Depends(get_session),
+    ) -> MailboxOAuthStartResponse:
+        try:
+            return _start_mailbox_oauth_browser_flow(
+                request=request,
+                response=response,
+                settings=settings,
+                principal=principal,
+                session=session,
+                provider_key=payload.provider_key,
+                begin_intent=lambda: start_mailbox_oauth_connection(
+                    session,
+                    settings=settings,
+                    principal=principal,
+                    payload=payload,
+                ),
+            )
+        except MailboxImportError as exc:
+            session.rollback()
+            raise _mailbox_error_http_exception(exc) from exc
+
+    @app.get("/v1/mailbox-oauth/callback")
+    def get_mailbox_oauth_callback(
+        request: Request,
+        state_value: str | None = Query(default=None, alias="state", max_length=512),
+        code: str | None = Query(default=None, max_length=8192),
+        provider_error: str | None = Query(default=None, alias="error", max_length=256),
+        session: Session = Depends(get_session),
+    ) -> RedirectResponse:
+        """Complete a browser OAuth round-trip without rendering token data."""
+
+        correlation = _mailbox_oauth_callback_correlation(request, settings)
+        if (
+            correlation is None
+            or state_value is None
+            or not hmac.compare_digest(
+                correlation.state_hash,
+                hashlib.sha256(state_value.encode("utf-8")).hexdigest(),
+            )
+            or not _mailbox_oauth_callback_origin_matches(
+                request,
+                settings,
+                provider_key=correlation.provider_key,
+            )
+            or not _mailbox_oauth_callback_cookie_domain_matches(request, correlation)
+        ):
+            return _mailbox_oauth_redirect_response(
+                settings,
+                outcome="failed",
+                provider_key=None,
+                cookie_domain=correlation.cookie_domain if correlation is not None else None,
+            )
+
+        intent = _mailbox_oauth_callback_intent(
+            session,
+            correlation=correlation,
+        )
+        if intent is None or (
+            correlation.legacy_compatibility and not settings.allow_unauthenticated
+        ):
+            return _mailbox_oauth_redirect_response(
+                settings,
+                outcome="failed",
+                provider_key=None,
+                cookie_domain=correlation.cookie_domain,
+            )
+        principal = _mailbox_oauth_callback_current_principal(
+            session,
+            correlation=correlation,
+        )
+        if (
+            principal is None
+            or not principal.email_verified
+            or principal.role != "admin"
+            or not require_feature(principal, "mailbox_import")
+        ):
+            return _mailbox_oauth_redirect_response(
+                settings,
+                outcome="failed",
+                provider_key=None,
+                cookie_domain=correlation.cookie_domain,
+            )
+
+        set_organization_context(session, principal.organization_id)
+        provider_key: str | None = None
+        try:
+            if provider_error is not None or not code:
+                abandon_mailbox_oauth_connection(
+                    session,
+                    principal=principal,
+                    state=state_value,
+                )
+                return _mailbox_oauth_redirect_response(
+                    settings,
+                    outcome="failed",
+                    provider_key=None,
+                    cookie_domain=correlation.cookie_domain,
+                )
+            result = complete_mailbox_oauth_connection(
+                session,
+                settings=settings,
+                principal=principal,
+                state=state_value,
+                code=code,
+                callback_is_still_current=lambda: _mailbox_oauth_callback_current_principal(
+                    session,
+                    correlation=correlation,
+                )
+                is not None,
+            )
+            provider_key = result.provider_key
+            # Do not issue a browser session until every exchange, IMAP
+            # verification and persistence step has succeeded. Recheck the
+            # account version after those potentially slow operations so a
+            # logout/password-reset that happened mid-callback cannot be
+            # undone by this redirect response.
+            principal = _mailbox_oauth_callback_current_principal(
+                session,
+                correlation=correlation,
+            )
+            if (
+                principal is None
+                or not principal.email_verified
+                or principal.role != "admin"
+                or not require_feature(principal, "mailbox_import")
+            ):
+                return _mailbox_oauth_redirect_response(
+                    settings,
+                    outcome="failed",
+                    provider_key=None,
+                    cookie_domain=correlation.cookie_domain,
+                )
+            # The original strict browser session is intentionally absent on
+            # this cross-site GET. Only a fully completed, still-current
+            # callback may rotate it into a normal strict session.
+            establish_session(request.session, principal)
+            return _mailbox_oauth_redirect_response(
+                settings,
+                outcome="connected",
+                provider_key=provider_key,
+                cookie_domain=correlation.cookie_domain,
+            )
+        except MailboxImportError:
+            session.rollback()
+            return _mailbox_oauth_redirect_response(
+                settings,
+                outcome="failed",
+                provider_key=provider_key,
+                cookie_domain=correlation.cookie_domain,
+            )
+
+    # Keep these static routes before ``/{mailbox_id}`` so IDs can never
+    # shadow an OAuth reauthorization action.
+    @app.post(
+        "/v1/mailboxes/{mailbox_id}/oauth/reauthorize",
+        response_model=MailboxOAuthStartResponse,
+        dependencies=[Depends(require_mailbox_feature)],
+    )
+    def post_mailbox_oauth_reauthorize(
+        mailbox_id: str,
+        request: Request,
+        response: Response,
+        principal: AuthPrincipal = Depends(require_mailbox_feature),
+        session: Session = Depends(get_session),
+    ) -> MailboxOAuthStartResponse:
+        try:
+            provider_key = mailbox_oauth_reauthorization_provider_key(
+                session,
+                config_id=mailbox_id,
+            )
+            return _start_mailbox_oauth_browser_flow(
+                request=request,
+                response=response,
+                settings=settings,
+                principal=principal,
+                session=session,
+                provider_key=provider_key,
+                begin_intent=lambda: start_mailbox_oauth_reauthorization(
+                    session,
+                    settings=settings,
+                    principal=principal,
+                    config_id=mailbox_id,
+                ),
+            )
+        except MailboxImportError as exc:
+            session.rollback()
+            raise _mailbox_error_http_exception(exc) from exc
+
+    @app.get(
         "/v1/mailboxes",
         response_model=MailboxConfigListResponse,
         dependencies=[Depends(require_mailbox_feature)],
@@ -2273,7 +3036,11 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         include_archived: bool = False,
         session: Session = Depends(get_session),
     ) -> MailboxConfigListResponse:
-        return list_mailbox_configs(session, include_archived=include_archived)
+        return list_mailbox_configs(
+            session,
+            include_archived=include_archived,
+            settings=settings,
+        )
 
     @app.post(
         "/v1/mailboxes",
@@ -2318,7 +3085,11 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         session: Session = Depends(get_session),
     ) -> MailboxConfigResponse:
         try:
-            return get_mailbox_config_by_id(session, config_id=mailbox_id)
+            return get_mailbox_config_by_id(
+                session,
+                config_id=mailbox_id,
+                settings=settings,
+            )
         except MailboxImportError as exc:
             raise _mailbox_error_http_exception(exc) from exc
 
@@ -2373,7 +3144,11 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         session: Session = Depends(get_session),
     ) -> MailboxConfigResponse:
         try:
-            return archive_mailbox_config(session, config_id=mailbox_id)
+            return archive_mailbox_config(
+                session,
+                config_id=mailbox_id,
+                settings=settings,
+            )
         except MailboxImportError as exc:
             session.rollback()
             raise _mailbox_error_http_exception(exc) from exc
@@ -2487,7 +3262,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         session: Session = Depends(get_session),
     ) -> MailboxConfigResponse:
         try:
-            return get_mailbox_config(session)
+            return get_mailbox_config(session, settings=settings)
         except MailboxImportError as exc:
             raise _mailbox_error_http_exception(exc) from exc
 
@@ -2597,7 +3372,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         session: Session = Depends(get_session),
     ) -> MailboxBackgroundJobResponse:
         try:
-            config = get_mailbox_config(session)
+            config = get_mailbox_config(session, settings=settings)
         except MailboxImportError as exc:
             session.rollback()
             raise _mailbox_error_http_exception(exc) from exc

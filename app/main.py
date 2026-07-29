@@ -46,6 +46,13 @@ from app.models import (
     ProductPlan,
     Resume,
 )
+from app.observability import (
+    RequestCorrelationMiddleware,
+    configure_observability_logging,
+    current_request_id,
+    log_event,
+    log_exception_event,
+)
 from app.schemas import (
     AuthLogin,
     AuthRegistration,
@@ -76,6 +83,7 @@ from app.schemas import (
     ProductPlanUpdate,
     PlatformAuditEventListResponse,
     PlatformDashboardResponse,
+    PlatformRuntimeOverviewResponse,
     PlatformOrganizationDetailResponse,
     PlatformOrganizationListResponse,
     PlatformOrganizationPatch,
@@ -262,6 +270,7 @@ from app.services.ai_usage_reporting_service import (
 from app.services.platform_admin_service import (
     PlatformAdminServiceError,
     get_platform_dashboard,
+    get_platform_runtime_overview,
     get_platform_organization,
     get_platform_user,
     list_platform_audit_events,
@@ -272,6 +281,10 @@ from app.services.platform_admin_service import (
     patch_platform_user,
     product_plan_snapshot,
     record_platform_audit_event,
+)
+from app.services.runtime_observability_service import (
+    RuntimeReadinessError,
+    check_database_ready,
 )
 from app.services.ai_extraction_job_service import (
     AiExtractionJobError,
@@ -462,9 +475,6 @@ from app.services.workspace_feedback_service import (
     list_workspace_feedback,
     submit_workspace_feedback,
 )
-
-
-logger = logging.getLogger(__name__)
 
 
 def _resume_detail(resume: object) -> ResumeDetail:
@@ -1427,13 +1437,16 @@ def _candidate_data_session_nonce(request: Request) -> str:
 
 
 def _candidate_data_request_id(request: Request) -> str | None:
-    value = request.headers.get("x-request-id")
-    if value is None:
-        return None
-    normalized = value.strip()
-    if not normalized or len(normalized) > 128:
-        return None
-    return normalized
+    """Return the middleware-issued opaque ID for a durable audit record.
+
+    Request headers are untrusted input: using their raw value here would turn
+    the audit ledger into a storage channel for candidate data or credentials.
+    The request-correlation middleware has already generated or validated the
+    only ID allowed to cross this boundary.
+    """
+
+    del request
+    return current_request_id()
 
 
 def _deliver_email_verification(
@@ -1466,8 +1479,16 @@ def _deliver_email_verification(
         try:
             _commit_or_raise(session)
         except HTTPException:
-            logger.warning("email_verification_delivery_state_not_recorded")
-        logger.warning("email_verification_delivery_failed")
+            log_event(
+                "email_verification_delivery_state_not_recorded",
+                level=logging.WARNING,
+                error_code="email_verification_delivery_state_not_recorded",
+            )
+        log_event(
+            "email_verification_delivery_failed",
+            level=logging.WARNING,
+            error_code="email_verification_delivery_failed",
+        )
         return False
     except Exception:
         # The public registration response must not expose a provider error or
@@ -1483,8 +1504,16 @@ def _deliver_email_verification(
         try:
             _commit_or_raise(session)
         except HTTPException:
-            logger.warning("email_verification_delivery_state_not_recorded")
-        logger.warning("email_verification_delivery_failed")
+            log_event(
+                "email_verification_delivery_state_not_recorded",
+                level=logging.WARNING,
+                error_code="email_verification_delivery_state_not_recorded",
+            )
+        log_event(
+            "email_verification_delivery_failed",
+            level=logging.WARNING,
+            error_code="email_verification_delivery_failed",
+        )
         return False
 
     record_email_verification_delivery(
@@ -1495,7 +1524,11 @@ def _deliver_email_verification(
     try:
         _commit_or_raise(session)
     except HTTPException:
-        logger.warning("email_verification_delivery_state_not_recorded")
+        log_event(
+            "email_verification_delivery_state_not_recorded",
+            level=logging.WARNING,
+            error_code="email_verification_delivery_state_not_recorded",
+        )
     return True
 
 
@@ -1876,6 +1909,7 @@ async def require_ai_jd_feature(
 
 def create_app(settings_override: AppSettings | None = None) -> FastAPI:
     settings = settings_override or AppSettings.from_env()
+    configure_observability_logging()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -1919,10 +1953,25 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         same_site="strict",
         https_only=settings.session_cookie_secure,
     )
+    app.add_middleware(RequestCorrelationMiddleware)
 
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/readyz")
+    def readyz(session: Session = Depends(get_session)) -> dict[str, str]:
+        """Report database readiness without exposing infrastructure details."""
+
+        try:
+            check_database_ready(session)
+        except RuntimeReadinessError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="database_unavailable",
+            ) from exc
+        return {"status": "ready"}
 
     @app.get("/v1/auth/session", response_model=AuthSession)
     async def get_auth_session(
@@ -2273,7 +2322,11 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                     # Do not leave an undeliverable active link, and never turn a
                     # registered account into a public existence signal.
                     session.rollback()
-                    logger.warning("password_reset_outbox_enqueue_unavailable")
+                    log_event(
+                        "password_reset_outbox_enqueue_unavailable",
+                        level=logging.WARNING,
+                        error_code="password_reset_outbox_enqueue_unavailable",
+                    )
             return PasswordResetRequestResult(
                 accepted=True,
                 delivery_available=provider.password_reset_configured,
@@ -2397,6 +2450,16 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         return get_platform_dashboard(session)
 
     @app.get(
+        "/v1/platform/runtime/overview",
+        response_model=PlatformRuntimeOverviewResponse,
+    )
+    def get_platform_runtime_overview_endpoint(
+        _: AuthPrincipal = Depends(require_platform_admin),
+        session: Session = Depends(get_session),
+    ) -> PlatformRuntimeOverviewResponse:
+        return get_platform_runtime_overview(session)
+
+    @app.get(
         "/v1/platform/workspace-feedback",
         response_model=PlatformWorkspaceFeedbackListResponse,
     )
@@ -2488,7 +2551,6 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         payload: PlatformOrganizationPatch,
         principal: AuthPrincipal = Depends(require_platform_admin),
         session: Session = Depends(get_session),
-        x_request_id: Annotated[str | None, Header(max_length=128)] = None,
     ) -> PlatformOrganizationDetailResponse:
         try:
             response = patch_platform_organization(
@@ -2496,7 +2558,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                 organization_id=organization_id,
                 payload=payload,
                 actor_user_id=principal.user.id,
-                request_id=x_request_id,
+                request_id=current_request_id(),
             )
             _commit_or_raise(session)
             return response
@@ -2547,7 +2609,6 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         payload: PlatformUserPatch,
         principal: AuthPrincipal = Depends(require_platform_admin),
         session: Session = Depends(get_session),
-        x_request_id: Annotated[str | None, Header(max_length=128)] = None,
     ) -> PlatformUserDetailResponse:
         try:
             response = patch_platform_user(
@@ -2555,7 +2616,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                 user_id=user_id,
                 payload=payload,
                 actor_user_id=principal.user.id,
-                request_id=x_request_id,
+                request_id=current_request_id(),
             )
             _commit_or_raise(session)
             return response
@@ -2607,7 +2668,6 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         payload: ProductPlanUpdate,
         principal: AuthPrincipal = Depends(require_platform_admin),
         session: Session = Depends(get_session),
-        x_request_id: Annotated[str | None, Header(max_length=128)] = None,
     ) -> ProductPlanResponse:
         try:
             plan = session.scalar(select(ProductPlan).where(ProductPlan.code == plan_code))
@@ -2623,7 +2683,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                 reason=payload.reason or "platform_plan_updated",
                 before_state=before,
                 after_state=product_plan_snapshot(plan) if plan is not None else {},
-                request_id=x_request_id,
+                request_id=current_request_id(),
             )
             _commit_or_raise(session)
             return response
@@ -2647,7 +2707,6 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         payload: OrganizationPlanAssign,
         principal: AuthPrincipal = Depends(require_platform_admin),
         session: Session = Depends(get_session),
-        x_request_id: Annotated[str | None, Header(max_length=128)] = None,
     ) -> OrganizationPlanResponse:
         try:
             organization = session.get(Organization, organization_id)
@@ -2672,7 +2731,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                     if organization is not None
                     else {}
                 ),
-                request_id=x_request_id,
+                request_id=current_request_id(),
             )
             _commit_or_raise(session)
             return response
@@ -2699,7 +2758,6 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         payload: AiProviderProfileCreate,
         principal: AuthPrincipal = Depends(require_platform_admin),
         session: Session = Depends(get_session),
-        x_request_id: Annotated[str | None, Header(max_length=128)] = None,
     ) -> AiProviderProfileResponse:
         try:
             response = create_provider_profile(
@@ -2720,7 +2778,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                     "driver": response.driver,
                     "is_enabled": response.is_enabled,
                 },
-                request_id=x_request_id,
+                request_id=current_request_id(),
             )
             _commit_or_raise(session)
             return response
@@ -2747,7 +2805,6 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         payload: AiModelProfileCreate,
         principal: AuthPrincipal = Depends(require_platform_admin),
         session: Session = Depends(get_session),
-        x_request_id: Annotated[str | None, Header(max_length=128)] = None,
     ) -> AiModelProfileResponse:
         try:
             response = create_model_profile(session, payload=payload)
@@ -2765,7 +2822,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                     "capabilities": list(response.capabilities),
                     "is_enabled": response.is_enabled,
                 },
-                request_id=x_request_id,
+                request_id=current_request_id(),
             )
             _commit_or_raise(session)
             return response
@@ -2792,7 +2849,6 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         payload: AiModelPriceVersionCreate,
         principal: AuthPrincipal = Depends(require_platform_admin),
         session: Session = Depends(get_session),
-        x_request_id: Annotated[str | None, Header(max_length=128)] = None,
     ) -> AiModelPriceVersionResponse:
         try:
             response = create_model_price_version(
@@ -2839,7 +2895,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                     ),
                     "is_active": response.is_active,
                 },
-                request_id=x_request_id,
+                request_id=current_request_id(),
             )
             _commit_or_raise(session)
             return response
@@ -2880,7 +2936,6 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         payload: AiRoutePolicyPublish,
         principal: AuthPrincipal = Depends(require_platform_admin),
         session: Session = Depends(get_session),
-        x_request_id: Annotated[str | None, Header(max_length=128)] = None,
     ) -> AiRoutePolicyVersionResponse:
         try:
             current_policy = next(
@@ -2922,7 +2977,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                         for target in response.targets
                     ],
                 },
-                request_id=x_request_id,
+                request_id=current_request_id(),
             )
             _commit_or_raise(session)
             return response
@@ -3837,7 +3892,11 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
             raise
         except Exception as exc:
             session.rollback()
-            logger.exception("Recruiting-agent request failed")
+            log_exception_event(
+                "recruiting_agent_request_failed",
+                error_code="agent_service_unavailable",
+                exception=exc,
+            )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="agent_service_unavailable",
@@ -4033,16 +4092,25 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
             _raise_talent_search_profile_error(exc)
         except TalentProfileDeepSeekProviderError as exc:
             session.rollback()
-            logger.warning("Talent-search profile provider failed: %s", exc)
             detail = (
                 "talent_search_profile_response_truncated"
                 if str(exc) == "deepseek_response_truncated"
                 else "talent_search_profile_provider_failed"
             )
+            log_exception_event(
+                "talent_search_profile_provider_failed",
+                level=logging.WARNING,
+                error_code=detail,
+                exception=exc,
+            )
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail) from exc
         except Exception as exc:
             session.rollback()
-            logger.exception("Talent-search profile generation failed")
+            log_exception_event(
+                "talent_search_profile_generation_failed",
+                error_code="talent_search_profile_service_unavailable",
+                exception=exc,
+            )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="talent_search_profile_service_unavailable",
@@ -4065,7 +4133,11 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         except TalentSearchProfileServiceError as exc:
             _raise_talent_search_profile_error(exc)
         except Exception as exc:
-            logger.exception("Talent-search profile read failed")
+            log_exception_event(
+                "talent_search_profile_list_read_failed",
+                error_code="talent_search_profile_service_unavailable",
+                exception=exc,
+            )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="talent_search_profile_service_unavailable",
@@ -4087,7 +4159,11 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         except TalentSearchProfileServiceError as exc:
             _raise_talent_search_profile_error(exc)
         except Exception as exc:
-            logger.exception("Talent-search profile read failed")
+            log_exception_event(
+                "talent_search_profile_read_failed",
+                error_code="talent_search_profile_service_unavailable",
+                exception=exc,
+            )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="talent_search_profile_service_unavailable",
@@ -4121,16 +4197,25 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
             _raise_talent_search_profile_error(exc)
         except TalentProfileDeepSeekProviderError as exc:
             session.rollback()
-            logger.warning("Talent-search profile refinement provider failed: %s", exc)
             detail = (
                 "talent_search_profile_response_truncated"
                 if str(exc) == "deepseek_response_truncated"
                 else "talent_search_profile_provider_failed"
             )
+            log_exception_event(
+                "talent_search_profile_refinement_provider_failed",
+                level=logging.WARNING,
+                error_code=detail,
+                exception=exc,
+            )
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail) from exc
         except Exception as exc:
             session.rollback()
-            logger.exception("Talent-search profile refinement failed")
+            log_exception_event(
+                "talent_search_profile_refinement_failed",
+                error_code="talent_search_profile_service_unavailable",
+                exception=exc,
+            )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="talent_search_profile_service_unavailable",
@@ -4167,7 +4252,11 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
             _raise_job_service_error(exc)
         except Exception as exc:
             session.rollback()
-            logger.exception("Talent-search profile confirmation failed")
+            log_exception_event(
+                "talent_search_profile_confirmation_failed",
+                error_code="talent_search_profile_service_unavailable",
+                exception=exc,
+            )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="talent_search_profile_service_unavailable",
@@ -4203,7 +4292,11 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
             _raise_job_service_error(exc)
         except Exception as exc:
             session.rollback()
-            logger.exception("Talent-search profile run failed")
+            log_exception_event(
+                "talent_search_profile_run_failed",
+                error_code="talent_search_profile_service_unavailable",
+                exception=exc,
+            )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="talent_search_profile_service_unavailable",
@@ -4267,7 +4360,11 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
             _raise_job_service_error(exc)
         except Exception as exc:
             session.rollback()
-            logger.exception("Recruiting-agent scoped talent-profile run failed")
+            log_exception_event(
+                "recruiting_agent_talent_search_profile_run_failed",
+                error_code="talent_search_profile_service_unavailable",
+                exception=exc,
+            )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="talent_search_profile_service_unavailable",
@@ -4298,7 +4395,11 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         except TalentSearchProfileServiceError as exc:
             _raise_talent_search_profile_error(exc)
         except Exception as exc:
-            logger.exception("Talent-search profile run read failed")
+            log_exception_event(
+                "talent_search_profile_run_read_failed",
+                error_code="talent_search_profile_service_unavailable",
+                exception=exc,
+            )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="talent_search_profile_service_unavailable",
@@ -5806,18 +5907,27 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         except JobServiceError as exc:
             _raise_job_service_error(exc)
         except JobDeepSeekProviderError as exc:
-            logger.warning("JD generation provider failed: %s", exc)
             detail = (
                 "jd_generation_response_truncated"
                 if str(exc) == "deepseek_response_truncated"
                 else "jd_generation_provider_failed"
+            )
+            log_exception_event(
+                "jd_generation_provider_failed",
+                level=logging.WARNING,
+                error_code=detail,
+                exception=exc,
             )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=detail,
             ) from exc
         except Exception as exc:  # pragma: no cover - final availability guard
-            logger.exception("JD generation service failed")
+            log_exception_event(
+                "jd_generation_service_failed",
+                error_code="jd_generation_service_unavailable",
+                exception=exc,
+            )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="jd_generation_service_unavailable",

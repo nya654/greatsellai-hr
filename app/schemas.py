@@ -1705,6 +1705,11 @@ class ResumeUploadResponse(ApiModel):
     extraction_status: str
     ai_extraction_status: str
     ai_extraction_error: str | None
+    # A separate, source-grounded task runs only when structured fact
+    # extraction could not safely supply the candidate's name. It is
+    # deliberately informational: its failure never changes resume readiness.
+    candidate_name_extraction_status: str | None = None
+    candidate_name_extraction_error: str | None = None
     ai_summary_status: str | None = None
     ai_summary_error: str | None = None
     source_page_count: int
@@ -1720,6 +1725,8 @@ class ResumeReviewQueueItem(ApiModel):
     extraction_status: str
     ai_extraction_status: str
     ai_extraction_error: str | None
+    candidate_name_extraction_status: str | None = None
+    candidate_name_extraction_error: str | None = None
     ai_summary_status: str | None = None
     ai_summary_error: str | None = None
     quality_flags: list[str]
@@ -1740,6 +1747,8 @@ class ResumeDetail(ApiModel):
     extraction_status: str
     ai_extraction_status: str
     ai_extraction_error: str | None
+    candidate_name_extraction_status: str | None = None
+    candidate_name_extraction_error: str | None = None
     ai_summary_status: str | None = None
     ai_summary_error: str | None = None
     is_active: bool
@@ -2586,6 +2595,8 @@ class ResumeLibraryItem(ApiModel):
     extraction_status: str
     ai_extraction_status: str
     ai_extraction_error: str | None = None
+    candidate_name_extraction_status: str | None = None
+    candidate_name_extraction_error: str | None = None
     ai_summary_status: str | None = None
     ai_summary_error: str | None = None
     is_active: bool

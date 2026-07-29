@@ -51,6 +51,21 @@ export type AiExtractionStatus =
   | "unavailable";
 
 /**
+ * A separate, source-grounded name task runs only when the structured-facts
+ * task could not safely return an explicit candidate name. It uses the same
+ * durable worker vocabulary while remaining independent from resume readiness.
+ */
+export type CandidateNameExtractionStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "skipped"
+  | "cancelled"
+  | "failed"
+  | "unavailable"
+  | "superseded";
+
+/**
  * Server-owned lifecycle for the automatic AI resume summary task.
  * `null` means the current resume version has not reached a summary task yet,
  * for example while fact extraction is still pending or for legacy data.
@@ -587,6 +602,9 @@ export interface ResumeUploadResponse {
   extraction_status: string;
   ai_extraction_status: AiExtractionStatus;
   ai_extraction_error: string | null;
+  /** Optional during a rolling API release. */
+  candidate_name_extraction_status?: CandidateNameExtractionStatus | null;
+  candidate_name_extraction_error?: string | null;
   ai_summary_status: AiSummaryStatus;
   ai_summary_error: string | null;
   source_page_count: number;
@@ -602,6 +620,8 @@ export interface ResumeReviewQueueItem {
   extraction_status: string;
   ai_extraction_status: AiExtractionStatus;
   ai_extraction_error: string | null;
+  candidate_name_extraction_status?: CandidateNameExtractionStatus | null;
+  candidate_name_extraction_error?: string | null;
   ai_summary_status: AiSummaryStatus;
   ai_summary_error: string | null;
   quality_flags: string[];
@@ -622,6 +642,8 @@ export interface ResumeDetail {
   extraction_status: string;
   ai_extraction_status: AiExtractionStatus;
   ai_extraction_error: string | null;
+  candidate_name_extraction_status?: CandidateNameExtractionStatus | null;
+  candidate_name_extraction_error?: string | null;
   ai_summary_status: AiSummaryStatus;
   ai_summary_error: string | null;
   is_active: boolean;
@@ -1287,6 +1309,8 @@ export interface ResumeLibraryItem {
   extraction_status: string;
   ai_extraction_status: AiExtractionStatus;
   ai_extraction_error: string | null;
+  candidate_name_extraction_status?: CandidateNameExtractionStatus | null;
+  candidate_name_extraction_error?: string | null;
   ai_summary_status: AiSummaryStatus;
   ai_summary_error: string | null;
   is_active: boolean;

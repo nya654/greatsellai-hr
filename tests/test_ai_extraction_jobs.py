@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from app.models import (
+    CandidateNameExtractionJob,
     ResumeAiExtractionJob,
     ResumeDocumentExtractionJob,
     ResumeSourceBlock,
@@ -960,6 +961,81 @@ def test_structured_provider_failure_retries_with_core_facts_fallback(
     assert "retry_reason" not in calls[0]
     assert "retry_reason" not in calls[1]
     assert "ai_draft_details_pending" in completed.json()["quality_flags"]
+
+
+def test_core_fallback_saves_source_grounded_name_in_primary_extraction(
+    ai_client,
+    monkeypatch,
+) -> None:
+    """Core facts write an explicit source-backed name without a second AI call."""
+
+    uploaded = _upload_new_resume(ai_client)
+    resume_id = str(uploaded["resume_id"])
+    database = ai_client.app.state.database
+    with database.session_factory() as session:
+        block = session.scalar(
+            select(ResumeSourceBlock).where(
+                ResumeSourceBlock.resume_id == resume_id,
+                ResumeSourceBlock.block_id == "page-001",
+            )
+        )
+        assert block is not None
+        block.text = "Source Candidate\\nSkills: Python"
+        session.commit()
+
+    monkeypatch.setattr(
+        job_service,
+        "extract_resume_facts",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            DeepSeekProviderError("deepseek_invalid_structured_response")
+        ),
+    )
+    assert job_service.run_ai_extraction_worker_once(
+        database,
+        settings=ai_client.app.state.settings,
+        worker_id="name-fallback-facts-worker",
+    )
+    with database.session_factory() as session:
+        extraction_job = session.scalar(
+            select(ResumeAiExtractionJob).where(
+                ResumeAiExtractionJob.resume_id == resume_id
+            )
+        )
+        assert extraction_job is not None
+        extraction_job.next_attempt_at = job_service.utcnow() - timedelta(seconds=1)
+        session.commit()
+
+    monkeypatch.setattr(
+        job_service,
+        "extract_resume_core_facts",
+        lambda **_kwargs: ResumeFactsSubmission.model_validate(
+            {
+                "candidate_name_raw": "Source Candidate",
+                "candidate_name_evidence_block_ids": ["page-001"],
+                "skills": [
+                    {"skill_display": "Python", "evidence_block_ids": ["page-001"]}
+                ]
+            }
+        ),
+    )
+    assert job_service.run_ai_extraction_worker_once(
+        database,
+        settings=ai_client.app.state.settings,
+        worker_id="name-fallback-facts-worker",
+    )
+
+    after_core = ai_client.get(f"/v1/resumes/{resume_id}")
+    assert after_core.status_code == 200, after_core.text
+    assert after_core.json()["ai_extraction_status"] == "completed"
+    assert after_core.json()["candidate_display_name"] == "Source Candidate"
+    assert after_core.json()["candidate_name_extraction_status"] == "succeeded"
+    with database.session_factory() as session:
+        name_job = session.scalar(
+            select(CandidateNameExtractionJob).where(
+                CandidateNameExtractionJob.resume_id == resume_id
+            )
+        )
+        assert name_job is None
 
 
 def test_structured_provider_failure_stops_at_the_attempt_budget(ai_client, monkeypatch) -> None:

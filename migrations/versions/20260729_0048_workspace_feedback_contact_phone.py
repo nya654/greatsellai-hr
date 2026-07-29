@@ -1,7 +1,7 @@
 """Add a platform-only contact phone to feedback submissions.
 
-Revision ID: 20260729_0047
-Revises: 20260728_0046
+Revision ID: 20260729_0048
+Revises: 20260729_0047
 Create Date: 2026-07-29 10:00:00
 
 Historical feedback predates contact collection, so the new column remains
@@ -16,8 +16,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "20260729_0047"
-down_revision: Union[str, Sequence[str], None] = "20260728_0046"
+revision: str = "20260729_0048"
+down_revision: Union[str, Sequence[str], None] = "20260729_0047"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

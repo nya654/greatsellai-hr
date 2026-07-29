@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from app.models import (
+    CandidateNameExtractionJob,
     MailboxConfig,
     MailboxOAuthConnectIntent,
     RecruitingAgentCandidateSet,
@@ -23,7 +27,34 @@ from app.models import (
 def test_alembic_history_has_one_canonical_head() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert script.get_heads() == ["20260729_0047"]
+    assert script.get_heads() == ["20260729_0049"]
+
+
+def test_migration_revision_identifiers_are_unique() -> None:
+    """Alembic can silently mask duplicate revision IDs during graph loading."""
+
+    migration_directory = Path("migrations/versions")
+    seen_revisions: dict[str, Path] = {}
+    for migration_path in sorted(migration_directory.glob("*.py")):
+        module = ast.parse(migration_path.read_text(encoding="utf-8"))
+        revision = next(
+            (
+                statement.value.value
+                for statement in module.body
+                if isinstance(statement, ast.AnnAssign)
+                and isinstance(statement.target, ast.Name)
+                and statement.target.id == "revision"
+                and isinstance(statement.value, ast.Constant)
+                and isinstance(statement.value.value, str)
+            ),
+            None,
+        )
+        assert revision is not None, f"missing revision ID: {migration_path}"
+        assert revision not in seen_revisions, (
+            f"duplicate Alembic revision {revision}: "
+            f"{seen_revisions[revision]} and {migration_path}"
+        )
+        seen_revisions[revision] = migration_path
 
 
 def test_recruiting_agent_context_ddl_identifiers_fit_postgresql() -> None:
@@ -58,6 +89,15 @@ def test_resume_summary_job_ddl_identifiers_fit_postgresql() -> None:
     dialect = postgresql.dialect()
     CreateTable(ResumeSummaryJob.__table__).compile(dialect=dialect)
     for index in ResumeSummaryJob.__table__.indexes:
+        CreateIndex(index).compile(dialect=dialect)
+
+
+def test_candidate_name_extraction_job_ddl_identifiers_fit_postgresql() -> None:
+    """Name-only task identifiers must remain valid in production PostgreSQL."""
+
+    dialect = postgresql.dialect()
+    CreateTable(CandidateNameExtractionJob.__table__).compile(dialect=dialect)
+    for index in CandidateNameExtractionJob.__table__.indexes:
         CreateIndex(index).compile(dialect=dialect)
 
 

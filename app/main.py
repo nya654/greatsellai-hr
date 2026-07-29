@@ -4433,6 +4433,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         intended_outcome: Annotated[str, Form(max_length=4_000)],
         friction: Annotated[str, Form(max_length=4_000)],
         desired_change: Annotated[str, Form(max_length=4_000)],
+        contact_phone: Annotated[str, Form(max_length=32)],
         attachments: list[UploadFile] = File(default=[]),
         idempotency_key: Annotated[
             str | None,
@@ -4441,7 +4442,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         principal: AuthPrincipal = Depends(require_single_admin),
         session: Session = Depends(get_session),
     ) -> WorkspaceFeedbackListResponse:
-        """Accept one complete questionnaire and queue its automatic reward."""
+        """Accept one complete questionnaire and queue its review-based reward."""
 
         storage_keys: list[str] = []
         try:
@@ -4459,6 +4460,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                 intended_outcome=intended_outcome,
                 friction=friction,
                 desired_change=desired_change,
+                contact_phone=contact_phone,
                 attachments=attachment_inputs,
             )
             _commit_or_raise(session)

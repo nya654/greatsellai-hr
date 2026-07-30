@@ -4,7 +4,8 @@ export type WorkspaceNavigationView =
   | "filter"
   | "upload"
   | "score"
-  | "match";
+  | "match"
+  | "recruiting";
 
 /**
  * Feedback is intentionally reached from the account menu rather than the

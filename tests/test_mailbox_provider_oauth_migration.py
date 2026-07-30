@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import MetaData, Table, create_engine, inspect, select
 
 
@@ -196,6 +197,8 @@ def test_mailbox_provider_oauth_migration_upgrades_current_production_revision_w
                     "updated_at": now,
                 },
             )
-            assert connection.scalar(select(alembic_version.c.version_num)) == "20260730_0050"
+            assert connection.scalar(select(alembic_version.c.version_num)) == (
+                ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
+            )
     finally:
         engine.dispose()

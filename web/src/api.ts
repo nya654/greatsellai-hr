@@ -28,6 +28,13 @@ import type {
   JobCreate,
   JobDescriptionGenerateInput,
   JobDescriptionGeneration,
+  JobApplication,
+  JobApplicationCreate,
+  JobApplicationDetail,
+  JobApplicationList,
+  JobApplicationTransitionInput,
+  JobRecruitingSettings,
+  JobRecruitingSettingsUpdate,
   JobMatchBatch,
   JobMatchBatchItem,
   JobMatch,
@@ -75,6 +82,12 @@ import type {
   RecruitingAgentScopedTalentProfileRunInput,
   RecruitingAgentTurn,
   RecruitingAgentTurnInput,
+  RecruitingJob,
+  RecruitingJobList,
+  RecruitingMember,
+  RecruitingWorkflow,
+  RecruitingWorkflowStageInput,
+  RecruitingWorkflowVersion,
   TalentSearchProfile,
   TalentSearchProfileConfirmInput,
   TalentSearchProfileGenerateInput,
@@ -962,6 +975,134 @@ export function createApiClient(options: ApiClientOptions = {}) {
 
     listJobVersions(jobId: string): Promise<JobVersion[]> {
       return request<JobVersion[]>(`/jobs/${resourcePath(jobId)}/versions`);
+    },
+
+    listRecruitingMembers(): Promise<RecruitingMember[]> {
+      return request<RecruitingMember[]>("/recruiting/members");
+    },
+
+    listRecruitingWorkflows(): Promise<RecruitingWorkflow[]> {
+      return request<RecruitingWorkflow[]>("/recruiting/workflows");
+    },
+
+    createRecruitingWorkflow(input: {
+      name: string;
+      stages: RecruitingWorkflowStageInput[];
+    }): Promise<RecruitingWorkflow> {
+      return request<RecruitingWorkflow>("/recruiting/workflows", {
+        method: "POST",
+        body: input,
+      });
+    },
+
+    createRecruitingWorkflowVersion(
+      workflowId: string,
+      input: { stages: RecruitingWorkflowStageInput[] },
+    ): Promise<RecruitingWorkflowVersion> {
+      return request<RecruitingWorkflowVersion>(
+        `/recruiting/workflows/${resourcePath(workflowId)}/versions`,
+        { method: "POST", body: input },
+      );
+    },
+
+    publishRecruitingWorkflowVersion(
+      workflowVersionId: string,
+    ): Promise<RecruitingWorkflowVersion> {
+      return request<RecruitingWorkflowVersion>(
+        `/recruiting/workflow-versions/${resourcePath(workflowVersionId)}/publish`,
+        { method: "POST" },
+      );
+    },
+
+    listRecruitingJobs(): Promise<RecruitingJobList> {
+      return request<RecruitingJobList>("/recruiting/jobs");
+    },
+
+    getRecruitingJob(jobId: string): Promise<RecruitingJob> {
+      return request<RecruitingJob>(`/recruiting/jobs/${resourcePath(jobId)}`);
+    },
+
+    updateRecruitingJob(
+      jobId: string,
+      input: JobRecruitingSettingsUpdate,
+    ): Promise<JobRecruitingSettings> {
+      return request<JobRecruitingSettings>(
+        `/recruiting/jobs/${resourcePath(jobId)}`,
+        { method: "PATCH", body: input },
+      );
+    },
+
+    listJobApplications(
+      jobId: string,
+      options: { includeHistory?: boolean } = {},
+    ): Promise<JobApplicationList> {
+      const query = options.includeHistory ? "?include_history=true" : "";
+      return request<JobApplicationList>(
+        `/recruiting/jobs/${resourcePath(jobId)}/applications${query}`,
+      );
+    },
+
+    createJobApplication(jobId: string, input: JobApplicationCreate): Promise<JobApplication> {
+      return request<JobApplication>(
+        `/recruiting/jobs/${resourcePath(jobId)}/applications`,
+        { method: "POST", body: input },
+      );
+    },
+
+    listCandidateJobApplications(
+      candidateId: string,
+      options: { includeHistory?: boolean } = {},
+    ): Promise<JobApplicationList> {
+      const query = options.includeHistory === false ? "?include_history=false" : "";
+      return request<JobApplicationList>(
+        `/recruiting/candidates/${resourcePath(candidateId)}/applications${query}`,
+      );
+    },
+
+    getJobApplication(applicationId: string): Promise<JobApplicationDetail> {
+      return request<JobApplicationDetail>(
+        `/recruiting/applications/${resourcePath(applicationId)}`,
+      );
+    },
+
+    advanceJobApplication(
+      applicationId: string,
+      input: JobApplicationTransitionInput,
+    ): Promise<JobApplicationDetail> {
+      return request<JobApplicationDetail>(
+        `/recruiting/applications/${resourcePath(applicationId)}/advance`,
+        { method: "POST", body: input },
+      );
+    },
+
+    returnJobApplication(
+      applicationId: string,
+      input: JobApplicationTransitionInput,
+    ): Promise<JobApplicationDetail> {
+      return request<JobApplicationDetail>(
+        `/recruiting/applications/${resourcePath(applicationId)}/return`,
+        { method: "POST", body: input },
+      );
+    },
+
+    rejectJobApplication(
+      applicationId: string,
+      input: JobApplicationTransitionInput,
+    ): Promise<JobApplicationDetail> {
+      return request<JobApplicationDetail>(
+        `/recruiting/applications/${resourcePath(applicationId)}/reject`,
+        { method: "POST", body: input },
+      );
+    },
+
+    hireJobApplication(
+      applicationId: string,
+      input: JobApplicationTransitionInput,
+    ): Promise<JobApplicationDetail> {
+      return request<JobApplicationDetail>(
+        `/recruiting/applications/${resourcePath(applicationId)}/hire`,
+        { method: "POST", body: input },
+      );
     },
 
     getJobVersion(jobVersionId: string): Promise<JobVersion> {

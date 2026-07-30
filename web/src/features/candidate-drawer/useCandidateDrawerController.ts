@@ -598,6 +598,7 @@ export function useCandidateDrawerController({
     candidate: selectedResume,
     drawerTab,
     enrichingFacts,
+    formatError,
     isOpen: drawerOpen,
     onClose: closeDrawer,
     onCreateManualSummary: createManualSummary,

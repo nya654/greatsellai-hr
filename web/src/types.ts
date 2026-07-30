@@ -1637,6 +1637,159 @@ export interface JobVersionRequirementsUpdate {
   requirements?: JobRequirementInput[];
 }
 
+/** Recruiter-owned lifecycle for the existing Job aggregate. */
+export type RecruitingStatus = "draft" | "open" | "paused" | "closed";
+export type RecruitingWorkflowVersionStatus = "draft" | "published" | "archived";
+export type RecruitingWorkflowStageType = "active" | "hired" | "rejected";
+export type JobApplicationStatus = "active" | "hired" | "rejected" | "withdrawn";
+export type JobApplicationTransitionAction =
+  | "initial"
+  | "advance"
+  | "return"
+  | "hire"
+  | "reject";
+
+export interface RecruitingWorkflowStageInput {
+  stage_key: string;
+  name: string;
+  stage_type: RecruitingWorkflowStageType;
+  sort_order: number;
+}
+
+export interface RecruitingWorkflowStage extends RecruitingWorkflowStageInput {
+  stage_id: string;
+  workflow_version_id: string;
+}
+
+export interface RecruitingWorkflowVersion {
+  workflow_version_id: string;
+  workflow_id: string;
+  version: number;
+  status: RecruitingWorkflowVersionStatus;
+  created_at: string;
+  published_at: string | null;
+  stages: RecruitingWorkflowStage[];
+}
+
+export interface RecruitingWorkflow {
+  workflow_id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  versions: RecruitingWorkflowVersion[];
+}
+
+export interface RecruitingMember {
+  user_id: string;
+  display_name: string;
+  role: MembershipRole;
+}
+
+export interface JobRecruitingSettingsUpdate {
+  recruiting_status?: RecruitingStatus;
+  department?: string | null;
+  owner_user_id?: string | null;
+  hc_total?: number;
+  recruiting_workflow_version_id?: string | null;
+}
+
+export interface JobRecruitingSettings {
+  job_id: string;
+  recruiting_status: RecruitingStatus;
+  department: string | null;
+  owner_user_id: string | null;
+  hc_total: number;
+  recruiting_workflow_version_id: string | null;
+  updated_at: string;
+}
+
+export interface RecruitingJob {
+  job_id: string;
+  title: string;
+  current_job_version_id: string | null;
+  current_job_version_number: number | null;
+  recruiting_status: RecruitingStatus;
+  department: string | null;
+  owner_user_id: string | null;
+  owner_display_name: string | null;
+  hc_total: number;
+  recruiting_workflow_version_id: string | null;
+  workflow_version_number: number | null;
+  workflow_name: string | null;
+  active_application_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecruitingJobList {
+  items: RecruitingJob[];
+  total: number;
+}
+
+export interface JobApplicationCreate {
+  candidate_id: string;
+}
+
+export interface JobApplicationTransitionInput {
+  expected_state_version: number;
+  note?: string | null;
+}
+
+export interface JobApplicationStageTransition {
+  transition_id: string;
+  application_id: string;
+  state_version_after: number;
+  from_stage_id: string | null;
+  from_stage_key: string | null;
+  from_stage_name: string | null;
+  from_stage_type: RecruitingWorkflowStageType | null;
+  to_stage_id: string;
+  to_stage_key: string;
+  to_stage_name: string;
+  to_stage_type: RecruitingWorkflowStageType;
+  action: JobApplicationTransitionAction;
+  actor_user_id: string;
+  note: string | null;
+  created_at: string;
+}
+
+export interface JobApplication {
+  application_id: string;
+  job_id: string;
+  job_title: string;
+  candidate_id: string;
+  candidate_display_name: string | null;
+  resume_id: string;
+  resume_fact_snapshot_id: string;
+  resume_facts_version: number;
+  job_version_id: string;
+  job_version_number: number;
+  workflow_version_id: string;
+  workflow_version_number: number;
+  workflow_name: string | null;
+  current_stage_id: string;
+  current_stage_key: string;
+  current_stage_name: string;
+  current_stage_type: RecruitingWorkflowStageType;
+  current_stage_sort_order: number;
+  status: JobApplicationStatus;
+  is_current: boolean;
+  round_number: number;
+  state_version: number;
+  added_by_user_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface JobApplicationDetail extends JobApplication {
+  stage_transitions: JobApplicationStageTransition[];
+}
+
+export interface JobApplicationList {
+  items: JobApplication[];
+  total: number;
+}
+
 export interface JobMatchCreate {
   job_version_id: string;
 }

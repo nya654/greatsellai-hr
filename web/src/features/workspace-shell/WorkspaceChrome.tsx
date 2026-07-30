@@ -24,6 +24,7 @@ const navigation: Array<{
   { view: "upload", label: "上传简历", icon: "upload" },
   { view: "score", label: "评分模板", icon: "layers" },
   { view: "match", label: "招聘详情", icon: "match" },
+  { view: "recruiting", label: "职位管理", icon: "briefcase" },
 ];
 
 function formatWholeNumber(value: number): string {

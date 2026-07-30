@@ -31,6 +31,7 @@ import type {
   SelectedResume,
 } from "./candidate-drawer-types";
 import { CandidateContactPanel } from "./CandidateContactPanel";
+import { CandidateRecruitingPanel } from "./CandidateRecruitingPanel";
 import "./candidate-drawer.css";
 
 export interface CandidateDrawerProps {
@@ -65,6 +66,7 @@ export interface CandidateDrawerProps {
   onDownloadOriginal: () => void;
   onRefreshScores: () => void;
   onDeleteResume: () => Promise<void>;
+  formatError: (error: unknown) => string;
   onNotify: (kind: "success" | "error", message: string) => void;
   /** Candidate-level versions are metadata-only, never duplicate AI data. */
   resumeVersions: CandidateResumeVersionPreview[];
@@ -103,6 +105,7 @@ export function CandidateDrawer({
   onDownloadOriginal,
   onRefreshScores,
   onDeleteResume,
+  formatError,
   onNotify,
   resumeVersions,
   resumeVersionsLoading,
@@ -272,6 +275,7 @@ export function CandidateDrawer({
                 ["summary", "AI 总结"],
                 ["score", "评分详情"],
                 ["evidence", "提取依据"],
+                ["applications", "应聘记录"],
               ] as Array<[CandidateDrawerTab, string]>
             ).map(([tab, label]) => (
               <button
@@ -295,7 +299,13 @@ export function CandidateDrawer({
           id={`candidate-drawer-panel-${drawerTab}`}
           role="tabpanel"
         >
-          {reviewLoading && !review ? (
+          {drawerTab === "applications" ? (
+            <CandidateRecruitingPanel
+              candidateId={candidate?.candidateId ?? null}
+              formatError={formatError}
+              notify={onNotify}
+            />
+          ) : reviewLoading && !review ? (
             <TableSkeleton />
           ) : drawerTab === "original" ? (
             <OriginalDocumentTab

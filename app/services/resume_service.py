@@ -132,7 +132,8 @@ def validate_pdf_resume_upload(
     if len(content) > settings.max_upload_bytes:
         raise UploadValidationError("file_too_large")
     submitted_name = Path(original_filename or "resume.pdf").name
-    if Path(submitted_name).suffix.lower() not in SUPPORTED_DOCUMENT_EXTENSIONS:
+    suffix = Path(submitted_name).suffix.lower()
+    if suffix not in SUPPORTED_DOCUMENT_EXTENSIONS:
         raise UploadValidationError("unsupported_document_type")
     try:
         validate_document_signature(filename=submitted_name, content=content)
@@ -142,6 +143,14 @@ def validate_pdf_resume_upload(
         if submitted_name.lower().endswith(".pdf") and str(exc) == "invalid_document_signature":
             raise UploadValidationError("not_a_pdf") from exc
         raise UploadValidationError(str(exc)) from exc
+    # Image resumes have no native text layer. They would otherwise be
+    # accepted and only fail later in the durable worker, which is misleading
+    # now that Tencent is the sole image OCR provider. Keep this after the
+    # signature gate so a spoofed image still reports its invalid file.
+    if suffix in {".png", ".jpg", ".jpeg"} and (
+        not settings.tencent_secret_id or not settings.tencent_secret_key
+    ):
+        raise UploadValidationError("tencent_ocr_not_configured")
     return submitted_name
 
 

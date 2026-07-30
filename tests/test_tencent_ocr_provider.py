@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import struct
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,12 +21,31 @@ def _config() -> TencentOcrConfig:
     )
 
 
+def _minimal_jpeg(*, width: int = 100, height: int = 100) -> bytes:
+    return (
+        b"\xff\xd8"
+        b"\xff\xc0\x00\x0b\x08"
+        + height.to_bytes(2, "big")
+        + width.to_bytes(2, "big")
+        + b"\x01\x01\x11\x00\xff\xd9"
+    )
+
+
+def _minimal_png(*, width: int = 100, height: int = 100) -> bytes:
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        b"\x00\x00\x00\rIHDR"
+        + struct.pack(">II", width, height)
+        + b"\x08\x06\x00\x00\x00"
+    )
+
+
 def test_image_ocr_uses_base64_without_public_image_url(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     image_path = tmp_path / "resume.jpg"
-    image_bytes = b"\xff\xd8synthetic-resume-image"
+    image_bytes = _minimal_jpeg()
     image_path.write_bytes(image_bytes)
     captured: dict[str, object] = {}
 
@@ -77,6 +97,7 @@ def test_oversized_image_is_reencoded_before_tencent_request(
 
     monkeypatch.setattr(provider, "_reencode_image_within_ocr_limit", fake_reencode)
     monkeypatch.setattr(provider, "_extract_general_basic_ocr", fake_request)
+    monkeypatch.setattr(provider, "_image_dimensions", lambda _bytes: (100, 100))
 
     assert provider.extract_image_text(path=image_path, config=_config()) == "Recovered text"
     assert captured["reencode_path"] == image_path
@@ -88,7 +109,7 @@ def test_provider_failure_does_not_expose_upstream_details(
     tmp_path: Path,
 ) -> None:
     image_path = tmp_path / "resume.png"
-    image_path.write_bytes(b"\x89PNG\r\n\x1a\nsynthetic")
+    image_path.write_bytes(_minimal_png())
 
     class FailingClient:
         def __init__(self, *_args: object) -> None:
@@ -100,3 +121,54 @@ def test_provider_failure_does_not_expose_upstream_details(
         provider.extract_image_text(path=image_path, config=_config())
 
     assert str(raised.value) == "tencent_ocr_request_failed"
+
+
+def test_tencent_auth_and_throttle_codes_are_classified_without_leaking_details() -> None:
+    from tencentcloud.common.exception.tencent_cloud_sdk_exception import (
+        TencentCloudSDKException,
+    )
+
+    assert (
+        provider._provider_error_code(
+            TencentCloudSDKException("AuthFailure.SignatureFailure", "synthetic", "id")
+        )
+        == "tencent_ocr_auth_failed"
+    )
+    assert (
+        provider._provider_error_code(
+            TencentCloudSDKException("RequestLimitExceeded", "synthetic", "id")
+        )
+        == "tencent_ocr_rate_limited"
+    )
+
+
+def test_image_dimension_limit_is_checked_before_local_reencoding(tmp_path: Path) -> None:
+    image_path = tmp_path / "pixel-bomb.png"
+    image_path.write_bytes(_minimal_png(width=100_000, height=100_000))
+
+    with pytest.raises(TencentOcrError) as raised:
+        provider._prepare_image_for_ocr(path=image_path)
+
+    assert str(raised.value) == "tencent_ocr_image_dimensions_too_large"
+
+
+def test_transparent_png_is_flattened_before_jpeg_reencoding(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import fitz
+
+    transparent = fitz.Pixmap(
+        fitz.csRGB,
+        2,
+        2,
+        bytes([10, 20, 30, 128]) * 4,
+        True,
+    )
+    image_path = tmp_path / "transparent.png"
+    transparent.save(image_path)
+    monkeypatch.setattr(provider, "_MAX_OCR_IMAGE_BYTES", 1_000)
+
+    encoded = provider._reencode_image_within_ocr_limit(path=image_path)
+
+    assert encoded.startswith(b"\xff\xd8")

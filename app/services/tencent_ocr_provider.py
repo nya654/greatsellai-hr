@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import struct
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,6 +24,8 @@ from tencentcloud.ocr.v20181119 import models, ocr_client
 # resume text.
 _MAX_OCR_IMAGE_BYTES = 7 * 1024 * 1024
 _MAX_RENDERED_PDF_IMAGE_BYTES = 3_500_000
+_MAX_REENCODE_IMAGE_PIXELS = 16_000_000
+_MAX_JPEG_DIMENSION_HEADER_BYTES = 1024 * 1024
 _IMAGE_REENCODE_SCALES = (1.0, 0.8, 0.65, 0.5, 0.4)
 _IMAGE_REENCODE_QUALITIES = (85, 75, 65)
 
@@ -100,7 +103,7 @@ def _extract_general_basic_ocr(
         )
         response = client.GeneralBasicOCR(request)
     except TencentCloudSDKException as exc:
-        raise TencentOcrError("tencent_ocr_request_failed") from exc
+        raise TencentOcrError(_provider_error_code(exc)) from exc
     except (OSError, ValueError, RuntimeError) as exc:
         raise TencentOcrError("tencent_ocr_request_failed") from exc
 
@@ -115,6 +118,29 @@ def _extract_general_basic_ocr(
     return "\n".join(lines)
 
 
+def _provider_error_code(exc: TencentCloudSDKException) -> str:
+    """Classify provider failures without retaining provider text or request IDs."""
+
+    raw_code = (exc.get_code() or "").strip().lower()
+    if raw_code in {"authfailure", "unauthorizedoperation"} or raw_code.startswith(
+        ("authfailure.", "unauthorizedoperation.")
+    ):
+        return "tencent_ocr_auth_failed"
+    if raw_code in {
+        "invalidparameter",
+        "invalidparametervalue",
+        "unsupportedoperation",
+    } or raw_code.startswith(
+        ("invalidparameter.", "invalidparametervalue.", "unsupportedoperation.")
+    ):
+        return "tencent_ocr_request_invalid"
+    if raw_code in {"requestlimitexceeded", "limitexceeded"} or raw_code.startswith(
+        ("requestlimitexceeded.", "limitexceeded.")
+    ):
+        return "tencent_ocr_rate_limited"
+    return "tencent_ocr_request_failed"
+
+
 def _prepare_image_for_ocr(*, path: Path) -> bytes:
     try:
         image_bytes = path.read_bytes()
@@ -122,6 +148,9 @@ def _prepare_image_for_ocr(*, path: Path) -> bytes:
         raise TencentOcrError("tencent_ocr_image_open_failed") from exc
     if not image_bytes:
         raise TencentOcrError("tencent_ocr_invalid_image")
+    width, height = _image_dimensions(image_bytes)
+    if width * height > _MAX_REENCODE_IMAGE_PIXELS:
+        raise TencentOcrError("tencent_ocr_image_dimensions_too_large")
     if len(image_bytes) <= _MAX_OCR_IMAGE_BYTES:
         return image_bytes
     return _reencode_image_within_ocr_limit(path=path)
@@ -140,6 +169,8 @@ def _reencode_image_within_ocr_limit(*, path: Path) -> bytes:
         source = fitz.Pixmap(str(path))
         if source.width < 1 or source.height < 1:
             raise TencentOcrError("tencent_ocr_invalid_image")
+        if source.width * source.height > _MAX_REENCODE_IMAGE_PIXELS:
+            raise TencentOcrError("tencent_ocr_image_dimensions_too_large")
         for scale in _IMAGE_REENCODE_SCALES:
             width = max(1, round(source.width * scale))
             height = max(1, round(source.height * scale))
@@ -149,7 +180,7 @@ def _reencode_image_within_ocr_limit(*, path: Path) -> bytes:
                 else fitz.Pixmap(source, width, height, None)
             )
             for quality in _IMAGE_REENCODE_QUALITIES:
-                image_bytes = pixmap.tobytes("jpeg", jpg_quality=quality)
+                image_bytes = _encode_pixmap_as_jpeg(pixmap, quality=quality)
                 if len(image_bytes) <= _MAX_OCR_IMAGE_BYTES:
                     return image_bytes
     except TencentOcrError:
@@ -157,6 +188,78 @@ def _reencode_image_within_ocr_limit(*, path: Path) -> bytes:
     except (fitz.FileDataError, OSError, RuntimeError, ValueError) as exc:
         raise TencentOcrError("tencent_ocr_image_prepare_failed") from exc
     raise TencentOcrError("tencent_ocr_image_too_large")
+
+
+def _encode_pixmap_as_jpeg(pixmap: fitz.Pixmap, *, quality: int) -> bytes:
+    """Return a JPEG even when a PNG source has an alpha channel.
+
+    PyMuPDF intentionally rejects direct JPEG output for an RGBA pixmap.  A
+    copied RGB pixmap flattens transparency before encoding, which keeps the
+    image OCR path usable for screenshots and exported transparent PNGs.
+    """
+
+    opaque_pixmap = fitz.Pixmap(pixmap, 0) if pixmap.alpha else pixmap
+    return opaque_pixmap.tobytes("jpeg", jpg_quality=quality)
+
+
+def _image_dimensions(image_bytes: bytes) -> tuple[int, int]:
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        if len(image_bytes) < 24 or image_bytes[12:16] != b"IHDR":
+            raise TencentOcrError("tencent_ocr_invalid_image")
+        width, height = struct.unpack(">II", image_bytes[16:24])
+        if width < 1 or height < 1:
+            raise TencentOcrError("tencent_ocr_invalid_image")
+        return width, height
+    if image_bytes.startswith(b"\xff\xd8"):
+        return _jpeg_dimensions(image_bytes)
+    raise TencentOcrError("tencent_ocr_invalid_image")
+
+
+def _jpeg_dimensions(image_bytes: bytes) -> tuple[int, int]:
+    """Read JPEG dimensions without inflating the image into a bitmap."""
+
+    limit = min(len(image_bytes), _MAX_JPEG_DIMENSION_HEADER_BYTES)
+    offset = 2
+    while offset < limit:
+        while offset < limit and image_bytes[offset] != 0xFF:
+            offset += 1
+        while offset < limit and image_bytes[offset] == 0xFF:
+            offset += 1
+        if offset >= limit:
+            break
+        marker = image_bytes[offset]
+        offset += 1
+        if marker in {0x01, 0xD8, 0xD9} or 0xD0 <= marker <= 0xD7:
+            continue
+        if offset + 2 > limit:
+            break
+        segment_length = int.from_bytes(image_bytes[offset : offset + 2], "big")
+        if segment_length < 2 or offset + segment_length > limit:
+            break
+        if marker in {
+            0xC0,
+            0xC1,
+            0xC2,
+            0xC3,
+            0xC5,
+            0xC6,
+            0xC7,
+            0xC9,
+            0xCA,
+            0xCB,
+            0xCD,
+            0xCE,
+            0xCF,
+        }:
+            if segment_length < 7:
+                break
+            height = int.from_bytes(image_bytes[offset + 3 : offset + 5], "big")
+            width = int.from_bytes(image_bytes[offset + 5 : offset + 7], "big")
+            if width > 0 and height > 0:
+                return width, height
+            break
+        offset += segment_length
+    raise TencentOcrError("tencent_ocr_invalid_image")
 
 
 def _render_page_for_ocr(*, path: Path, page_no: int) -> bytes:

@@ -94,7 +94,7 @@ archive SHA-256、API/Caddy image ID 与健康检查。**Production promotion** 
 
 同时在 GitHub 分支和标签规则中配置：
 
-1. `main` 必须经 Squash PR 合并，并要求 PR 的完整 CI 与文本完整性检查全部通过。
+1. `main` 必须经已验证 PR 合并，并要求 PR 的完整 CI 与文本完整性检查全部通过。默认使用 Squash merge；普通 GitHub merge commit 仅在其父提交和代码树都严格对应已验证 PR 时受发布门接受。
 2. 禁止强制推送和直接推送 `main`。
 3. 保护 `prod-*` 标签，禁止移动、删除或复用；仅允许受控发布流程创建标签。
 
@@ -114,7 +114,7 @@ archive SHA-256、API/Caddy image ID 与健康检查。**Production promotion** 
 
 ### 连续合并多个 PR
 
-多个 PR 都显示绿灯时，不能把它们都按同一个旧 `main` 基线连续 squash merge。每合并一个
+多个 PR 都显示绿灯时，不能把它们都按同一个旧 `main` 基线连续合并。每合并一个
 PR，下一条 PR 必须先执行：
 
 ```bash
@@ -123,7 +123,7 @@ git rebase origin/main
 git push --force-with-lease
 ```
 
-然后等待该更新后提交的完整 PR CI 与文本完整性检查重新成功，再进行下一次 squash merge。
+然后等待该更新后提交的完整 PR CI 与文本完整性检查重新成功，再进行下一次合并。
 这保证发布候选的代码树正是经过验证的代码树；若跳过这一步，`Main release provenance`
 会在镜像构建、标签和服务器连接之前失败关闭。
 
@@ -161,7 +161,7 @@ git push --force-with-lease
 
 `Text encoding integrity` 只在 PR（及手动运行）中执行，避免 `main` 发布预检重复占用 Runner；其成功结果由 `scripts/verify_main_release_provenance.py` 在 `main` 发布预检中校验。
 
-这套设计不依赖私有仓库的 GitHub 分支保护功能：即使有人错误地直接推送 `main`，自动发布也会被代码级溯源门阻止。为保持溯源确定性，团队合并 PR 时应使用 **Squash merge**；溯源门要求合并提交只有一个父提交，并且该父提交就是 PR 检查时的 `base` SHA。因此合并前必须将 PR 更新或 rebase 到最新 `main`，并等待该基线上的完整 PR 检查全部成功；若在检查未结束或基线落后时合并，`main` 发布预检会拒绝，且需要先修正 PR 后重新走合并流程。团队仍应坚持只经 PR 合并，且不应绕过已存在的审核和测试流程。代码级门禁可防止普通误操作，但不能替代未来可用的仓库/组织级写入权限控制。
+这套设计不依赖私有仓库的 GitHub 分支保护功能：即使有人错误地直接推送 `main`，自动发布也会被代码级溯源门阻止。为保持溯源确定性，团队默认使用 **Squash merge**；溯源门也接受 GitHub 普通 merge commit，但只能是严格的 `parents = [PR base SHA, PR head SHA]`，且最终 Git tree 必须与已验证 PR head 完全一致。普通 merge 因基线落后或冲突处理导致代码树变化时仍会失败关闭；多提交的 GitHub rebase merge 也不在当前门禁支持范围内。无论采用哪种允许的合并方式，合并前都必须将 PR 更新或 rebase 到最新 `main`，并等待该基线上的完整 PR 检查全部成功；若在检查未结束或基线落后时合并，`main` 发布预检会拒绝，且需要先修正 PR 后重新走合并流程。团队仍应坚持只经 PR 合并，且不应绕过已存在的审核和测试流程。代码级门禁可防止普通误操作，但不能替代未来可用的仓库/组织级写入权限控制。
 
 ## Release regression gates
 

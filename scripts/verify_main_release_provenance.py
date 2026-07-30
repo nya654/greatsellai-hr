@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Refuse a main release that is not backed by a fully verified merged PR.
 
-The repository currently uses squash merges, so the commit created on ``main``
-has a different SHA from the pull request head that CI tested.  This guard
-links the two through GitHub's "pull requests associated with a commit" API,
-then verifies that the merged PR's source tree and required PR checks match
-the commit that is about to be released.
+The release guard accepts two GitHub merge shapes: a squash commit with one
+parent, or a normal merge commit with the verified PR head as its second
+parent.  In both cases it requires the verified PR base as the first parent
+and the exact PR source tree as the release tree.  This links the release to
+the PR's complete CI evidence without accepting direct pushes to ``main``.
 
 It deliberately uses only GitHub API metadata and never writes to GitHub or
 production.  A direct push to ``main`` therefore fails before production
@@ -92,17 +92,39 @@ def _tree_sha(commit: Mapping[str, Any], *, context: str) -> str:
     return tree_sha
 
 
-def _single_parent_sha(commit: Mapping[str, Any]) -> str:
+def _parent_shas(commit: Mapping[str, Any]) -> tuple[str, ...]:
     parents = _require_sequence(commit.get("parents"), context="main release commit parents")
-    if len(parents) != 1:
+    parent_shas: list[str] = []
+    for parent in parents:
+        parent_data = _require_mapping(parent, context="main release commit parent")
+        parent_sha = parent_data.get("sha")
+        if not isinstance(parent_sha, str) or not SHA_PATTERN.fullmatch(parent_sha):
+            raise ProvenanceError("main release commit has an invalid parent SHA")
+        parent_shas.append(parent_sha)
+    return tuple(parent_shas)
+
+
+def _verify_release_parent_provenance(
+    *,
+    release_commit: Mapping[str, Any],
+    base_sha: str,
+    head_sha: str,
+) -> None:
+    parent_shas = _parent_shas(release_commit)
+    if len(parent_shas) not in {1, 2}:
         raise ProvenanceError(
-            "main release commit must have exactly one parent from the PR base"
+            "main release commit must have one squash parent or two GitHub merge parents"
         )
-    parent = _require_mapping(parents[0], context="main release commit parent")
-    parent_sha = parent.get("sha")
-    if not isinstance(parent_sha, str) or not SHA_PATTERN.fullmatch(parent_sha):
-        raise ProvenanceError("main release commit has an invalid parent SHA")
-    return parent_sha
+    if parent_shas[0] != base_sha:
+        raise ProvenanceError(
+            "main release commit does not use the verified PR base as its first parent; "
+            "update or rebase the PR onto the latest main, rerun its full PR checks, "
+            "then merge it"
+        )
+    if len(parent_shas) == 2 and parent_shas[1] != head_sha:
+        raise ProvenanceError(
+            "main merge commit does not use the verified PR head as its second parent"
+        )
 
 
 def _associated_merged_pull_request(
@@ -292,12 +314,11 @@ def verify_main_release_provenance(
         fetch_json(f"/repos/{repository}/git/commits/{head_sha}"),
         context="pull request head commit",
     )
-    if _single_parent_sha(release_commit) != base_sha:
-        raise ProvenanceError(
-            "main release commit is not a direct squash merge from the verified PR base; "
-            "update or rebase the PR onto the latest main, rerun its full PR checks, "
-            "then squash merge it"
-        )
+    _verify_release_parent_provenance(
+        release_commit=release_commit,
+        base_sha=base_sha,
+        head_sha=head_sha,
+    )
     if _tree_sha(release_commit, context="main release commit") != _tree_sha(
         pull_request_commit,
         context="pull request head commit",

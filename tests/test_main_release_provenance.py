@@ -24,8 +24,15 @@ PR_HEAD_SHA = "b" * 40
 TREE_SHA = "c" * 40
 
 
-def _commit(tree_sha: str, *, parent_sha: str = "d" * 40) -> dict[str, object]:
-    return {"tree": {"sha": tree_sha}, "parents": [{"sha": parent_sha}]}
+def _commit(
+    tree_sha: str,
+    *,
+    parent_shas: tuple[str, ...] = ("d" * 40,),
+) -> dict[str, object]:
+    return {
+        "tree": {"sha": tree_sha},
+        "parents": [{"sha": parent_sha} for parent_sha in parent_shas],
+    }
 
 
 def _successful_item(*, name: str, timestamp: str) -> dict[str, object]:
@@ -108,7 +115,7 @@ def _fetcher(responses: Mapping[str, object]):
     return fetch_json
 
 
-def test_verified_main_commit_requires_one_successful_merged_pull_request() -> None:
+def test_verified_main_squash_commit_accepts_one_successful_merged_pull_request() -> None:
     verified = PROVENANCE.verify_main_release_provenance(
         repository=REPOSITORY,
         release_sha=RELEASE_SHA,
@@ -118,6 +125,22 @@ def test_verified_main_commit_requires_one_successful_merged_pull_request() -> N
     assert verified.pull_request_number == 108
     assert verified.pull_request_head_sha == PR_HEAD_SHA
     assert verified.ci_run_id == 12345
+
+
+def test_verified_main_merge_commit_accepts_verified_base_and_head_parents() -> None:
+    responses = _success_responses()
+    responses[f"/repos/{REPOSITORY}/git/commits/{RELEASE_SHA}"] = _commit(
+        TREE_SHA,
+        parent_shas=("d" * 40, PR_HEAD_SHA),
+    )
+
+    verified = PROVENANCE.verify_main_release_provenance(
+        repository=REPOSITORY,
+        release_sha=RELEASE_SHA,
+        fetch_json=_fetcher(responses),
+    )
+
+    assert verified.pull_request_number == 108
 
 
 def test_release_provenance_does_not_require_pr_image_build() -> None:
@@ -178,17 +201,77 @@ def test_tree_change_after_pr_ci_is_rejected() -> None:
         )
 
 
+def test_main_merge_commit_with_tree_change_after_pr_ci_is_rejected() -> None:
+    responses = _success_responses()
+    responses[f"/repos/{REPOSITORY}/git/commits/{RELEASE_SHA}"] = _commit(
+        "e" * 40,
+        parent_shas=("d" * 40, PR_HEAD_SHA),
+    )
+
+    with pytest.raises(PROVENANCE.ProvenanceError, match="tree differs"):
+        PROVENANCE.verify_main_release_provenance(
+            repository=REPOSITORY,
+            release_sha=RELEASE_SHA,
+            fetch_json=_fetcher(responses),
+        )
+
+
 def test_main_commit_with_a_non_base_parent_explains_how_to_recover() -> None:
     responses = _success_responses()
     responses[f"/repos/{REPOSITORY}/git/commits/{RELEASE_SHA}"] = _commit(
         TREE_SHA,
-        parent_sha="e" * 40,
+        parent_shas=("e" * 40,),
     )
 
     with pytest.raises(
         PROVENANCE.ProvenanceError,
         match="update or rebase the PR onto the latest main",
     ):
+        PROVENANCE.verify_main_release_provenance(
+            repository=REPOSITORY,
+            release_sha=RELEASE_SHA,
+            fetch_json=_fetcher(responses),
+        )
+
+
+def test_main_merge_commit_with_a_non_head_second_parent_is_rejected() -> None:
+    responses = _success_responses()
+    responses[f"/repos/{REPOSITORY}/git/commits/{RELEASE_SHA}"] = _commit(
+        TREE_SHA,
+        parent_shas=("d" * 40, "e" * 40),
+    )
+
+    with pytest.raises(PROVENANCE.ProvenanceError, match="second parent"):
+        PROVENANCE.verify_main_release_provenance(
+            repository=REPOSITORY,
+            release_sha=RELEASE_SHA,
+            fetch_json=_fetcher(responses),
+        )
+
+
+def test_main_merge_commit_with_reversed_base_and_head_parents_is_rejected() -> None:
+    responses = _success_responses()
+    responses[f"/repos/{REPOSITORY}/git/commits/{RELEASE_SHA}"] = _commit(
+        TREE_SHA,
+        parent_shas=(PR_HEAD_SHA, "d" * 40),
+    )
+
+    with pytest.raises(PROVENANCE.ProvenanceError, match="first parent"):
+        PROVENANCE.verify_main_release_provenance(
+            repository=REPOSITORY,
+            release_sha=RELEASE_SHA,
+            fetch_json=_fetcher(responses),
+        )
+
+
+def test_main_commit_with_more_than_two_parents_is_rejected() -> None:
+    responses = _success_responses()
+    responses[f"/repos/{REPOSITORY}/git/commits/{RELEASE_SHA}"] = _commit(
+        TREE_SHA,
+        parent_shas=("d" * 40, PR_HEAD_SHA, "e" * 40),
+    )
+
+    with pytest.raises(PROVENANCE.ProvenanceError, match="one squash parent"):
         PROVENANCE.verify_main_release_provenance(
             repository=REPOSITORY,
             release_sha=RELEASE_SHA,

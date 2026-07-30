@@ -24,6 +24,7 @@ export function FilterWorkspace({
   onOpenCandidate,
   onScoreTemplateChange,
   onLoadMore,
+  onFavoriteChanged,
   onUpload,
   scoreTemplateId,
   scoreTemplates,
@@ -40,6 +41,7 @@ export function FilterWorkspace({
   onOpenCandidate: (item: CandidateSearchItem, tab?: "score") => void;
   onScoreTemplateChange: (templateId: string | null) => void;
   onLoadMore: () => void;
+  onFavoriteChanged?: () => void;
   onUpload: () => void;
   scoreTemplateId: string | null;
   scoreTemplates: ScoreTemplate[];
@@ -55,6 +57,7 @@ export function FilterWorkspace({
       <ResultsPane
         appliedDraft={appliedDraft}
         onLoadMore={onLoadMore}
+        onFavoriteChanged={onFavoriteChanged}
         onOpenCandidate={onOpenCandidate}
         onReset={onReset}
         onRefineWithAgent={() => {

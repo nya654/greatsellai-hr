@@ -6,6 +6,7 @@ import type {
   ScoreTemplate,
 } from "../../types";
 import { ResumeLibraryPage } from "../library/ResumeLibraryPage";
+import { FavoriteCandidatesPage } from "../favorites/FavoriteCandidatesPage";
 import { FilterWorkspace } from "../filter/FilterWorkspace";
 import { type useCandidateSearchController } from "../filter/useCandidateSearchController";
 import { ScoreWorkspace } from "../scoring/ScoreWorkspace";
@@ -64,6 +65,18 @@ export interface WorkspaceViewRouterProps {
   settingsSection: WorkspaceSettingsSection;
   view: WorkspaceView;
   onLibraryChanged: () => void;
+  /** Refresh every current-user favorite projection after a bookmark change. */
+  onFavoriteChanged: () => void;
+  /**
+   * Favorites are candidate-level, so the existing resume-library callback
+   * cannot describe an arbitrary historical version without fabricating a
+   * ResumeLibraryItem. App wires this directly to the shared drawer opener.
+   */
+  onOpenFavoriteResume?: (
+    resumeId: string,
+    candidateId: string,
+    candidateName: string | null,
+  ) => void;
   onOpenCandidate: (
     item: CandidateSearchItem,
     tab?: CandidateDrawerTab,
@@ -90,6 +103,8 @@ export function WorkspaceViewRouter({
   settingsSection,
   view,
   onLibraryChanged,
+  onFavoriteChanged,
+  onOpenFavoriteResume,
   onOpenCandidate,
   onOpenLibraryResume,
   onOpenMatchedResume,
@@ -105,8 +120,18 @@ export function WorkspaceViewRouter({
           formatError={feedback.formatError}
           refreshToken={library.refreshToken}
           selectedResumeId={library.selectedResumeId}
+          onFavoriteChanged={onFavoriteChanged}
           onOpenResume={onOpenLibraryResume}
           onUpload={() => navigation.navigateToView("upload")}
+        />
+      )}
+      {view === "favorites" && (
+        <FavoriteCandidatesPage
+          formatError={feedback.formatError}
+          onFavoritesChanged={onFavoriteChanged}
+          onGoToFilter={() => navigation.navigateToView("filter")}
+          onOpenResume={onOpenFavoriteResume}
+          refreshToken={library.refreshToken}
         />
       )}
       {view === "filter" && (
@@ -118,6 +143,7 @@ export function WorkspaceViewRouter({
           search={filter.search}
           searching={filter.searching}
           selectedResumeId={library.selectedResumeId}
+          onFavoriteChanged={onFavoriteChanged}
           onReset={filter.resetFilter}
           onRefineWithAgent={onRefineWithAgent}
           onOpenCandidate={onOpenCandidate}

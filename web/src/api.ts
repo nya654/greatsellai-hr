@@ -19,8 +19,11 @@ import type {
   CandidateDataRetentionMode,
   CandidateDataRetentionPolicy,
   CandidateDataRetentionPreview,
+  CandidateFavoriteListResponse,
+  CandidateFavoriteState,
   CandidateSearchRequest,
   CandidateSearchResponse,
+  CandidateResumeVersionsResponse,
   FilterOptions,
   JobCreate,
   JobDescriptionGenerateInput,
@@ -536,6 +539,41 @@ export function createApiClient(options: ApiClientOptions = {}) {
 
     getReview(resumeId: string): Promise<ResumeReviewDetail> {
       return request<ResumeReviewDetail>(`/resumes/${resourcePath(resumeId)}/review`);
+    },
+
+    favoriteCandidate(candidateId: string): Promise<CandidateFavoriteState> {
+      return request<CandidateFavoriteState>(
+        `/candidates/${resourcePath(candidateId)}/favorite`,
+        { method: "PUT" },
+      );
+    },
+
+    unfavoriteCandidate(candidateId: string): Promise<void> {
+      return request<void>(
+        `/candidates/${resourcePath(candidateId)}/favorite`,
+        { method: "DELETE" },
+      );
+    },
+
+    listCandidateFavorites(
+      page = 1,
+      pageSize = 50,
+    ): Promise<CandidateFavoriteListResponse> {
+      const query = new URLSearchParams({
+        page: String(page),
+        page_size: String(pageSize),
+      });
+      return request<CandidateFavoriteListResponse>(
+        `/candidate-favorites?${query.toString()}`,
+      );
+    },
+
+    listCandidateResumeVersions(
+      candidateId: string,
+    ): Promise<CandidateResumeVersionsResponse> {
+      return request<CandidateResumeVersionsResponse>(
+        `/candidates/${resourcePath(candidateId)}/resume-versions`,
+      );
     },
 
     listReviewQueue(page = 1, pageSize = 25): Promise<ResumeReviewQueueResponse> {

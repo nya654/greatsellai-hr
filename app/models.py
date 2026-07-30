@@ -264,6 +264,10 @@ class UserAccount(Base):
         back_populates="actor_user",
         foreign_keys="AiRun.actor_user_id",
     )
+    candidate_favorites: Mapped[list["CandidateFavorite"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class PlatformAuditEvent(Base):
@@ -741,6 +745,52 @@ class Candidate(OrganizationScoped, CandidateDataLifecycle, Base):
         back_populates="candidate",
         cascade="all, delete-orphan",
     )
+    favorites: Mapped[list["CandidateFavorite"]] = relationship(
+        back_populates="candidate",
+        cascade="all, delete-orphan",
+    )
+
+
+class CandidateFavorite(OrganizationScoped, Base):
+    """One current user's private bookmark for one candidate.
+
+    Favorites deliberately point at the candidate identity rather than a
+    resume version.  They are neither a shared talent pool nor a copy of any
+    resume, AI result, score, or source text.  Normal tenant and lifecycle
+    scope rules protect the association and hide it whenever its candidate is
+    logically deleted.
+    """
+
+    __tablename__ = "candidate_favorites"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "user_id",
+            "candidate_id",
+            name="uq_candidate_favorite_owner",
+        ),
+        Index(
+            "ix_candidate_favorites_organization_user_created",
+            "organization_id",
+            "user_id",
+            "created_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"),
+        index=True,
+    )
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"),
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    user: Mapped[UserAccount] = relationship(back_populates="candidate_favorites")
+    candidate: Mapped[Candidate] = relationship(back_populates="favorites")
 
 
 class Resume(OrganizationScoped, CandidateDataLifecycle, Base):

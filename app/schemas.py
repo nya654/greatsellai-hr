@@ -1744,6 +1744,9 @@ class ResumeDetail(ApiModel):
     resume_id: str
     candidate_id: str
     candidate_display_name: str | None
+    # A current-user-only projection.  It is never persisted on the resume or
+    # candidate and is intentionally absent from AI/Agent snapshots.
+    is_favorited: bool = False
     extraction_status: str
     ai_extraction_status: str
     ai_extraction_error: str | None
@@ -2300,6 +2303,9 @@ class CandidateSearchItem(ApiModel):
     display_name: str | None
     resume_id: str
     original_filename: str
+    # This describes only the current signed-in user's private bookmark in
+    # the current workspace.  It is a display projection, not candidate data.
+    is_favorited: bool = False
     is_985_211: bool
     institution_classifications: list[InstitutionClassification] = Field(
         default_factory=list
@@ -2591,6 +2597,9 @@ class ResumeLibraryItem(ApiModel):
     candidate_id: str
     display_name: str | None
     original_filename: str
+    # Personal display state for the current signed-in user. A favorite always
+    # belongs to ``candidate_id`` rather than this individual resume version.
+    is_favorited: bool = False
     created_at: str
     extraction_status: str
     ai_extraction_status: str
@@ -2618,6 +2627,47 @@ class ResumeLibraryItem(ApiModel):
 
 class ResumeLibraryResponse(ApiModel):
     items: list[ResumeLibraryItem]
+    total: int
+    page: int
+    page_size: int
+
+
+class CandidateFavoriteState(ApiModel):
+    """Private favorite state for one current-workspace candidate."""
+
+    candidate_id: str
+    is_favorited: bool
+    favorited_at: str | None = None
+
+
+class CandidateResumeVersionPreview(ApiModel):
+    """Metadata-only version selector row; no source or AI content is copied."""
+
+    resume_id: str
+    original_filename: str
+    created_at: str
+    extraction_status: str
+    is_active: bool
+
+
+class CandidateResumeVersionsResponse(ApiModel):
+    candidate_id: str
+    display_name: str | None
+    items: list[CandidateResumeVersionPreview]
+
+
+class FavoriteCandidateItem(ApiModel):
+    """One private bookmark, grouped by candidate even with many resumes."""
+
+    candidate_id: str
+    display_name: str | None
+    favorited_at: str
+    current_resume_id: str | None = None
+    resume_versions: list[CandidateResumeVersionPreview] = Field(default_factory=list)
+
+
+class CandidateFavoriteListResponse(ApiModel):
+    items: list[FavoriteCandidateItem]
     total: int
     page: int
     page_size: int

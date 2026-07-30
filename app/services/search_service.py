@@ -39,6 +39,7 @@ from app.services.institution_service import (
     resolve_institution,
 )
 from app.services.contact_extraction_service import redact_contact_values
+from app.services.candidate_favorite_service import favorite_candidate_ids
 from app.services.normalization import DEGREE_RANK, normalized_contains, normalized_key
 from app.services.resume_eligibility import is_resume_screening_eligible
 
@@ -835,6 +836,7 @@ def search_candidates(
     *,
     include_source_language_evidence: bool = False,
     resume_ids: set[str] | None = None,
+    viewer_user_id: str | None = None,
 ) -> CandidateSearchResponse:
     """Search one workspace's eligible resumes.
 
@@ -1806,6 +1808,19 @@ def search_candidates(
             key=lambda result: (result.updated_at, result.item.resume_id),
             reverse=True,
         )
+    # Bookmark state is an explicitly current-user-only projection.  Internal
+    # Agent and saved-search callers intentionally omit ``viewer_user_id`` so
+    # their reusable result snapshots cannot contain one person's preference.
+    if viewer_user_id is not None:
+        favorited_candidate_ids = favorite_candidate_ids(
+            session,
+            user_id=viewer_user_id,
+            candidate_ids={result.item.candidate_id for result in results},
+        )
+        for result in results:
+            result.item.is_favorited = (
+                result.item.candidate_id in favorited_candidate_ids
+            )
     total_count = len(results)
     if cursor_resume_id is not None:
         cursor_index = next(

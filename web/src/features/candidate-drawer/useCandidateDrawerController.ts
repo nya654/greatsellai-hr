@@ -12,6 +12,7 @@ import {
 } from "../../backoffice/utils/resume-source-quality";
 import { canPreviewInline } from "../../backoffice/utils/resume-file";
 import type {
+  CandidateResumeVersionPreview,
   ResumeReviewDetail,
   ResumeScore,
   ResumeSummary,
@@ -32,6 +33,8 @@ interface UseCandidateDrawerControllerOptions {
   formatError: (error: unknown) => string;
   notify: (kind: ToastKind, message: string) => void;
   onLibraryChanged: () => void;
+  /** Optional narrower refresh for current-user candidate bookmark changes. */
+  onFavoriteChanged?: () => void;
 }
 
 export interface OpenResumeInput {
@@ -44,6 +47,7 @@ export function useCandidateDrawerController({
   formatError,
   notify,
   onLibraryChanged,
+  onFavoriteChanged,
 }: UseCandidateDrawerControllerOptions) {
   const [selectedResume, setSelectedResume] = useState<SelectedResume | null>(
     null,
@@ -63,9 +67,15 @@ export function useCandidateDrawerController({
   const [drawerScoreError, setDrawerScoreError] = useState<string | null>(null);
   const [reparsingSource, setReparsingSource] = useState(false);
   const [enrichingFacts, setEnrichingFacts] = useState(false);
+  const [resumeVersions, setResumeVersions] = useState<
+    CandidateResumeVersionPreview[]
+  >([]);
+  const [resumeVersionsLoading, setResumeVersionsLoading] = useState(false);
+  const [favoriteLoading, setFavoriteLoading] = useState(false);
   const reviewRequestRef = useRef(0);
   const summaryRequestRef = useRef(0);
   const drawerScoreRequestRef = useRef(0);
+  const resumeVersionsRequestRef = useRef(0);
   const originalFileRequestRef = useRef(0);
   const originalFileRevokeRef = useRef<(() => void) | null>(null);
   const selectedResumeId = selectedResume?.resumeId ?? null;
@@ -152,6 +162,29 @@ export function useCandidateDrawerController({
     [formatError],
   );
 
+  const loadResumeVersions = useCallback(
+    async (candidateId: string) => {
+      const requestId = ++resumeVersionsRequestRef.current;
+      setResumeVersionsLoading(true);
+      try {
+        const response = await api.listCandidateResumeVersions(candidateId);
+        if (requestId === resumeVersionsRequestRef.current) {
+          setResumeVersions(response.items);
+        }
+      } catch (error) {
+        if (requestId === resumeVersionsRequestRef.current) {
+          setResumeVersions([]);
+          notify("error", formatError(error));
+        }
+      } finally {
+        if (requestId === resumeVersionsRequestRef.current) {
+          setResumeVersionsLoading(false);
+        }
+      }
+    },
+    [formatError, notify],
+  );
+
 
   const openResume = useCallback(
     (
@@ -159,14 +192,17 @@ export function useCandidateDrawerController({
       tab: CandidateDrawerTab = "summary",
     ) => {
       summaryRequestRef.current += 1;
+      resumeVersionsRequestRef.current += 1;
       setReview(null);
       setSummaries([]);
+      setResumeVersions([]);
       setSelectedResume({ resumeId, candidateId, candidateName });
       setDrawerTab(tab);
       setDrawerOpen(true);
       void refreshReview(resumeId);
+      void loadResumeVersions(candidateId);
     },
-    [refreshReview],
+    [loadResumeVersions, refreshReview],
   );
 
   const closeDrawer = useCallback(() => {
@@ -174,9 +210,32 @@ export function useCandidateDrawerController({
   }, []);
 
   const resetDrawer = useCallback(() => {
+    resumeVersionsRequestRef.current += 1;
+    setResumeVersions([]);
+    setResumeVersionsLoading(false);
     setSelectedResume(null);
     setDrawerOpen(false);
   }, []);
+
+  const selectResumeVersion = useCallback(
+    (resumeId: string) => {
+      if (!selectedResume || resumeId === selectedResume.resumeId || reviewLoading) {
+        return;
+      }
+      releaseOriginalFile();
+      summaryRequestRef.current += 1;
+      drawerScoreRequestRef.current += 1;
+      setReview(null);
+      setSummaries([]);
+      setDrawerScores([]);
+      setDrawerScoreError(null);
+      setSelectedResume((current) =>
+        current ? { ...current, resumeId } : current,
+      );
+      void refreshReview(resumeId);
+    },
+    [refreshReview, releaseOriginalFile, reviewLoading, selectedResume],
+  );
 
   useEffect(() => {
     if (
@@ -370,6 +429,40 @@ export function useCandidateDrawerController({
     selectedResumeId,
   ]);
 
+  const toggleCandidateFavorite = useCallback(async () => {
+    if (!selectedResume || !review || favoriteLoading) return;
+    const candidateId = selectedResume.candidateId;
+    const wasFavorited = review.is_favorited;
+    setFavoriteLoading(true);
+    try {
+      const nextState = wasFavorited
+        ? (await api.unfavoriteCandidate(candidateId), false)
+        : (await api.favoriteCandidate(candidateId)).is_favorited;
+      setReview((current) =>
+        current?.candidate_id === candidateId
+          ? { ...current, is_favorited: nextState }
+          : current,
+      );
+      (onFavoriteChanged ?? onLibraryChanged)();
+      notify(
+        "success",
+        nextState ? "已收藏候选人。" : "已取消收藏候选人。",
+      );
+    } catch (error) {
+      notify("error", formatError(error));
+    } finally {
+      setFavoriteLoading(false);
+    }
+  }, [
+    favoriteLoading,
+    formatError,
+    notify,
+    onLibraryChanged,
+    onFavoriteChanged,
+    review,
+    selectedResume,
+  ]);
+
 
   const generateSummary = async () => {
     if (!selectedResumeId) {
@@ -435,6 +528,7 @@ export function useCandidateDrawerController({
       }));
       setDrawerTab("original");
       onLibraryChanged();
+      void loadResumeVersions(parsed.candidate_id);
       await refreshReview(parsed.resume_id);
       notify(
         "success",
@@ -449,6 +543,7 @@ export function useCandidateDrawerController({
     formatError,
     notify,
     onLibraryChanged,
+    loadResumeVersions,
     refreshReview,
     reparsingSource,
     selectedResumeId,
@@ -517,11 +612,15 @@ export function useCandidateDrawerController({
     },
     onReparseSource: () => void reparseSelectedSource(),
     onTabChange: setDrawerTab,
+    onSelectResumeVersion: selectResumeVersion,
+    onToggleFavorite: () => void toggleCandidateFavorite(),
     pdfDownloadLoading,
     pdfError,
     pdfLoading,
     pdfUrl,
     reparsingSource,
+    resumeVersions,
+    resumeVersionsLoading,
     review,
     reviewLoading,
     scoreError: drawerScoreError,
@@ -529,6 +628,7 @@ export function useCandidateDrawerController({
     scores: drawerScores,
     summaries,
     summaryLoading,
+    favoriteLoading,
   };
 
   return {

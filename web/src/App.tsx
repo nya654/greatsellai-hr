@@ -161,6 +161,8 @@ function humanizeError(error: unknown): string {
       workspace_feedback_attachment_size_invalid:
         "单张截图不能超过 10 MB。",
       resume_not_found: "这份简历已不存在或无法访问。",
+      candidate_not_found: "这位候选人已不存在或无法访问。",
+      candidate_favorite_update_conflict: "收藏状态刚刚发生变化，请刷新后重试。",
       mailbox_not_configured: "请先保存邮箱配置。",
       mailbox_config_not_found: "这个收件通道已不存在或无法访问。",
       mailbox_display_name_required: "请为这个收件通道填写名称。",
@@ -412,6 +414,7 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     useState<RecruitingAgentFilterScopeRequest | null>(null);
   const agentScopeRequestIdRef = useRef(0);
   const [libraryRefreshToken, setLibraryRefreshToken] = useState(0);
+  const [favoriteRefreshToken, setFavoriteRefreshToken] = useState(0);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
   const notify = useCallback((kind: ToastKind, message: string) => {
@@ -426,6 +429,14 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     setLibraryRefreshToken((current) => current + 1);
   }, []);
 
+  // Favorites appear in the drawer, library, and existing filter results.
+  // The drawer is initialized before the filter hook, so a token lets the
+  // later effect refresh that result set without violating hook ordering.
+  const refreshCandidateFavorites = useCallback(() => {
+    refreshLibraryScores();
+    setFavoriteRefreshToken((current) => current + 1);
+  }, [refreshLibraryScores]);
+
   const {
     candidateDrawerProps,
     closeDrawer,
@@ -437,6 +448,7 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     formatError: humanizeError,
     notify,
     onLibraryChanged: refreshLibraryScores,
+    onFavoriteChanged: refreshCandidateFavorites,
   });
 
   const clearWorkspaceAfterLogout = useCallback(() => {
@@ -492,6 +504,11 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     refreshLibraryScores();
     refreshCurrentResults();
   }, [refreshCurrentResults, refreshLibraryScores]);
+
+  useEffect(() => {
+    if (favoriteRefreshToken === 0) return;
+    refreshCurrentResults();
+  }, [favoriteRefreshToken, refreshCurrentResults]);
 
   const canManageMailbox =
     authSession?.role === "admin" &&
@@ -605,6 +622,17 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
         resumeId: item.resume_id,
         candidateId: item.candidate_id,
         candidateName: item.display_name?.trim() || "未命名候选人",
+      });
+    },
+    [openResume],
+  );
+
+  const openFavoriteResume = useCallback(
+    (resumeId: string, candidateId: string, candidateName: string | null) => {
+      openResume({
+        resumeId,
+        candidateId,
+        candidateName: candidateName?.trim() || "未命名候选人",
       });
     },
     [openResume],
@@ -780,8 +808,10 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
             }}
             settingsSection={settingsSection}
             view={view}
+            onFavoriteChanged={refreshCandidateFavorites}
             onLibraryChanged={refreshLibraryScores}
             onOpenCandidate={openCandidate}
+            onOpenFavoriteResume={openFavoriteResume}
             onOpenLibraryResume={openLibraryResume}
             onOpenMatchedResume={openMatchedResume}
             onRefineWithAgent={openAgentWithFilterScope}

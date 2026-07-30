@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { Icon } from "../../icons";
 import { BackofficeButton } from "../../backoffice/ui/BackofficeButton";
@@ -29,6 +29,8 @@ interface ResumeLibraryPageProps {
   onUpload: () => void;
   refreshToken: number;
   selectedResumeId: string | null;
+  /** Refresh other candidate-facing surfaces after a private bookmark changes. */
+  onFavoriteChanged?: () => void;
 }
 
 function resumeLibraryStatus(item: ResumeLibraryItem): {
@@ -108,6 +110,7 @@ export function ResumeLibraryPage({
   refreshToken,
   onOpenResume,
   onUpload,
+  onFavoriteChanged,
 }: ResumeLibraryPageProps) {
   const [library, setLibrary] = useState<ResumeLibraryResponse | null>(null);
   const [mailboxSources, setMailboxSources] = useState<MailboxConfig[]>([]);
@@ -115,22 +118,32 @@ export function ResumeLibraryPage({
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [favoriteActionCandidateId, setFavoriteActionCandidateId] = useState<
+    string | null
+  >(null);
+  const latestLibraryRequestIdRef = useRef(0);
 
   const loadLibrary = useCallback(async () => {
+    const requestId = ++latestLibraryRequestIdRef.current;
     setLoading(true);
     setError(null);
     try {
-      setLibrary(
-        await api.listResumeLibrary(
-          page,
-          RESUME_LIBRARY_PAGE_SIZE,
-          sourceMailboxId,
-        ),
+      const nextLibrary = await api.listResumeLibrary(
+        page,
+        RESUME_LIBRARY_PAGE_SIZE,
+        sourceMailboxId,
       );
+      if (requestId === latestLibraryRequestIdRef.current) {
+        setLibrary(nextLibrary);
+      }
     } catch (loadError) {
-      setError(formatError(loadError));
+      if (requestId === latestLibraryRequestIdRef.current) {
+        setError(formatError(loadError));
+      }
     } finally {
-      setLoading(false);
+      if (requestId === latestLibraryRequestIdRef.current) {
+        setLoading(false);
+      }
     }
   }, [formatError, page, sourceMailboxId]);
 
@@ -165,6 +178,37 @@ export function ResumeLibraryPage({
     }, AI_STATUS_POLL_INTERVAL_MS);
     return () => window.clearInterval(interval);
   }, [library, loadLibrary]);
+
+  const toggleFavorite = useCallback(
+    async (item: ResumeLibraryItem) => {
+      if (favoriteActionCandidateId === item.candidate_id) return;
+      setFavoriteActionCandidateId(item.candidate_id);
+      setError(null);
+      try {
+        const nextState = item.is_favorited
+          ? (await api.unfavoriteCandidate(item.candidate_id), false)
+          : (await api.favoriteCandidate(item.candidate_id)).is_favorited;
+        setLibrary((current) =>
+          current
+            ? {
+                ...current,
+                items: current.items.map((entry) =>
+                  entry.candidate_id === item.candidate_id
+                    ? { ...entry, is_favorited: nextState }
+                    : entry,
+                ),
+              }
+            : current,
+        );
+        onFavoriteChanged?.();
+      } catch (favoriteError) {
+        setError(formatError(favoriteError));
+      } finally {
+        setFavoriteActionCandidateId(null);
+      }
+    },
+    [favoriteActionCandidateId, formatError, onFavoriteChanged],
+  );
 
   const items = library?.items ?? [];
   const total = library?.total ?? 0;
@@ -301,6 +345,8 @@ export function ResumeLibraryPage({
                   const scoreNotice = resumeLibraryScoreNotice(
                     item.score_status,
                   );
+                  const favoriteUpdating =
+                    favoriteActionCandidateId === item.candidate_id;
                   return (
                     <tr
                       className={[
@@ -318,6 +364,30 @@ export function ResumeLibraryPage({
                           <span className="candidate-name">
                             {item.display_name?.trim() || "未命名候选人"}
                           </span>
+                          <button
+                            aria-busy={favoriteUpdating}
+                            aria-label={
+                              item.is_favorited
+                                ? `取消收藏 ${item.display_name?.trim() || "未命名候选人"}`
+                                : `收藏 ${item.display_name?.trim() || "未命名候选人"}`
+                            }
+                            aria-pressed={item.is_favorited}
+                            className={`library-favorite-button${item.is_favorited ? " is-favorited" : ""}`}
+                            disabled={favoriteUpdating}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void toggleFavorite(item);
+                            }}
+                            title="收藏的是候选人，所有简历版本共用此状态"
+                            type="button"
+                          >
+                            {favoriteUpdating ? (
+                              <i className="spinner" />
+                            ) : (
+                              <Icon name="bookmark" size={14} />
+                            )}
+                            {item.is_favorited ? "已收藏" : "收藏"}
+                          </button>
                           {status.tone !== "ready" && (
                             <span
                               className={`library-status is-${status.tone}`}

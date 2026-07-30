@@ -51,6 +51,7 @@ def test_resume_library_returns_current_ai_summary_preview_and_score(
         "candidate_id",
         "display_name",
         "original_filename",
+        "is_favorited",
         "created_at",
         "extraction_status",
         "ai_extraction_status",
@@ -75,6 +76,7 @@ def test_resume_library_returns_current_ai_summary_preview_and_score(
     assert item["candidate_id"] == candidate_id
     assert item["display_name"] == "测试候选人"
     assert item["original_filename"] == "resume.pdf"
+    assert item["is_favorited"] is False
     assert item["created_at"]
     assert item["extraction_status"] == "ready"
     assert item["ai_extraction_status"] == "queued"

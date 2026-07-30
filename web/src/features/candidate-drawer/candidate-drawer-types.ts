@@ -1,4 +1,9 @@
-export type CandidateDrawerTab = "original" | "summary" | "score" | "evidence";
+export type CandidateDrawerTab =
+  | "original"
+  | "summary"
+  | "score"
+  | "evidence"
+  | "applications";
 
 export interface SelectedResume {
   resumeId: string;

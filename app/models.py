@@ -3161,13 +3161,219 @@ class ResumeSummary(OrganizationScoped, Base):
     fact_snapshot: Mapped[ResumeFactSnapshot | None] = relationship()
 
 
+class RecruitingWorkflow(OrganizationScoped, Base):
+    """A reusable recruiting-process template owned by one workspace.
+
+    The workflow is only the stable template identity.  Recruitable jobs and
+    candidate applications always bind an immutable ``RecruitingWorkflowVersion``
+    so editing a later version cannot rewrite a live candidate's process.
+    """
+
+    __tablename__ = "recruiting_workflows"
+    __table_args__ = (
+        # The otherwise redundant composite key is intentional: child rows use
+        # it for a database-enforced workspace-bound foreign key.
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            name="uq_recruiting_workflows_id_organization",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "name",
+            name="uq_recruiting_workflows_organization_name",
+        ),
+        Index(
+            "ix_recruiting_workflows_organization_updated",
+            "organization_id",
+            "updated_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+    versions: Mapped[list["RecruitingWorkflowVersion"]] = relationship(
+        back_populates="workflow",
+        cascade="all, delete-orphan",
+        foreign_keys="RecruitingWorkflowVersion.workflow_id",
+    )
+
+
+class RecruitingWorkflowVersion(OrganizationScoped, Base):
+    """An immutable, publishable revision of a recruiting workflow template."""
+
+    __tablename__ = "recruiting_workflow_versions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workflow_id", "organization_id"],
+            [
+                "recruiting_workflows.id",
+                "recruiting_workflows.organization_id",
+            ],
+            name="fk_recruiting_workflow_versions_workflow_organization",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            name="uq_recruiting_workflow_versions_id_organization",
+        ),
+        UniqueConstraint(
+            "workflow_id",
+            "version",
+            name="uq_recruiting_workflow_version",
+        ),
+        CheckConstraint("version >= 1", name="ck_recruiting_workflow_version_positive"),
+        Index(
+            "ix_recruiting_workflow_versions_organization_status",
+            "organization_id",
+            "status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    # The composite FK above carries the tenant boundary.  Do not add a second
+    # single-column FK here: it would make accidental cross-workspace joins
+    # appear valid to the database.
+    workflow_id: Mapped[str] = mapped_column(String(36), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    # Application-validated values: draft, published, archived.  A published
+    # version is never edited in place; create a new version instead.
+    status: Mapped[str] = mapped_column(
+        String(32),
+        default="draft",
+        server_default=text("'draft'"),
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    workflow: Mapped[RecruitingWorkflow] = relationship(
+        back_populates="versions",
+        foreign_keys=[workflow_id],
+        primaryjoin=(
+            "and_(RecruitingWorkflowVersion.workflow_id == RecruitingWorkflow.id, "
+            "RecruitingWorkflowVersion.organization_id == RecruitingWorkflow.organization_id)"
+        ),
+    )
+    stages: Mapped[list["RecruitingWorkflowStage"]] = relationship(
+        back_populates="workflow_version",
+        cascade="all, delete-orphan",
+        foreign_keys="RecruitingWorkflowStage.workflow_version_id",
+    )
+    applications: Mapped[list["JobApplication"]] = relationship(
+        back_populates="workflow_version",
+        foreign_keys="JobApplication.workflow_version_id",
+        primaryjoin=(
+            "and_(RecruitingWorkflowVersion.id == JobApplication.workflow_version_id, "
+            "RecruitingWorkflowVersion.organization_id == JobApplication.organization_id)"
+        ),
+    )
+
+
+class RecruitingWorkflowStage(OrganizationScoped, Base):
+    """One immutable stage inside a workflow version.
+
+    ``stage_type`` distinguishes normal ordered stages from the two terminal
+    outcomes.  This is necessary because a recruiter must be able to manually
+    mark a candidate as eliminated from an early stage without pretending the
+    process is a single linear list.
+    """
+
+    __tablename__ = "recruiting_workflow_stages"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workflow_version_id", "organization_id"],
+            [
+                "recruiting_workflow_versions.id",
+                "recruiting_workflow_versions.organization_id",
+            ],
+            name="fk_recruiting_workflow_stages_version_organization",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            name="uq_recruiting_workflow_stages_id_organization",
+        ),
+        UniqueConstraint(
+            "workflow_version_id",
+            "stage_key",
+            name="uq_recruiting_workflow_stage_key",
+        ),
+        UniqueConstraint(
+            "workflow_version_id",
+            "sort_order",
+            name="uq_recruiting_workflow_stage_order",
+        ),
+        CheckConstraint("sort_order >= 0", name="ck_recruiting_workflow_stage_order"),
+        Index(
+            "ix_recruiting_workflow_stages_organization_version_order",
+            "organization_id",
+            "workflow_version_id",
+            "sort_order",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    workflow_version_id: Mapped[str] = mapped_column(String(36), index=True)
+    stage_key: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(120))
+    # Application-validated values: active, hired, rejected.
+    stage_type: Mapped[str] = mapped_column(String(32), default="active")
+    sort_order: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    workflow_version: Mapped[RecruitingWorkflowVersion] = relationship(
+        back_populates="stages",
+        foreign_keys=[workflow_version_id],
+        primaryjoin=(
+            "and_(RecruitingWorkflowStage.workflow_version_id == "
+            "RecruitingWorkflowVersion.id, RecruitingWorkflowStage.organization_id == "
+            "RecruitingWorkflowVersion.organization_id)"
+        ),
+    )
+
+
 class Job(OrganizationScoped, Base):
     """Current-version cache; immutable JD evidence lives in ``JobVersion``."""
 
     __tablename__ = "jobs"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["recruiting_workflow_version_id", "organization_id"],
+            [
+                "recruiting_workflow_versions.id",
+                "recruiting_workflow_versions.organization_id",
+            ],
+            name="fk_jobs_recruiting_workflow_version_organization",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("hc_total >= 1", name="ck_jobs_hc_total_positive"),
         Index("ix_jobs_organization_updated", "organization_id", "updated_at"),
         Index("ix_jobs_organization_kind_updated", "organization_id", "kind", "updated_at"),
+        Index(
+            "ix_jobs_organization_recruiting_status",
+            "organization_id",
+            "recruiting_status",
+        ),
+        Index(
+            "ix_jobs_organization_owner_user",
+            "organization_id",
+            "owner_user_id",
+        ),
+        Index(
+            "ix_jobs_organization_recruiting_workflow",
+            "organization_id",
+            "recruiting_workflow_version_id",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -3183,6 +3389,38 @@ class Job(OrganizationScoped, Base):
     jd_text: Mapped[str] = mapped_column(Text)
     requirements: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     version: Mapped[int] = mapped_column(Integer, default=1)
+    # This is the recruiting lifecycle of the position.  It is intentionally
+    # separate from JobVersion.status (draft/confirmed/archived), which only
+    # describes whether one immutable JD revision is usable for matching.
+    recruiting_status: Mapped[str] = mapped_column(
+        String(32),
+        # Existing user-created JDs are publishable/usable by default.  A
+        # caller that is composing an unpublished position explicitly sets
+        # ``draft`` through the recruiting settings service.
+        default="open",
+        server_default=text("'open'"),
+        index=True,
+    )
+    department: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # The service validates this user has an active membership in this Job's
+    # organization before it may become the responsible recruiter.
+    owner_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("user_accounts.id"),
+        nullable=True,
+        index=True,
+    )
+    hc_total: Mapped[int] = mapped_column(
+        Integer,
+        default=1,
+        server_default=text("1"),
+    )
+    # This is the default process for *future* applications only.  Each
+    # JobApplication retains its own workflow-version snapshot.
+    recruiting_workflow_version_id: Mapped[str | None] = mapped_column(
+        String(36),
+        nullable=True,
+        index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -3197,6 +3435,21 @@ class Job(OrganizationScoped, Base):
     versions: Mapped[list["JobVersion"]] = relationship(
         back_populates="job",
         cascade="all, delete-orphan",
+    )
+    owner_user: Mapped[UserAccount | None] = relationship(
+        foreign_keys=[owner_user_id],
+    )
+    recruiting_workflow_version: Mapped[RecruitingWorkflowVersion | None] = relationship(
+        foreign_keys=[recruiting_workflow_version_id],
+        primaryjoin=(
+            "and_(Job.recruiting_workflow_version_id == RecruitingWorkflowVersion.id, "
+            "Job.organization_id == RecruitingWorkflowVersion.organization_id)"
+        ),
+    )
+    applications: Mapped[list["JobApplication"]] = relationship(
+        back_populates="job",
+        cascade="all, delete-orphan",
+        foreign_keys="JobApplication.job_id",
     )
 
 
@@ -3226,6 +3479,240 @@ class JobVersion(OrganizationScoped, Base):
         cascade="all, delete-orphan",
     )
     matches: Mapped[list["JobMatch"]] = relationship(back_populates="job_version_record")
+
+
+class JobApplication(OrganizationScoped, Base):
+    """One candidate's independent, manually managed record for one job.
+
+    This deliberately is not a favorite and does not duplicate candidate facts.
+    It only pins the immutable JD, workflow, and resume-fact revisions that
+    were visible when a recruiter added the candidate to the position.
+    """
+
+    __tablename__ = "job_applications"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workflow_version_id", "organization_id"],
+            [
+                "recruiting_workflow_versions.id",
+                "recruiting_workflow_versions.organization_id",
+            ],
+            name="fk_job_applications_workflow_version_organization",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["current_stage_id", "organization_id"],
+            [
+                "recruiting_workflow_stages.id",
+                "recruiting_workflow_stages.organization_id",
+            ],
+            name="fk_job_applications_current_stage_organization",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            name="uq_job_applications_id_organization",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "job_id",
+            "candidate_id",
+            "round_number",
+            name="uq_job_application_round",
+        ),
+        CheckConstraint(
+            "round_number >= 1",
+            name="ck_job_applications_round_positive",
+        ),
+        CheckConstraint(
+            "resume_facts_version >= 0",
+            name="ck_job_applications_resume_facts_version",
+        ),
+        CheckConstraint(
+            "job_version_number >= 1",
+            name="ck_job_applications_job_version_positive",
+        ),
+        CheckConstraint(
+            "workflow_version_number >= 1",
+            name="ck_job_applications_workflow_version_positive",
+        ),
+        CheckConstraint(
+            "state_version >= 1",
+            name="ck_job_applications_state_version_positive",
+        ),
+        Index(
+            "uq_current_job_application_candidate",
+            "organization_id",
+            "job_id",
+            "candidate_id",
+            unique=True,
+            sqlite_where=text("is_current = 1"),
+            postgresql_where=text("is_current = true"),
+        ),
+        Index(
+            "ix_job_applications_organization_job_stage",
+            "organization_id",
+            "job_id",
+            "current_stage_id",
+        ),
+        Index(
+            "ix_job_applications_organization_candidate_created",
+            "organization_id",
+            "candidate_id",
+            "created_at",
+        ),
+        Index(
+            "ix_job_applications_organization_resume",
+            "organization_id",
+            "resume_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id"), index=True)
+    candidate_id: Mapped[str] = mapped_column(ForeignKey("candidates.id"), index=True)
+    resume_id: Mapped[str] = mapped_column(ForeignKey("resumes.id"), index=True)
+    resume_fact_snapshot_id: Mapped[str] = mapped_column(
+        ForeignKey("resume_fact_snapshots.id"),
+        index=True,
+    )
+    resume_facts_version: Mapped[int] = mapped_column(Integer)
+    job_version_id: Mapped[str] = mapped_column(ForeignKey("job_versions.id"), index=True)
+    job_version_number: Mapped[int] = mapped_column(Integer)
+    workflow_version_id: Mapped[str] = mapped_column(String(36), index=True)
+    workflow_version_number: Mapped[int] = mapped_column(Integer)
+    current_stage_id: Mapped[str] = mapped_column(String(36), index=True)
+    # Keep recruiter-visible stage labels as small snapshots.  These are not
+    # resume data and allow historical transitions to remain intelligible even
+    # after a later workflow version changes its stage wording.
+    current_stage_key: Mapped[str] = mapped_column(String(64))
+    current_stage_name: Mapped[str] = mapped_column(String(120))
+    current_stage_type: Mapped[str] = mapped_column(String(32))
+    # Application-validated values: active, hired, rejected, withdrawn.
+    status: Mapped[str] = mapped_column(
+        String(32),
+        default="active",
+        server_default=text("'active'"),
+        index=True,
+    )
+    # A terminal historical record remains current until a recruiter explicitly
+    # adds the candidate again.  Re-application marks the old row false, then
+    # creates the next round number.
+    is_current: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default=text("true"),
+        index=True,
+    )
+    round_number: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
+    # This is both the client-facing optimistic-concurrency token and the ORM
+    # version column.  The stage-flow service increments it explicitly.
+    state_version: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
+    added_by_user_id: Mapped[str] = mapped_column(ForeignKey("user_accounts.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+    __mapper_args__ = {
+        "version_id_col": state_version,
+        "version_id_generator": False,
+    }
+
+    job: Mapped[Job] = relationship(back_populates="applications", foreign_keys=[job_id])
+    candidate: Mapped[Candidate] = relationship(foreign_keys=[candidate_id])
+    resume: Mapped[Resume] = relationship(foreign_keys=[resume_id])
+    resume_fact_snapshot: Mapped[ResumeFactSnapshot] = relationship(
+        foreign_keys=[resume_fact_snapshot_id]
+    )
+    job_version_record: Mapped[JobVersion] = relationship(foreign_keys=[job_version_id])
+    workflow_version: Mapped[RecruitingWorkflowVersion] = relationship(
+        back_populates="applications",
+        foreign_keys=[workflow_version_id],
+        primaryjoin=(
+            "and_(JobApplication.workflow_version_id == RecruitingWorkflowVersion.id, "
+            "JobApplication.organization_id == RecruitingWorkflowVersion.organization_id)"
+        ),
+    )
+    current_stage: Mapped[RecruitingWorkflowStage] = relationship(
+        foreign_keys=[current_stage_id],
+        primaryjoin=(
+            "and_(JobApplication.current_stage_id == RecruitingWorkflowStage.id, "
+            "JobApplication.organization_id == RecruitingWorkflowStage.organization_id)"
+        ),
+    )
+    added_by_user: Mapped[UserAccount] = relationship(foreign_keys=[added_by_user_id])
+    stage_transitions: Mapped[list["JobApplicationStageTransition"]] = relationship(
+        back_populates="application",
+        cascade="all, delete-orphan",
+        foreign_keys="JobApplicationStageTransition.application_id",
+        primaryjoin=(
+            "and_(JobApplication.id == JobApplicationStageTransition.application_id, "
+            "JobApplication.organization_id == JobApplicationStageTransition.organization_id)"
+        ),
+    )
+
+
+class JobApplicationStageTransition(OrganizationScoped, Base):
+    """Append-only record of one human-controlled application stage change."""
+
+    __tablename__ = "job_application_stage_transitions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["application_id", "organization_id"],
+            ["job_applications.id", "job_applications.organization_id"],
+            name="fk_job_application_stage_transitions_application_organization",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "application_id",
+            "state_version_after",
+            name="uq_job_application_stage_transition_version",
+        ),
+        CheckConstraint(
+            "state_version_after >= 1",
+            name="ck_job_application_stage_transition_version_positive",
+        ),
+        Index(
+            "ix_job_application_transition_org_app_version",
+            "organization_id",
+            "application_id",
+            "state_version_after",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    application_id: Mapped[str] = mapped_column(String(36), index=True)
+    state_version_after: Mapped[int] = mapped_column(Integer)
+    # The stage ID/key/name/type values are snapshots rather than live stage
+    # relationships.  A process history therefore never depends on mutating a
+    # template version and contains no copied resume facts or source text.
+    from_stage_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    from_stage_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    from_stage_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    from_stage_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    to_stage_id: Mapped[str] = mapped_column(String(36))
+    to_stage_key: Mapped[str] = mapped_column(String(64))
+    to_stage_name: Mapped[str] = mapped_column(String(120))
+    to_stage_type: Mapped[str] = mapped_column(String(32))
+    # Application-validated values: initial, advance, return, hire, reject.
+    action: Mapped[str] = mapped_column(String(32))
+    actor_user_id: Mapped[str] = mapped_column(ForeignKey("user_accounts.id"), index=True)
+    note: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    application: Mapped[JobApplication] = relationship(
+        back_populates="stage_transitions",
+        foreign_keys=[application_id],
+        primaryjoin=(
+            "and_(JobApplicationStageTransition.application_id == JobApplication.id, "
+            "JobApplicationStageTransition.organization_id == JobApplication.organization_id)"
+        ),
+    )
+    actor_user: Mapped[UserAccount] = relationship(foreign_keys=[actor_user_id])
 
 
 class JobSourceClause(Base):

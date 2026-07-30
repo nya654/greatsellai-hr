@@ -145,13 +145,28 @@ from app.schemas import (
     TalentSearchProfileSearchRequest,
     TalentSearchRunResponse,
     JobCreate,
+    JobApplicationCreate,
+    JobApplicationDetailResponse,
+    JobApplicationListResponse,
+    JobApplicationResponse,
+    JobApplicationStageTransitionCreate,
+    JobApplicationStageTransitionResponse,
     JobGenerationRequest,
     JobGenerationResponse,
     JobMatchBatchResponse,
     JobMatchBatchItemResponse,
     JobMatchCreate,
     JobMatchResponse,
+    JobRecruitingSettingsResponse,
+    JobRecruitingSettingsUpdate,
     OriginalJobPublishRequest,
+    RecruitingJobListResponse,
+    RecruitingJobResponse,
+    RecruitingMemberResponse,
+    RecruitingWorkflowCreate,
+    RecruitingWorkflowResponse,
+    RecruitingWorkflowVersionCreate,
+    RecruitingWorkflowVersionResponse,
     JobVersionRequirementsUpdate,
     JobVersionResponse,
     ResumeDetail,
@@ -418,6 +433,23 @@ from app.services.job_match_batch_service import (
     enqueue_job_version_match_batch,
     get_job_match_batch,
     list_job_match_batch_items,
+)
+from app.services.recruiting_service import (
+    RecruitingServiceError,
+    create_job_application,
+    create_recruiting_workflow,
+    create_recruiting_workflow_version,
+    get_job_application,
+    get_recruiting_job,
+    initialize_job_recruiting_defaults,
+    list_candidate_job_applications,
+    list_job_applications,
+    list_recruiting_jobs,
+    list_recruiting_members,
+    list_recruiting_workflows,
+    publish_recruiting_workflow_version,
+    transition_job_application,
+    update_job_recruiting_settings,
 )
 from app.services.mailbox_import_service import (
     MailboxImportError,
@@ -1643,6 +1675,36 @@ def _raise_job_service_error(exc: JobServiceError) -> None:
         "job_requirement_not_grounded_in_clauses",
         "job_requirement_not_grounded_in_jd",
         "job_requirement_keys_must_be_unique",
+    }:
+        response_status = status.HTTP_422_UNPROCESSABLE_CONTENT
+    else:
+        response_status = status.HTTP_409_CONFLICT
+    raise HTTPException(status_code=response_status, detail=code) from exc
+
+
+def _raise_recruiting_service_error(exc: RecruitingServiceError) -> None:
+    """Map workflow/application failures without exposing another workspace.
+
+    Every resource lookup in the recruiting service runs through the active
+    organization scope.  Returning the same not-found response for an ID in a
+    different workspace keeps that boundary indistinguishable from a typo.
+    """
+
+    code = str(exc)
+    if code in {
+        "recruiting_job_not_found",
+        "recruiting_workflow_not_found",
+        "recruiting_workflow_version_not_found",
+        "recruiting_candidate_not_found",
+        "job_application_not_found",
+        "recruiting_owner_not_found",
+    }:
+        response_status = status.HTTP_404_NOT_FOUND
+    elif code in {
+        "workflow_requires_active_stage",
+        "workflow_requires_one_hired_stage",
+        "workflow_requires_one_rejected_stage",
+        "workflow_stage_order_invalid",
     }:
         response_status = status.HTTP_422_UNPROCESSABLE_CONTENT
     else:
@@ -6051,6 +6113,322 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         _commit_or_raise(session)
         return response
 
+    # Recruiting core -----------------------------------------------------
+    # These endpoints deliberately sit beside the existing Job/JD APIs. A
+    # recruitment position is still the existing ``Job`` aggregate; the
+    # workflow and application records only add recruiter-owned process state.
+
+    @app.get(
+        "/v1/recruiting/members",
+        response_model=list[RecruitingMemberResponse],
+        dependencies=[Depends(require_single_admin)],
+    )
+    def get_recruiting_members(
+        session: Session = Depends(get_session),
+    ) -> list[RecruitingMemberResponse]:
+        return list_recruiting_members(session)
+
+    @app.get(
+        "/v1/recruiting/workflows",
+        response_model=list[RecruitingWorkflowResponse],
+        dependencies=[Depends(require_single_admin)],
+    )
+    def get_recruiting_workflows(
+        session: Session = Depends(get_session),
+    ) -> list[RecruitingWorkflowResponse]:
+        return list_recruiting_workflows(session)
+
+    @app.post(
+        "/v1/recruiting/workflows",
+        response_model=RecruitingWorkflowResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def post_recruiting_workflow(
+        payload: RecruitingWorkflowCreate,
+        session: Session = Depends(get_session),
+    ) -> RecruitingWorkflowResponse:
+        try:
+            response = create_recruiting_workflow(session, payload=payload)
+        except RecruitingServiceError as exc:
+            session.rollback()
+            _raise_recruiting_service_error(exc)
+        _commit_or_raise(session)
+        return response
+
+    @app.post(
+        "/v1/recruiting/workflows/{workflow_id}/versions",
+        response_model=RecruitingWorkflowVersionResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def post_recruiting_workflow_version(
+        workflow_id: str,
+        payload: RecruitingWorkflowVersionCreate,
+        session: Session = Depends(get_session),
+    ) -> RecruitingWorkflowVersionResponse:
+        try:
+            response = create_recruiting_workflow_version(
+                session,
+                workflow_id=workflow_id,
+                payload=payload,
+            )
+        except RecruitingServiceError as exc:
+            session.rollback()
+            _raise_recruiting_service_error(exc)
+        _commit_or_raise(session)
+        return response
+
+    @app.post(
+        "/v1/recruiting/workflow-versions/{workflow_version_id}/publish",
+        response_model=RecruitingWorkflowVersionResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def post_publish_recruiting_workflow_version(
+        workflow_version_id: str,
+        session: Session = Depends(get_session),
+    ) -> RecruitingWorkflowVersionResponse:
+        try:
+            response = publish_recruiting_workflow_version(
+                session,
+                workflow_version_id=workflow_version_id,
+            )
+        except RecruitingServiceError as exc:
+            session.rollback()
+            _raise_recruiting_service_error(exc)
+        _commit_or_raise(session)
+        return response
+
+    @app.get(
+        "/v1/recruiting/jobs",
+        response_model=RecruitingJobListResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def get_recruiting_jobs(
+        session: Session = Depends(get_session),
+    ) -> RecruitingJobListResponse:
+        return list_recruiting_jobs(session)
+
+    @app.get(
+        "/v1/recruiting/jobs/{job_id}",
+        response_model=RecruitingJobResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def get_recruiting_job_detail(
+        job_id: str,
+        session: Session = Depends(get_session),
+    ) -> RecruitingJobResponse:
+        try:
+            return get_recruiting_job(session, job_id=job_id)
+        except RecruitingServiceError as exc:
+            _raise_recruiting_service_error(exc)
+
+    @app.patch(
+        "/v1/recruiting/jobs/{job_id}",
+        response_model=JobRecruitingSettingsResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def patch_recruiting_job(
+        job_id: str,
+        payload: JobRecruitingSettingsUpdate,
+        session: Session = Depends(get_session),
+    ) -> JobRecruitingSettingsResponse:
+        try:
+            response = update_job_recruiting_settings(
+                session,
+                job_id=job_id,
+                payload=payload,
+            )
+        except RecruitingServiceError as exc:
+            session.rollback()
+            _raise_recruiting_service_error(exc)
+        _commit_or_raise(session)
+        return response
+
+    @app.get(
+        "/v1/recruiting/jobs/{job_id}/applications",
+        response_model=JobApplicationListResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def get_recruiting_job_applications(
+        job_id: str,
+        include_history: bool = Query(default=False),
+        session: Session = Depends(get_session),
+    ) -> JobApplicationListResponse:
+        try:
+            return list_job_applications(
+                session,
+                job_id=job_id,
+                include_history=include_history,
+            )
+        except RecruitingServiceError as exc:
+            _raise_recruiting_service_error(exc)
+
+    @app.post(
+        "/v1/recruiting/jobs/{job_id}/applications",
+        response_model=JobApplicationResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def post_recruiting_job_application(
+        job_id: str,
+        payload: JobApplicationCreate,
+        request: Request,
+        principal: AuthPrincipal = Depends(require_single_admin),
+        session: Session = Depends(get_session),
+    ) -> JobApplicationResponse:
+        try:
+            response = create_job_application(
+                session,
+                job_id=job_id,
+                payload=payload,
+                actor_user_id=principal.user.id,
+                request_id=_candidate_data_request_id(request),
+            )
+        except RecruitingServiceError as exc:
+            session.rollback()
+            _raise_recruiting_service_error(exc)
+        _commit_or_raise(session)
+        return response
+
+    @app.get(
+        "/v1/recruiting/candidates/{candidate_id}/applications",
+        response_model=JobApplicationListResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def get_recruiting_candidate_applications(
+        candidate_id: str,
+        include_history: bool = Query(default=True),
+        session: Session = Depends(get_session),
+    ) -> JobApplicationListResponse:
+        try:
+            return list_candidate_job_applications(
+                session,
+                candidate_id=candidate_id,
+                include_history=include_history,
+            )
+        except RecruitingServiceError as exc:
+            _raise_recruiting_service_error(exc)
+
+    @app.get(
+        "/v1/recruiting/applications/{application_id}",
+        response_model=JobApplicationDetailResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def get_recruiting_application(
+        application_id: str,
+        session: Session = Depends(get_session),
+    ) -> JobApplicationDetailResponse:
+        try:
+            return get_job_application(session, application_id=application_id)
+        except RecruitingServiceError as exc:
+            _raise_recruiting_service_error(exc)
+
+    def _transition_recruiting_application(
+        *,
+        application_id: str,
+        action: str,
+        payload: JobApplicationStageTransitionCreate,
+        request: Request,
+        principal: AuthPrincipal,
+        session: Session,
+    ) -> JobApplicationDetailResponse:
+        try:
+            response = transition_job_application(
+                session,
+                application_id=application_id,
+                action=action,
+                payload=payload,
+                actor_user_id=principal.user.id,
+                request_id=_candidate_data_request_id(request),
+            )
+        except RecruitingServiceError as exc:
+            session.rollback()
+            _raise_recruiting_service_error(exc)
+        _commit_or_raise(session)
+        return response
+
+    @app.post(
+        "/v1/recruiting/applications/{application_id}/advance",
+        response_model=JobApplicationDetailResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def post_advance_recruiting_application(
+        application_id: str,
+        payload: JobApplicationStageTransitionCreate,
+        request: Request,
+        principal: AuthPrincipal = Depends(require_single_admin),
+        session: Session = Depends(get_session),
+    ) -> JobApplicationDetailResponse:
+        return _transition_recruiting_application(
+            application_id=application_id,
+            action="advance",
+            payload=payload,
+            request=request,
+            principal=principal,
+            session=session,
+        )
+
+    @app.post(
+        "/v1/recruiting/applications/{application_id}/return",
+        response_model=JobApplicationDetailResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def post_return_recruiting_application(
+        application_id: str,
+        payload: JobApplicationStageTransitionCreate,
+        request: Request,
+        principal: AuthPrincipal = Depends(require_single_admin),
+        session: Session = Depends(get_session),
+    ) -> JobApplicationDetailResponse:
+        return _transition_recruiting_application(
+            application_id=application_id,
+            action="return",
+            payload=payload,
+            request=request,
+            principal=principal,
+            session=session,
+        )
+
+    @app.post(
+        "/v1/recruiting/applications/{application_id}/reject",
+        response_model=JobApplicationDetailResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def post_reject_recruiting_application(
+        application_id: str,
+        payload: JobApplicationStageTransitionCreate,
+        request: Request,
+        principal: AuthPrincipal = Depends(require_single_admin),
+        session: Session = Depends(get_session),
+    ) -> JobApplicationDetailResponse:
+        return _transition_recruiting_application(
+            application_id=application_id,
+            action="reject",
+            payload=payload,
+            request=request,
+            principal=principal,
+            session=session,
+        )
+
+    @app.post(
+        "/v1/recruiting/applications/{application_id}/hire",
+        response_model=JobApplicationDetailResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def post_hire_recruiting_application(
+        application_id: str,
+        payload: JobApplicationStageTransitionCreate,
+        request: Request,
+        principal: AuthPrincipal = Depends(require_single_admin),
+        session: Session = Depends(get_session),
+    ) -> JobApplicationDetailResponse:
+        return _transition_recruiting_application(
+            application_id=application_id,
+            action="hire",
+            payload=payload,
+            request=request,
+            principal=principal,
+            session=session,
+        )
+
     @app.post(
         "/v1/jobs/generate-jd",
         response_model=JobGenerationResponse,
@@ -6104,6 +6482,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
     )
     def post_job(
         payload: JobCreate,
+        principal: AuthPrincipal = Depends(require_single_admin),
         session: Session = Depends(get_session),
     ) -> JobVersionResponse:
         """Create a new immutable JD version (draft unless requirements are supplied)."""
@@ -6113,6 +6492,18 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         except JobServiceError as exc:
             session.rollback()
             _raise_job_service_error(exc)
+        try:
+            initialize_job_recruiting_defaults(
+                session,
+                job_id=response.job_id,
+                owner_user_id=principal.user.id,
+                initial_recruiting_status=(
+                    "open" if response.status == "confirmed" else "draft"
+                ),
+            )
+        except RecruitingServiceError as exc:
+            session.rollback()
+            _raise_recruiting_service_error(exc)
         _commit_or_raise(session)
         return response
 
@@ -6123,6 +6514,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
     )
     def post_publish_original_job(
         payload: OriginalJobPublishRequest,
+        principal: AuthPrincipal = Depends(require_single_admin),
         session: Session = Depends(get_session),
     ) -> JobVersionResponse:
         """Publish an externally supplied JD as-is, without calling an AI model."""
@@ -6132,6 +6524,16 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         except JobServiceError as exc:
             session.rollback()
             _raise_job_service_error(exc)
+        try:
+            initialize_job_recruiting_defaults(
+                session,
+                job_id=response.job_id,
+                owner_user_id=principal.user.id,
+                initial_recruiting_status="open",
+            )
+        except RecruitingServiceError as exc:
+            session.rollback()
+            _raise_recruiting_service_error(exc)
         _commit_or_raise(session)
         return response
 

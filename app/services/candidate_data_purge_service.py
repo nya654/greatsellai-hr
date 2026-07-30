@@ -29,6 +29,8 @@ from app.models import (
     CandidateNameExtractionJob,
     EmailAttachmentImport,
     EmailAttachmentImportAttempt,
+    JobApplication,
+    JobApplicationStageTransition,
     JobMatch,
     JobMatchBatchItem,
     JobMatchRequirementResult,
@@ -515,6 +517,20 @@ def _purge_database_rows(
     match_ids = tuple(
         session.scalars(select(JobMatch.id).where(JobMatch.resume_id.in_(resume_ids))).all()
     )
+    # Applications pin one specific resume-fact snapshot. Once that resume is
+    # physically erased, delete that process record and its append-only
+    # transition history before removing the snapshot/root rows. A candidate
+    # predicate is only valid for a full-candidate purge: a manual deletion of
+    # one older resume must never erase applications pinned to another live
+    # resume for the same candidate.
+    application_predicates = [JobApplication.resume_id.in_(resume_ids)]
+    if batch.trigger_type != "manual_resume":
+        application_predicates.append(JobApplication.candidate_id.in_(candidate_ids))
+    application_ids = tuple(
+        session.scalars(
+            select(JobApplication.id).where(or_(*application_predicates))
+        ).all()
+    )
     summary_ids = tuple(
         session.scalars(select(ResumeSummary.id).where(ResumeSummary.resume_id.in_(resume_ids))).all()
     )
@@ -576,6 +592,15 @@ def _purge_database_rows(
             JobMatchRequirementResult.job_match_id.in_(match_ids)
         )
     ) if match_ids else None
+    if application_ids:
+        session.execute(
+            delete(JobApplicationStageTransition).where(
+                JobApplicationStageTransition.application_id.in_(application_ids)
+            )
+        )
+        session.execute(
+            delete(JobApplication).where(JobApplication.id.in_(application_ids))
+        )
     session.execute(
         delete(JobMatchBatchItem).where(JobMatchBatchItem.resume_id.in_(resume_ids))
     )

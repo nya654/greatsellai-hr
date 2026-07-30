@@ -3078,6 +3078,276 @@ class JobVersionRequirementsUpdate(ApiModel):
         return self
 
 
+RecruitingStatus = Literal["draft", "open", "paused", "closed"]
+RecruitingWorkflowVersionStatus = Literal["draft", "published", "archived"]
+RecruitingWorkflowStageType = Literal["active", "hired", "rejected"]
+JobApplicationStatus = Literal["active", "hired", "rejected", "withdrawn"]
+JobApplicationStageTransitionAction = Literal[
+    "initial",
+    "advance",
+    "return",
+    "hire",
+    "reject",
+]
+
+
+def _clean_recruiting_text(value: str, *, error_code: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(error_code)
+    if "\x00" in normalized:
+        raise ValueError(error_code)
+    return normalized
+
+
+class RecruitingWorkflowStageInput(ApiModel):
+    """A stage definition for one draft workflow version."""
+
+    stage_key: str = Field(
+        min_length=2,
+        max_length=64,
+        pattern=r"^[a-z][a-z0-9_-]{1,63}$",
+    )
+    name: str = Field(min_length=1, max_length=120)
+    stage_type: RecruitingWorkflowStageType = "active"
+    sort_order: int = Field(ge=0, le=1000)
+
+    @field_validator("stage_key")
+    @classmethod
+    def normalized_stage_key(cls, value: str) -> str:
+        return _clean_recruiting_text(value, error_code="workflow_stage_key_invalid")
+
+    @field_validator("name")
+    @classmethod
+    def normalized_stage_name(cls, value: str) -> str:
+        return _clean_recruiting_text(value, error_code="workflow_stage_name_invalid")
+
+
+class _RecruitingWorkflowStageSet(ApiModel):
+    """Shared validation for a full immutable stage list."""
+
+    stages: list[RecruitingWorkflowStageInput] = Field(min_length=1, max_length=30)
+
+    @model_validator(mode="after")
+    def unique_stage_keys_and_orders(self) -> "_RecruitingWorkflowStageSet":
+        stage_keys = [stage.stage_key for stage in self.stages]
+        sort_orders = [stage.sort_order for stage in self.stages]
+        if len(stage_keys) != len(set(stage_keys)):
+            raise ValueError("workflow_stage_keys_must_be_unique")
+        if len(sort_orders) != len(set(sort_orders)):
+            raise ValueError("workflow_stage_orders_must_be_unique")
+        if not any(stage.stage_type == "active" for stage in self.stages):
+            raise ValueError("workflow_requires_active_stage")
+        if sum(stage.stage_type == "hired" for stage in self.stages) > 1:
+            raise ValueError("workflow_allows_one_hired_stage")
+        if sum(stage.stage_type == "rejected" for stage in self.stages) > 1:
+            raise ValueError("workflow_allows_one_rejected_stage")
+        return self
+
+
+class RecruitingWorkflowCreate(_RecruitingWorkflowStageSet):
+    """Create a reusable workflow and its first draft version."""
+
+    name: str = Field(min_length=1, max_length=120)
+
+    @field_validator("name")
+    @classmethod
+    def normalized_workflow_name(cls, value: str) -> str:
+        return _clean_recruiting_text(value, error_code="workflow_name_invalid")
+
+
+class RecruitingWorkflowVersionCreate(_RecruitingWorkflowStageSet):
+    """Create a later draft version of an existing workflow."""
+
+
+class RecruitingWorkflowStageResponse(ApiModel):
+    stage_id: str
+    workflow_version_id: str
+    stage_key: str
+    name: str
+    stage_type: RecruitingWorkflowStageType
+    sort_order: int
+
+
+class RecruitingWorkflowVersionResponse(ApiModel):
+    workflow_version_id: str
+    workflow_id: str
+    version: int
+    status: RecruitingWorkflowVersionStatus
+    created_at: str
+    published_at: str | None
+    stages: list[RecruitingWorkflowStageResponse]
+
+
+class RecruitingWorkflowResponse(ApiModel):
+    workflow_id: str
+    name: str
+    created_at: str
+    updated_at: str
+    versions: list[RecruitingWorkflowVersionResponse] = Field(default_factory=list)
+
+
+class RecruitingMemberResponse(ApiModel):
+    """An active workspace member eligible to own a recruiting position."""
+
+    user_id: str
+    display_name: str
+    role: Literal["admin", "recruiter"]
+
+
+class JobRecruitingSettingsUpdate(ApiModel):
+    """Mutable position metadata, intentionally separate from immutable JD text."""
+
+    recruiting_status: RecruitingStatus | None = None
+    department: str | None = Field(default=None, max_length=120)
+    owner_user_id: str | None = Field(default=None, min_length=1, max_length=64)
+    hc_total: int | None = Field(default=None, ge=1, le=10000)
+    recruiting_workflow_version_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+    )
+
+    @field_validator("department")
+    @classmethod
+    def normalized_department(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _clean_recruiting_text(value, error_code="job_department_invalid")
+
+    @model_validator(mode="after")
+    def contains_an_update(self) -> "JobRecruitingSettingsUpdate":
+        if not self.model_fields_set:
+            raise ValueError("job_recruiting_settings_update_empty")
+        return self
+
+
+class JobRecruitingSettingsResponse(ApiModel):
+    job_id: str
+    recruiting_status: RecruitingStatus
+    department: str | None
+    owner_user_id: str | None
+    hc_total: int
+    recruiting_workflow_version_id: str | None
+    updated_at: str
+
+
+class RecruitingJobResponse(ApiModel):
+    """Recruiting workbench projection of the existing Job aggregate."""
+
+    job_id: str
+    title: str
+    current_job_version_id: str | None
+    current_job_version_number: int | None
+    recruiting_status: RecruitingStatus
+    department: str | None
+    owner_user_id: str | None
+    owner_display_name: str | None
+    hc_total: int
+    recruiting_workflow_version_id: str | None
+    workflow_version_number: int | None
+    workflow_name: str | None
+    active_application_count: int = Field(ge=0)
+    created_at: str
+    updated_at: str
+
+
+class RecruitingJobListResponse(ApiModel):
+    items: list[RecruitingJobResponse]
+    total: int
+
+
+class JobApplicationCreate(ApiModel):
+    """Add one candidate to the path-selected job.
+
+    The server derives the active resume and its current fact snapshot; clients
+    never provide a resume snapshot or an arbitrary workflow-stage reference.
+    """
+
+    candidate_id: str = Field(min_length=1, max_length=64)
+
+    @field_validator("candidate_id")
+    @classmethod
+    def non_blank_candidate_id(cls, value: str) -> str:
+        return _clean_recruiting_text(value, error_code="candidate_id_invalid")
+
+
+class JobApplicationStageTransitionCreate(ApiModel):
+    """Human-confirmed optimistic-concurrency input for a stage action."""
+
+    expected_state_version: int = Field(ge=1)
+    note: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("note")
+    @classmethod
+    def normalized_transition_note(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if "\x00" in normalized:
+            raise ValueError("job_application_transition_note_invalid")
+        return normalized
+
+
+class JobApplicationStageTransitionResponse(ApiModel):
+    transition_id: str
+    application_id: str
+    state_version_after: int
+    from_stage_id: str | None
+    from_stage_key: str | None
+    from_stage_name: str | None
+    from_stage_type: RecruitingWorkflowStageType | None
+    to_stage_id: str
+    to_stage_key: str
+    to_stage_name: str
+    to_stage_type: RecruitingWorkflowStageType
+    action: JobApplicationStageTransitionAction
+    actor_user_id: str
+    note: str | None
+    created_at: str
+
+
+class JobApplicationResponse(ApiModel):
+    application_id: str
+    job_id: str
+    job_title: str
+    candidate_id: str
+    candidate_display_name: str | None = None
+    resume_id: str
+    resume_fact_snapshot_id: str
+    resume_facts_version: int
+    job_version_id: str
+    job_version_number: int
+    workflow_version_id: str
+    workflow_version_number: int
+    workflow_name: str | None
+    current_stage_id: str
+    current_stage_key: str
+    current_stage_name: str
+    current_stage_type: RecruitingWorkflowStageType
+    current_stage_sort_order: int
+    status: JobApplicationStatus
+    is_current: bool
+    round_number: int
+    state_version: int
+    added_by_user_id: str
+    created_at: str
+    updated_at: str
+
+
+class JobApplicationDetailResponse(JobApplicationResponse):
+    stage_transitions: list[JobApplicationStageTransitionResponse] = Field(
+        default_factory=list
+    )
+
+
+class JobApplicationListResponse(ApiModel):
+    items: list[JobApplicationResponse]
+    total: int
+
+
 class JobMatchCreate(ApiModel):
     job_version_id: str
 

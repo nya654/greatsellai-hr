@@ -11,6 +11,7 @@ import { FilterWorkspace } from "../filter/FilterWorkspace";
 import { type useCandidateSearchController } from "../filter/useCandidateSearchController";
 import { ScoreWorkspace } from "../scoring/ScoreWorkspace";
 import { MatchWorkspace } from "../job-match/MatchWorkspace";
+import { RecruitingWorkspace } from "../recruiting/RecruitingWorkspace";
 import { UploadPage } from "../upload/UploadPage";
 import { WorkspaceSettingsPage } from "../workspace-settings/WorkspaceSettingsPage";
 import { WorkspaceFeedbackPage } from "../workspace-feedback/WorkspaceFeedbackPage";
@@ -175,6 +176,13 @@ export function WorkspaceViewRouter({
           formatError={feedback.formatError}
           notify={feedback.notify}
           onOpenMatchedResume={onOpenMatchedResume}
+        />
+      )}
+      {view === "recruiting" && (
+        <RecruitingWorkspace
+          formatError={feedback.formatError}
+          notify={feedback.notify}
+          onCreateJob={() => navigation.navigateToView("match")}
         />
       )}
       {view === "settings" && permissions.canManageSettings && (

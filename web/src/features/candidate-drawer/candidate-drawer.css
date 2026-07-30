@@ -312,6 +312,119 @@
   border-bottom: 1px solid var(--line);
 }
 
+.backoffice-ui-root .candidate-drawer .candidate-recruiting-panel {
+  display: grid;
+  align-content: start;
+  gap: var(--space-md);
+  padding: var(--space-lg);
+}
+
+.backoffice-ui-root .candidate-drawer .candidate-recruiting-panel.is-loading {
+  min-height: 12rem;
+  place-content: center;
+  justify-items: center;
+  color: var(--ink-muted);
+  font-size: 0.875rem;
+}
+
+.backoffice-ui-root .candidate-drawer .candidate-recruiting-add {
+  padding: var(--space-md);
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.backoffice-ui-root .candidate-drawer .candidate-recruiting-add-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-xs);
+}
+
+.backoffice-ui-root .candidate-drawer .candidate-recruiting-error {
+  margin: 0;
+}
+
+.backoffice-ui-root .candidate-drawer .candidate-recruiting-history-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.backoffice-ui-root .candidate-drawer .candidate-recruiting-history-heading h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.9375rem;
+}
+
+.backoffice-ui-root .candidate-drawer .candidate-recruiting-history {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.backoffice-ui-root .candidate-drawer .candidate-recruiting-history li {
+  display: flex;
+  min-width: 0;
+  gap: var(--space-sm);
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+}
+
+.backoffice-ui-root .candidate-drawer .candidate-recruiting-history li > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 0.125rem;
+}
+
+.backoffice-ui-root .candidate-drawer .candidate-recruiting-history strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 0.875rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backoffice-ui-root .candidate-drawer .candidate-recruiting-history li > div:first-child span {
+  color: var(--ink-muted);
+  font-size: 0.75rem;
+}
+
+.backoffice-ui-root .candidate-drawer .candidate-recruiting-statuses {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  justify-content: flex-end;
+}
+
+.backoffice-ui-root .candidate-drawer .candidate-recruiting-statuses .status-pill.is-hired {
+  color: var(--green);
+  background: var(--green-tint);
+  border-color: rgb(31 122 82 / 0.18);
+}
+
+.backoffice-ui-root .candidate-drawer .candidate-recruiting-statuses .status-pill.is-rejected {
+  color: var(--ink-muted);
+  background: var(--surface-muted);
+}
+
+.backoffice-ui-root .candidate-drawer .candidate-recruiting-empty {
+  display: flex;
+  min-height: 7rem;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-muted);
+  font-size: 0.875rem;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+}
+
 .backoffice-ui-root .candidate-drawer .tab {
   position: relative;
   min-height: 3rem;

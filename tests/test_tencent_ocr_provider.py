@@ -172,3 +172,24 @@ def test_transparent_png_is_flattened_before_jpeg_reencoding(
     encoded = provider._reencode_image_within_ocr_limit(path=image_path)
 
     assert encoded.startswith(b"\xff\xd8")
+
+
+def test_transparent_pixels_are_composited_on_white_before_jpeg_encoding() -> None:
+    import fitz
+
+    transparent_black_and_opaque_black = fitz.Pixmap(
+        fitz.csRGB,
+        2,
+        1,
+        bytes([0, 0, 0, 0, 0, 0, 0, 255]),
+        True,
+    )
+
+    flattened = provider._flatten_alpha_on_white(transparent_black_and_opaque_black)
+
+    assert flattened.alpha == 0
+    assert list(flattened.samples) == [255, 255, 255, 0, 0, 0]
+    assert provider._encode_pixmap_as_jpeg(
+        transparent_black_and_opaque_black,
+        quality=85,
+    ).startswith(b"\xff\xd8")

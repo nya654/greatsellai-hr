@@ -193,13 +193,54 @@ def _reencode_image_within_ocr_limit(*, path: Path) -> bytes:
 def _encode_pixmap_as_jpeg(pixmap: fitz.Pixmap, *, quality: int) -> bytes:
     """Return a JPEG even when a PNG source has an alpha channel.
 
-    PyMuPDF intentionally rejects direct JPEG output for an RGBA pixmap.  A
-    copied RGB pixmap flattens transparency before encoding, which keeps the
-    image OCR path usable for screenshots and exported transparent PNGs.
+    PyMuPDF intentionally rejects direct JPEG output for an RGBA pixmap.  Do
+    not use ``Pixmap(pixmap, 0)`` here: it merely discards alpha and leaves
+    transparent pixels black.  Explicitly compositing onto white preserves
+    the normal document-page appearance, including black text in a
+    transparent PNG.
     """
 
-    opaque_pixmap = fitz.Pixmap(pixmap, 0) if pixmap.alpha else pixmap
+    opaque_pixmap = _flatten_alpha_on_white(pixmap) if pixmap.alpha else pixmap
     return opaque_pixmap.tobytes("jpeg", jpg_quality=quality)
+
+
+def _flatten_alpha_on_white(pixmap: fitz.Pixmap) -> fitz.Pixmap:
+    """Return an opaque RGB pixmap after alpha compositing on white.
+
+    Image uploads are bounded to a safe pixel count before this code runs, so
+    the explicit byte buffer has a known upper bound.  The helper also keeps
+    transparency handling deterministic across PyMuPDF versions.
+    """
+
+    rgba_pixmap = fitz.Pixmap(fitz.csRGB, pixmap)
+    if not rgba_pixmap.alpha or rgba_pixmap.n != 4:
+        raise TencentOcrError("tencent_ocr_image_prepare_failed")
+
+    source = rgba_pixmap.samples
+    destination = bytearray(rgba_pixmap.width * rgba_pixmap.height * 3)
+    destination_offset = 0
+    for row in range(rgba_pixmap.height):
+        source_offset = row * rgba_pixmap.stride
+        for _column in range(rgba_pixmap.width):
+            red = source[source_offset]
+            green = source[source_offset + 1]
+            blue = source[source_offset + 2]
+            alpha = source[source_offset + 3]
+            inverse_alpha = 255 - alpha
+            destination[destination_offset] = (red * alpha + 255 * inverse_alpha + 127) // 255
+            destination[destination_offset + 1] = (
+                green * alpha + 255 * inverse_alpha + 127
+            ) // 255
+            destination[destination_offset + 2] = (blue * alpha + 255 * inverse_alpha + 127) // 255
+            source_offset += 4
+            destination_offset += 3
+    return fitz.Pixmap(
+        fitz.csRGB,
+        rgba_pixmap.width,
+        rgba_pixmap.height,
+        bytes(destination),
+        False,
+    )
 
 
 def _image_dimensions(image_bytes: bytes) -> tuple[int, int]:

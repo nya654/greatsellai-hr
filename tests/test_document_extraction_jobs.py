@@ -352,7 +352,7 @@ def test_document_worker_enforces_pdf_page_quota_with_explainable_failure(client
     assert detail.json()["quality_flags"] == ["document_page_limit_exceeded"]
 
 
-def test_retryable_document_timeout_retries_then_becomes_actionable(
+def test_retryable_tencent_ocr_failure_retries_then_becomes_actionable(
     client,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -360,7 +360,7 @@ def test_retryable_document_timeout_retries_then_becomes_actionable(
         job_service,
         "extract_document_text",
         lambda *_a, **_k: (_ for _ in ()).throw(
-            DocumentExtractionError("image_ocr_timed_out")
+            DocumentExtractionError("tencent_ocr_request_failed")
         ),
     )
     response = client.post(
@@ -400,7 +400,7 @@ def test_retryable_document_timeout_retries_then_becomes_actionable(
         assert job is not None
         assert job.status == "queued"
         assert job.attempt_count == 1
-        assert job.last_error == "image_ocr_timed_out"
+        assert job.last_error == "tencent_ocr_request_failed"
         job.next_attempt_at = job_service.utcnow() - timedelta(seconds=1)
         session.commit()
 
@@ -412,7 +412,7 @@ def test_retryable_document_timeout_retries_then_becomes_actionable(
     detail = client.get(f"/v1/resumes/{resume_id}")
     assert detail.status_code == 200, detail.text
     assert detail.json()["extraction_status"] == "failed"
-    assert detail.json()["quality_flags"] == ["image_ocr_timed_out"]
+    assert detail.json()["quality_flags"] == ["tencent_ocr_request_failed"]
 
 
 def test_expired_terminal_document_lease_marks_its_owned_resume_failed(client) -> None:

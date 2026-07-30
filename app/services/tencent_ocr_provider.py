@@ -15,7 +15,16 @@ from tencentcloud.common.profile.http_profile import HttpProfile
 from tencentcloud.ocr.v20181119 import models, ocr_client
 
 
-_MAX_OCR_IMAGE_BYTES = 3_500_000
+# Tencent GeneralBasicOCR accepts an ImageBase64 payload up to 10 MiB.  Base64
+# expands its input by roughly 4/3, so keeping the raw image under 7 MiB leaves
+# protocol headroom without relying on an undocumented server-side rounding
+# rule.  PDF pages retain a lower render budget below because they are created
+# locally from an untrusted PDF and a conservative raster is sufficient for
+# resume text.
+_MAX_OCR_IMAGE_BYTES = 7 * 1024 * 1024
+_MAX_RENDERED_PDF_IMAGE_BYTES = 3_500_000
+_IMAGE_REENCODE_SCALES = (1.0, 0.8, 0.65, 0.5, 0.4)
+_IMAGE_REENCODE_QUALITIES = (85, 75, 65)
 
 
 class TencentOcrError(RuntimeError):
@@ -43,6 +52,35 @@ def extract_pdf_page_text(
     """
 
     image_bytes = _render_page_for_ocr(path=path, page_no=page_no)
+    return _extract_general_basic_ocr(image_bytes=image_bytes, config=config)
+
+
+def extract_image_text(
+    *,
+    path: Path,
+    config: TencentOcrConfig,
+) -> str:
+    """Submit a PNG/JPEG original to Tencent OCR without publishing a URL.
+
+    Small originals go directly from the workspace file to the provider.  A
+    larger but accepted upload is locally re-encoded only when needed to stay
+    below Tencent's Base64 request limit.  The original is never mutated,
+    copied to public storage, or sent through an ImageUrl.
+    """
+
+    image_bytes = _prepare_image_for_ocr(path=path)
+    return _extract_general_basic_ocr(image_bytes=image_bytes, config=config)
+
+
+def _extract_general_basic_ocr(
+    *,
+    image_bytes: bytes,
+    config: TencentOcrConfig,
+) -> str:
+    if not image_bytes:
+        raise TencentOcrError("tencent_ocr_invalid_image")
+    if len(image_bytes) > _MAX_OCR_IMAGE_BYTES:
+        raise TencentOcrError("tencent_ocr_image_too_large")
     try:
         http_profile = HttpProfile()
         http_profile.reqTimeout = config.timeout_seconds
@@ -66,12 +104,59 @@ def extract_pdf_page_text(
     except (OSError, ValueError, RuntimeError) as exc:
         raise TencentOcrError("tencent_ocr_request_failed") from exc
 
-    lines = [
-        item.DetectedText.strip()
-        for item in (response.TextDetections or [])
-        if item.DetectedText and item.DetectedText.strip()
-    ]
+    try:
+        lines = [
+            item.DetectedText.strip()
+            for item in (response.TextDetections or [])
+            if item.DetectedText and item.DetectedText.strip()
+        ]
+    except (AttributeError, TypeError) as exc:
+        raise TencentOcrError("tencent_ocr_invalid_response") from exc
     return "\n".join(lines)
+
+
+def _prepare_image_for_ocr(*, path: Path) -> bytes:
+    try:
+        image_bytes = path.read_bytes()
+    except OSError as exc:
+        raise TencentOcrError("tencent_ocr_image_open_failed") from exc
+    if not image_bytes:
+        raise TencentOcrError("tencent_ocr_invalid_image")
+    if len(image_bytes) <= _MAX_OCR_IMAGE_BYTES:
+        return image_bytes
+    return _reencode_image_within_ocr_limit(path=path)
+
+
+def _reencode_image_within_ocr_limit(*, path: Path) -> bytes:
+    """Shrink an oversized image for Tencent without changing its original.
+
+    This branch is intentionally rare: normal resume screenshots are submitted
+    as-is and no local OCR engine is involved.  The bounded scale/quality
+    ladder prevents a 15 MiB browser upload from exceeding Tencent's Base64
+    request size while retaining a legible raster for text recognition.
+    """
+
+    try:
+        source = fitz.Pixmap(str(path))
+        if source.width < 1 or source.height < 1:
+            raise TencentOcrError("tencent_ocr_invalid_image")
+        for scale in _IMAGE_REENCODE_SCALES:
+            width = max(1, round(source.width * scale))
+            height = max(1, round(source.height * scale))
+            pixmap = (
+                source
+                if width == source.width and height == source.height
+                else fitz.Pixmap(source, width, height, None)
+            )
+            for quality in _IMAGE_REENCODE_QUALITIES:
+                image_bytes = pixmap.tobytes("jpeg", jpg_quality=quality)
+                if len(image_bytes) <= _MAX_OCR_IMAGE_BYTES:
+                    return image_bytes
+    except TencentOcrError:
+        raise
+    except (fitz.FileDataError, OSError, RuntimeError, ValueError) as exc:
+        raise TencentOcrError("tencent_ocr_image_prepare_failed") from exc
+    raise TencentOcrError("tencent_ocr_image_too_large")
 
 
 def _render_page_for_ocr(*, path: Path, page_no: int) -> bytes:
@@ -92,7 +177,7 @@ def _render_page_for_ocr(*, path: Path, page_no: int) -> bytes:
                     alpha=False,
                 )
                 image_bytes = pixmap.tobytes("png")
-                if len(image_bytes) <= _MAX_OCR_IMAGE_BYTES:
+                if len(image_bytes) <= _MAX_RENDERED_PDF_IMAGE_BYTES:
                     return image_bytes
         finally:
             document.close()

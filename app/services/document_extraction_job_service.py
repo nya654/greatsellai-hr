@@ -387,7 +387,6 @@ def _process_claimed_job(
             max_spreadsheet_rows_per_sheet=settings.document_max_spreadsheet_rows_per_sheet,
             max_spreadsheet_cells=settings.document_max_spreadsheet_cells,
             office_timeout_seconds=settings.document_office_timeout_seconds,
-            image_ocr_timeout_seconds=settings.document_image_ocr_timeout_seconds,
         )
     except DocumentExtractionJobError as exc:
         _finish_failure(
@@ -735,7 +734,10 @@ def _is_retryable_document_error(error: str) -> bool:
     return error in {
         "office_conversion_timed_out",
         "spreadsheet_conversion_timed_out",
-        "image_ocr_timed_out",
+        # Tencent network/provider failures are transiently retried through
+        # the existing durable document queue. Missing credentials and invalid
+        # image inputs intentionally remain actionable rather than looping.
+        "tencent_ocr_request_failed",
         "document_extraction_worker_error",
         "document_extraction_persist_failed",
     }

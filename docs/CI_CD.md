@@ -180,7 +180,9 @@ out workspace but does not invoke `apt` on every PR.
 
 The existing **Production image builds** check reuses the exact application
 image it just built to run `scripts/run_release_regression.py --all`. The
-runtime gate exercises real LibreOffice, Tesseract, and document extraction
-for all supported formats, then runs temporary PostgreSQL migration,
+runtime gate exercises real LibreOffice and document extraction for all
+supported formats, verifies the Tencent image-OCR request contract without a
+paid cloud credential, and confirms Tesseract is absent from the production
+image. It then runs temporary PostgreSQL migration,
 backup/restore, and worker-lease recovery checks. It creates no production
 connection, volume, port, environment file, candidate file, or credential.

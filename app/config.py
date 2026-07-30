@@ -680,14 +680,14 @@ class AppSettings:
                 "RESUME_V3_AI_EXTRACTION_JOB_LEASE_SECONDS must exceed "
                 "DEEPSEEK_TIMEOUT_SECONDS by at least 30 seconds"
             )
-        document_longest_subprocess_seconds = max(
+        document_longest_operation_seconds = max(
             self.document_office_timeout_seconds,
             self.tencent_ocr_timeout_seconds,
         )
-        if self.document_extraction_job_lease_seconds < document_longest_subprocess_seconds + 30:
+        if self.document_extraction_job_lease_seconds < document_longest_operation_seconds + 30:
             raise ValueError(
                 "RESUME_V3_DOCUMENT_EXTRACTION_JOB_LEASE_SECONDS must exceed "
-                "the longest document subprocess timeout by at least 30 seconds"
+                "the longest document operation timeout by at least 30 seconds"
             )
         if self.ai_extraction_worker_poll_seconds <= 0:
             raise ValueError(

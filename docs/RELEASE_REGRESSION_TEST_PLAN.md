@@ -79,15 +79,15 @@ HTML 简历可以被解析为文本，但原件本身仍是不可信内容。任
 
 ## 6. Docker 多格式提取
 
-多格式回归必须在由项目 `Dockerfile` 构建的镜像内运行，而不是只 mock `soffice` 或 `tesseract`。临时目录将生成以下无隐私 fixture：
+多格式回归必须在由项目 `Dockerfile` 构建的镜像内运行，而不是只 mock `soffice` 或项目的统一文档提取链路。临时目录将生成以下无隐私 fixture：
 
 - PDF；
 - DOCX（通过 LibreOffice 转 PDF）；
 - XLSX；
-- PNG 与 JPG（通过 Tesseract OCR）；
+- PNG 与 JPG（通过腾讯 OCR 图片路由）；
 - HTML（通过 BeautifulSoup 清理脚本后提取正文）。
 
-每个文件都验证提取成功、解析器标识正确、文本含预期的合成标记，并确认图片路径实际调用容器里的 Tesseract。该演练使用独立镜像和临时容器，不接入生产 Compose 项目或卷。
+每个文件都验证提取成功、解析器标识正确、文本含预期的合成标记，并确认图片路径实际调用腾讯 Provider seam。CI 不携带付费 OCR 凭据，因此不会发起真实云请求；它会验证生产镜像未包含 Tesseract。该演练使用独立镜像和临时容器，不接入生产 Compose 项目或卷。
 
 ## 7. PostgreSQL 迁移、备份恢复与 Worker
 

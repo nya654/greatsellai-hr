@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.models import Resume, ResumeScore, ResumeSummary
 from app.schemas import ResumeLibraryItem, ResumeLibraryResponse
 from app.services.ai_extraction_job_service import ai_extraction_state
+from app.services.candidate_favorite_service import favorite_candidate_ids
 from app.services.candidate_name_job_service import candidate_name_extraction_state
 from app.services.resume_summary_job_service import summary_generation_state
 
@@ -102,6 +103,7 @@ def list_resume_library(
     page: int,
     page_size: int,
     mailbox_config_id: str | None = None,
+    viewer_user_id: str | None = None,
 ) -> ResumeLibraryResponse:
     """List uploaded resume versions without exposing raw extracted facts."""
 
@@ -128,6 +130,15 @@ def list_resume_library(
         .limit(page_size)
     )
     resumes = session.scalars(statement).all()
+    favorited_candidate_ids = (
+        favorite_candidate_ids(
+            session,
+            user_id=viewer_user_id,
+            candidate_ids={resume.candidate_id for resume in resumes},
+        )
+        if viewer_user_id is not None
+        else set()
+    )
     items: list[ResumeLibraryItem] = []
     for resume in resumes:
         summary = _current_summary(resume)
@@ -143,6 +154,7 @@ def list_resume_library(
                 candidate_id=resume.candidate_id,
                 display_name=resume.candidate.display_name,
                 original_filename=resume.original_filename,
+                is_favorited=resume.candidate_id in favorited_candidate_ids,
                 created_at=_isoformat(resume.created_at),
                 extraction_status=resume.extraction_status,
                 ai_extraction_status=ai_status,

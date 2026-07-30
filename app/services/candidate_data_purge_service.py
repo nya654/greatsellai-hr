@@ -24,6 +24,7 @@ from app.models import (
     CandidateDataDeletionBatch,
     CandidateDataDeletionBatchItem,
     CandidateDataFileAccessGrant,
+    CandidateFavorite,
     CandidateDataPurgeJob,
     CandidateNameExtractionJob,
     EmailAttachmentImport,
@@ -470,6 +471,14 @@ def _purge_database_rows(
                 )
             )
             if remaining is None:
+                # Keep the explicit cleanup as a defence in depth for legacy
+                # databases; the foreign key also cascades on current schema.
+                session.execute(
+                    delete(CandidateFavorite).where(
+                        CandidateFavorite.organization_id == organization_id,
+                        CandidateFavorite.candidate_id == candidate_id,
+                    )
+                )
                 session.execute(
                     delete(Candidate).where(
                         Candidate.id == candidate_id,
@@ -663,6 +672,15 @@ def _purge_database_rows(
             )
         )
         if remaining is None:
+            # Favorites are a private association, not retained candidate
+            # history. Clear them before the bulk root delete (whose ORM
+            # relationship cascade is intentionally bypassed).
+            session.execute(
+                delete(CandidateFavorite).where(
+                    CandidateFavorite.organization_id == organization_id,
+                    CandidateFavorite.candidate_id == candidate_id,
+                )
+            )
             session.execute(
                 delete(Candidate).where(
                     Candidate.id == candidate_id,

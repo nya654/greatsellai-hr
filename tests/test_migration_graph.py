@@ -9,6 +9,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from app.models import (
+    CandidateFavorite,
     CandidateNameExtractionJob,
     MailboxConfig,
     MailboxOAuthConnectIntent,
@@ -27,7 +28,7 @@ from app.models import (
 def test_alembic_history_has_one_canonical_head() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert script.get_heads() == ["20260729_0049"]
+    assert script.get_heads() == ["20260730_0050"]
 
 
 def test_migration_revision_identifiers_are_unique() -> None:
@@ -98,6 +99,15 @@ def test_candidate_name_extraction_job_ddl_identifiers_fit_postgresql() -> None:
     dialect = postgresql.dialect()
     CreateTable(CandidateNameExtractionJob.__table__).compile(dialect=dialect)
     for index in CandidateNameExtractionJob.__table__.indexes:
+        CreateIndex(index).compile(dialect=dialect)
+
+
+def test_candidate_favorite_ddl_identifiers_fit_postgresql() -> None:
+    """Private bookmark identifiers must remain portable to production PostgreSQL."""
+
+    dialect = postgresql.dialect()
+    CreateTable(CandidateFavorite.__table__).compile(dialect=dialect)
+    for index in CandidateFavorite.__table__.indexes:
         CreateIndex(index).compile(dialect=dialect)
 
 

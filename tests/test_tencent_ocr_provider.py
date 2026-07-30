@@ -193,3 +193,19 @@ def test_transparent_pixels_are_composited_on_white_before_jpeg_encoding() -> No
         transparent_black_and_opaque_black,
         quality=85,
     ).startswith(b"\xff\xd8")
+
+
+def test_semi_transparent_pixels_are_blended_on_white() -> None:
+    import fitz
+
+    semi_transparent_black = fitz.Pixmap(
+        fitz.csRGB,
+        1,
+        1,
+        bytes([0, 0, 0, 128]),
+        True,
+    )
+
+    flattened = provider._flatten_alpha_on_white(semi_transparent_black)
+
+    assert list(flattened.samples) == [127, 127, 127]

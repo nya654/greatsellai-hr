@@ -24,7 +24,10 @@ from tencentcloud.ocr.v20181119 import models, ocr_client
 # resume text.
 _MAX_OCR_IMAGE_BYTES = 7 * 1024 * 1024
 _MAX_RENDERED_PDF_IMAGE_BYTES = 3_500_000
-_MAX_REENCODE_IMAGE_PIXELS = 16_000_000
+# A 300 DPI A4 page is below this limit.  Capping it keeps the rare local
+# image-normalisation step bounded on a small worker while OCR itself remains
+# a Tencent Cloud request rather than a resident local engine.
+_MAX_REENCODE_IMAGE_PIXELS = 12_000_000
 _MAX_JPEG_DIMENSION_HEADER_BYTES = 1024 * 1024
 _IMAGE_REENCODE_SCALES = (1.0, 0.8, 0.65, 0.5, 0.4)
 _IMAGE_REENCODE_QUALITIES = (85, 75, 65)

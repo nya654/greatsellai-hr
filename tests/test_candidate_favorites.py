@@ -359,6 +359,44 @@ def test_favorite_list_groups_all_resume_versions_under_one_candidate(client: Te
     }
 
 
+def test_favorite_survives_single_resume_version_delete(client: TestClient) -> None:
+    """A bookmark follows the candidate, not a disposable resume version."""
+
+    created = client.post(
+        "/v1/candidates",
+        json={"display_name": "Version deletion favorite fixture"},
+    )
+    assert created.status_code == 200, created.text
+    candidate_id = str(created.json()["candidate_id"])
+    first_resume_id = _upload_resume_for_candidate(
+        client,
+        candidate_id=candidate_id,
+        filename="favorite-delete-version-one.pdf",
+    )
+    second_resume_id = _upload_resume_for_candidate(
+        client,
+        candidate_id=candidate_id,
+        filename="favorite-delete-version-two.pdf",
+    )
+    _favorite(client, candidate_id)
+
+    deleted = client.request(
+        "DELETE",
+        f"/v1/resumes/{first_resume_id}",
+        json={"reason": "duplicate"},
+    )
+    assert deleted.status_code == 202, deleted.text
+    assert deleted.json()["affected_candidate_count"] == 0
+
+    favorite = _favorite_list(client)["items"][0]
+    assert favorite["candidate_id"] == candidate_id
+    assert favorite["current_resume_id"] == second_resume_id
+    assert [version["resume_id"] for version in favorite["resume_versions"]] == [
+        second_resume_id
+    ]
+    assert _count_favorites(client, candidate_id=candidate_id) == 1
+
+
 def test_favorite_hides_on_delete_resurfaces_on_restore_and_is_purged(client: TestClient) -> None:
     candidate_id, resume_id = _create_candidate_and_resume(
         client,

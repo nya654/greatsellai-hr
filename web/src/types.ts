@@ -639,6 +639,8 @@ export interface ResumeDetail {
   resume_id: string;
   candidate_id: string;
   candidate_display_name: string | null;
+  /** Current-user private state, never persisted on the candidate or resume. */
+  is_favorited: boolean;
   extraction_status: string;
   ai_extraction_status: AiExtractionStatus;
   ai_extraction_error: string | null;
@@ -1118,6 +1120,8 @@ export interface CandidateSearchItem {
   display_name: string | null;
   resume_id: string;
   original_filename: string;
+  /** Current signed-in user's private candidate bookmark. */
+  is_favorited: boolean;
   is_985_211: boolean;
   institution_classifications: InstitutionClassification[];
   highest_degree: DegreeLevel | null;
@@ -1305,6 +1309,8 @@ export interface ResumeLibraryItem {
   candidate_id: string;
   display_name: string | null;
   original_filename: string;
+  /** A candidate-level bookmark shown on each of the candidate's versions. */
+  is_favorited: boolean;
   created_at: string;
   extraction_status: string;
   ai_extraction_status: AiExtractionStatus;
@@ -1329,6 +1335,44 @@ export interface ResumeLibraryItem {
 
 export interface ResumeLibraryResponse {
   items: ResumeLibraryItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+/** A private bookmark belongs to the current user in the current workspace. */
+export interface CandidateFavoriteState {
+  candidate_id: string;
+  is_favorited: boolean;
+  favorited_at: string | null;
+}
+
+/** Metadata-only version item; source text, scores, and AI results stay in place. */
+export interface CandidateResumeVersionPreview {
+  resume_id: string;
+  original_filename: string;
+  created_at: string;
+  extraction_status: string;
+  is_active: boolean;
+}
+
+export interface CandidateResumeVersionsResponse {
+  candidate_id: string;
+  display_name: string | null;
+  items: CandidateResumeVersionPreview[];
+}
+
+/** One favorite candidate, grouped even when that candidate has many resumes. */
+export interface FavoriteCandidateItem {
+  candidate_id: string;
+  display_name: string | null;
+  favorited_at: string;
+  current_resume_id: string | null;
+  resume_versions: CandidateResumeVersionPreview[];
+}
+
+export interface CandidateFavoriteListResponse {
+  items: FavoriteCandidateItem[];
   total: number;
   page: number;
   page_size: number;

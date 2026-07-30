@@ -33,6 +33,16 @@ function feedbackHash(): string {
   return "#feedback";
 }
 
+function navigationViewFromHash(hash: string): WorkspaceNavigationView | null {
+  const value = hash
+    .replace(/^#/, "")
+    .trim()
+    .replace(/^\/+|\/+$/g, "")
+    .toLowerCase();
+
+  return value === "favorites" ? "favorites" : null;
+}
+
 interface UseWorkspaceNavigationOptions {
   canManageCandidateData: boolean;
   canManageMailbox: boolean;
@@ -50,11 +60,12 @@ export function useWorkspaceNavigation({
   hasSession,
 }: UseWorkspaceNavigationOptions) {
   const [view, setView] = useState<WorkspaceView>(() =>
-    window.location.hash.replace(/^#/, "").trim().toLowerCase() === "feedback"
+    navigationViewFromHash(window.location.hash) ??
+    (window.location.hash.replace(/^#/, "").trim().toLowerCase() === "feedback"
       ? "feedback"
       : settingsSectionFromHash(window.location.hash)
         ? "settings"
-        : "library",
+        : "library"),
   );
   const [settingsSection, setSettingsSection] =
     useState<WorkspaceSettingsSection>(
@@ -62,9 +73,8 @@ export function useWorkspaceNavigation({
     );
   const canManageSettings = canManageMailbox || canManageCandidateData;
 
-  const updateSettingsHash = useCallback(
-    (section: WorkspaceSettingsSection | null, replace = false) => {
-      const nextHash = section ? settingsHash(section) : "";
+  const updateHash = useCallback(
+    (nextHash: string, replace = false) => {
       if (window.location.hash === nextHash) return;
       const nextLocation = `${window.location.pathname}${window.location.search}${nextHash}`;
       if (replace) {
@@ -76,12 +86,21 @@ export function useWorkspaceNavigation({
     [],
   );
 
+  const updateSettingsHash = useCallback(
+    (section: WorkspaceSettingsSection | null, replace = false) => {
+      updateHash(section ? settingsHash(section) : "", replace);
+    },
+    [updateHash],
+  );
+
   const navigateToView = useCallback(
     (nextView: WorkspaceNavigationView) => {
       setView(nextView);
-      updateSettingsHash(null);
+      // Favorites is a personal worklist with a useful direct URL. Other
+      // primary workspace views keep the existing clean root URL.
+      updateHash(nextView === "favorites" ? "#favorites" : "");
     },
-    [updateSettingsHash],
+    [updateHash],
   );
 
   const openSettings = useCallback(
@@ -106,13 +125,24 @@ export function useWorkspaceNavigation({
 
   useEffect(() => {
     const syncSettingsFromHash = () => {
+      const navigationView = navigationViewFromHash(window.location.hash);
+      if (navigationView) {
+        setView(navigationView);
+        return;
+      }
       if (window.location.hash.replace(/^#/, "").trim().toLowerCase() === "feedback") {
         setView("feedback");
         return;
       }
       const section = settingsSectionFromHash(window.location.hash);
       if (!section) {
-        setView((current) => (current === "settings" ? "library" : current));
+        // A browser Back action from a hash-routed view returns to the clean
+        // workspace URL, whose canonical screen is the resume library.
+        setView((current) =>
+          current === "settings" || current === "favorites" || current === "feedback"
+            ? "library"
+            : current,
+        );
         return;
       }
       setSettingsSection(section);

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type {
+  CandidateResumeVersionPreview,
   FilterOptions,
   AiSummaryStatus,
   ResumeReviewDetail,
@@ -65,6 +66,12 @@ export interface CandidateDrawerProps {
   onRefreshScores: () => void;
   onDeleteResume: () => Promise<void>;
   onNotify: (kind: "success" | "error", message: string) => void;
+  /** Candidate-level versions are metadata-only, never duplicate AI data. */
+  resumeVersions: CandidateResumeVersionPreview[];
+  resumeVersionsLoading: boolean;
+  onSelectResumeVersion: (resumeId: string) => void;
+  favoriteLoading: boolean;
+  onToggleFavorite: () => void;
 }
 
 export function CandidateDrawer({
@@ -97,6 +104,11 @@ export function CandidateDrawer({
   onRefreshScores,
   onDeleteResume,
   onNotify,
+  resumeVersions,
+  resumeVersionsLoading,
+  onSelectResumeVersion,
+  favoriteLoading,
+  onToggleFavorite,
 }: CandidateDrawerProps) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [deleting, setDeleting] = useState(false);
@@ -104,6 +116,23 @@ export function CandidateDrawer({
     summaries.find((item) => item.is_current) ?? summaries[0] ?? null;
   const sourceTextIssue = hasSourceTextQualityIssue(review?.quality_flags);
   const supersededReparse = hasSupersededReparseVersion(review?.quality_flags);
+  const selectedResumeVersion = candidate
+    ? resumeVersions.find((item) => item.resume_id === candidate.resumeId) ?? {
+        resume_id: candidate.resumeId,
+        original_filename: review?.original_filename ?? "当前简历",
+        created_at: "",
+        extraction_status: review?.extraction_status ?? "",
+        is_active: review?.is_active ?? false,
+      }
+    : null;
+  const availableResumeVersions = selectedResumeVersion
+    ? [
+        selectedResumeVersion,
+        ...resumeVersions.filter(
+          (item) => item.resume_id !== selectedResumeVersion.resume_id,
+        ),
+      ]
+    : resumeVersions;
   useEffect(() => {
     if (!isOpen) return;
     const frame = window.requestAnimationFrame(() =>
@@ -153,8 +182,55 @@ export function CandidateDrawer({
               <span className="tiny-badge">已启用</span>
             ) : null}
           </h2>
+          {candidate && (
+            <div className="drawer-version-control">
+              <label htmlFor="candidate-drawer-resume-version">简历版本</label>
+              <select
+                aria-busy={resumeVersionsLoading}
+                aria-describedby="candidate-drawer-resume-version-note"
+                disabled={resumeVersionsLoading || reviewLoading}
+                id="candidate-drawer-resume-version"
+                onChange={(event) => onSelectResumeVersion(event.target.value)}
+                value={candidate.resumeId}
+              >
+                {availableResumeVersions.map((version) => (
+                  <option key={version.resume_id} value={version.resume_id}>
+                    {`${version.is_active ? "当前版本 · " : ""}${version.original_filename}${version.created_at ? ` · ${formatLibraryDate(version.created_at)}` : ""}`}
+                  </option>
+                ))}
+              </select>
+              <span id="candidate-drawer-resume-version-note">
+                {resumeVersionsLoading
+                  ? "正在加载版本"
+                  : `${availableResumeVersions.length} 个简历版本`}
+              </span>
+            </div>
+          )}
         </div>
         <div className="drawer-actions">
+          {candidate && (
+            <button
+              aria-busy={favoriteLoading}
+              aria-label={
+                review?.is_favorited
+                  ? `取消收藏候选人 ${candidate.candidateName}`
+                  : `收藏候选人 ${candidate.candidateName}`
+              }
+              aria-pressed={review?.is_favorited ?? false}
+              className={`button drawer-favorite-button${review?.is_favorited ? " is-favorited" : ""}`}
+              disabled={!review || favoriteLoading}
+              onClick={onToggleFavorite}
+              title="收藏以候选人为单位，所有简历版本共用此状态"
+              type="button"
+            >
+              {favoriteLoading ? (
+                <i className="spinner" />
+              ) : (
+                <Icon name="bookmark" size={16} />
+              )}
+              {review?.is_favorited ? "取消收藏" : "收藏候选人"}
+            </button>
+          )}
           {canManageCandidateData && candidate && (
             <button
               aria-busy={deleting}

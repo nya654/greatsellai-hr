@@ -1,4 +1,6 @@
 import { BackofficeButton } from "../../backoffice/ui/BackofficeButton";
+import { useEffect, useState } from "react";
+import { api } from "../../api";
 import { BackofficeSelect } from "../../backoffice/ui/BackofficeSelect";
 import { TableSkeleton } from "../../backoffice/ui/TableSkeleton";
 import { Icon } from "../../icons";
@@ -331,6 +333,7 @@ export function ResultsPane({
   onReset,
   onRefineWithAgent,
   onUpload,
+  onFavoriteChanged,
   scoreTemplateId,
   scoreTemplates,
 }: {
@@ -344,6 +347,8 @@ export function ResultsPane({
   onReset: () => void;
   onRefineWithAgent: () => void;
   onUpload: () => void;
+  /** Keeps the library and private favorites view coherent after an update. */
+  onFavoriteChanged?: () => void;
   scoreTemplateId: string | null;
   scoreTemplates: ScoreTemplate[];
 }) {
@@ -353,6 +358,39 @@ export function ResultsPane({
   const visibleAppliedFilters = appliedFilters.slice(0, 6);
   const hiddenAppliedFilterCount =
     appliedFilters.length - visibleAppliedFilters.length;
+  const [favoriteOverrides, setFavoriteOverrides] = useState<
+    Record<string, boolean>
+  >({});
+  const [favoriteActionCandidateId, setFavoriteActionCandidateId] = useState<
+    string | null
+  >(null);
+  const [favoriteError, setFavoriteError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setFavoriteOverrides({});
+  }, [search]);
+
+  const toggleFavorite = async (item: CandidateSearchItem) => {
+    if (favoriteActionCandidateId === item.candidate_id) return;
+    const wasFavorited =
+      favoriteOverrides[item.candidate_id] ?? item.is_favorited;
+    setFavoriteActionCandidateId(item.candidate_id);
+    setFavoriteError(null);
+    try {
+      const nextState = wasFavorited
+        ? (await api.unfavoriteCandidate(item.candidate_id), false)
+        : (await api.favoriteCandidate(item.candidate_id)).is_favorited;
+      setFavoriteOverrides((current) => ({
+        ...current,
+        [item.candidate_id]: nextState,
+      }));
+      onFavoriteChanged?.();
+    } catch {
+      setFavoriteError("更新收藏失败，请稍后重试。");
+    } finally {
+      setFavoriteActionCandidateId(null);
+    }
+  };
 
   return (
     <section className="results-pane" aria-label="候选人结果">
@@ -398,6 +436,11 @@ export function ResultsPane({
             上传简历
           </BackofficeButton>
         </div>
+        {favoriteError && (
+          <p className="results-favorite-error" role="alert">
+            {favoriteError}
+          </p>
+        )}
       </header>
       {appliedFilters.length > 0 && (
         <div className="applied-filter-bar" aria-label="已应用的筛选条件">
@@ -461,6 +504,10 @@ export function ResultsPane({
                   item.score_confidence,
                 );
                 const scoreStatus = scoreStatusLabel(item.score_status);
+                const isFavorited =
+                  favoriteOverrides[item.candidate_id] ?? item.is_favorited;
+                const favoriteUpdating =
+                  favoriteActionCandidateId === item.candidate_id;
                 return (
                   <tr
                     className={
@@ -474,6 +521,30 @@ export function ResultsPane({
                         <span className="candidate-name">
                           {item.display_name?.trim() || "未命名候选人"}
                         </span>
+                        <button
+                          aria-busy={favoriteUpdating}
+                          aria-label={
+                            isFavorited
+                              ? `取消收藏 ${item.display_name?.trim() || "未命名候选人"}`
+                              : `收藏 ${item.display_name?.trim() || "未命名候选人"}`
+                          }
+                          aria-pressed={isFavorited}
+                          className={`candidate-favorite-button${isFavorited ? " is-favorited" : ""}`}
+                          disabled={favoriteUpdating}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void toggleFavorite(item);
+                          }}
+                          title="收藏的是候选人，所有简历版本共用此状态"
+                          type="button"
+                        >
+                          {favoriteUpdating ? (
+                            <i className="spinner" />
+                          ) : (
+                            <Icon name="bookmark" size={14} />
+                          )}
+                          {isFavorited ? "已收藏" : "收藏"}
+                        </button>
                       </div>
                     </td>
                     <td>

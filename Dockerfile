@@ -12,8 +12,6 @@ RUN sed -i "s|deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.
     && apt-get install -y --no-install-recommends \
         libreoffice-writer \
         libreoffice-calc \
-        tesseract-ocr \
-        tesseract-ocr-chi-sim \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml requirements-production.lock ./

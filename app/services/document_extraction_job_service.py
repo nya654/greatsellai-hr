@@ -387,7 +387,6 @@ def _process_claimed_job(
             max_spreadsheet_rows_per_sheet=settings.document_max_spreadsheet_rows_per_sheet,
             max_spreadsheet_cells=settings.document_max_spreadsheet_cells,
             office_timeout_seconds=settings.document_office_timeout_seconds,
-            image_ocr_timeout_seconds=settings.document_image_ocr_timeout_seconds,
         )
     except DocumentExtractionJobError as exc:
         _finish_failure(
@@ -683,7 +682,10 @@ def _finish_failure(
                 return
             retry = retryable and job.attempt_count < job.max_attempts
             if retry:
-                delay_seconds = min(60, 2 ** max(job.attempt_count - 1, 0))
+                delay_seconds = _document_retry_delay_seconds(
+                    error=error,
+                    attempt_count=job.attempt_count,
+                )
                 job.status = DOCUMENT_EXTRACTION_QUEUED
                 job.next_attempt_at = now + timedelta(seconds=delay_seconds)
                 job.completed_at = None
@@ -735,10 +737,23 @@ def _is_retryable_document_error(error: str) -> bool:
     return error in {
         "office_conversion_timed_out",
         "spreadsheet_conversion_timed_out",
-        "image_ocr_timed_out",
+        # Tencent network/provider failures are transiently retried through
+        # the existing durable document queue. Missing credentials and invalid
+        # image inputs intentionally remain actionable rather than looping.
+        "tencent_ocr_request_failed",
+        "tencent_ocr_rate_limited",
         "document_extraction_worker_error",
         "document_extraction_persist_failed",
     }
+
+
+def _document_retry_delay_seconds(*, error: str, attempt_count: int) -> int:
+    """Delay cloud OCR throttling enough to avoid immediately amplifying it."""
+
+    exponent = max(attempt_count - 1, 0)
+    if error == "tencent_ocr_rate_limited":
+        return min(300, 30 * (2**exponent))
+    return min(60, 2**exponent)
 
 
 def _database_safe_text(value: str) -> str:

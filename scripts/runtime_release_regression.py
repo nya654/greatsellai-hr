@@ -2,15 +2,17 @@
 
 This file deliberately generates all fixtures at runtime.  It is bind-mounted
 into the image built from this repository, so the checks exercise the exact
-LibreOffice, Tesseract, Python packages, Alembic migrations and ORM code that
-the production image contains.  It must never be pointed at a production
-database or uploads directory.
+LibreOffice, Python packages, Alembic migrations and ORM code that the
+production image contains.  Tencent OCR's request contract is isolated behind
+an in-process provider seam: this harness never needs a paid cloud credential.
+It must never be pointed at a production database or uploads directory.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -73,9 +75,9 @@ def _make_image(path: Path, marker: str) -> None:
             if path.suffix.lower() == ".png":
                 pixmap.save(path)
             else:
-                # PyMuPDF writes a real JPEG byte stream here.  Giving this
-                # path a .jpg suffix makes the application's actual JPG route
-                # select Tesseract rather than a PDF fallback.
+                # PyMuPDF writes a real JPEG byte stream here. Giving this
+                # path a .jpg suffix makes the application's actual image
+                # route select Tencent OCR rather than a PDF fallback.
                 path.write_bytes(pixmap.tobytes("jpeg"))
         finally:
             document.close()
@@ -100,7 +102,31 @@ def run_document_regression() -> None:
     from docx import Document
     from openpyxl import Workbook
 
-    from app.services.document_text_extraction import extract_document_text
+    from app.services import document_text_extraction
+    from app.services.tencent_ocr_provider import TencentOcrConfig
+
+    _assert(
+        shutil.which("tesseract") is None,
+        "tesseract_must_not_be_present_in_production_image",
+    )
+
+    ocr_config = TencentOcrConfig(
+        secret_id="runtime-regression-secret-id",
+        secret_key="runtime-regression-secret-key",
+        region="ap-guangzhou",
+        timeout_seconds=5,
+    )
+    image_ocr_calls: list[str] = []
+
+    def fake_image_ocr(*, path: Path, config: TencentOcrConfig) -> str:
+        _assert(config == ocr_config, "unexpected_tencent_ocr_config")
+        suffix = path.suffix.lower()
+        _assert(suffix in {".png", ".jpg"}, "unexpected_tencent_image_suffix")
+        image_ocr_calls.append(suffix)
+        return f"SYNTHETIC {suffix[1:].upper()} RESUME MARKER"
+
+    document_text_extraction.extract_image_text = fake_image_ocr
+    extract_document_text = document_text_extraction.extract_document_text
 
     with tempfile.TemporaryDirectory(prefix="greatsell-document-regression-") as temporary:
         fixtures = Path(temporary)
@@ -137,7 +163,7 @@ def run_document_regression() -> None:
         extraction_options = {
             "min_text_chars_per_page": 1,
             "ocr_sparse_text_chars_per_page": 1,
-            "tencent_ocr_config": None,
+            "tencent_ocr_config": ocr_config,
         }
         pdf_result = extract_document_text(pdf_path, **extraction_options)
         _assert_marker(
@@ -163,14 +189,14 @@ def run_document_regression() -> None:
         png_result = extract_document_text(png_path, **extraction_options)
         _assert_marker(
             png_result,
-            parser_fragment="tesseract",
+            parser_fragment="tencent-ocr",
             marker_words=("SYNTHETIC", "PNG", "RESUME"),
         )
 
         jpg_result = extract_document_text(jpg_path, **extraction_options)
         _assert_marker(
             jpg_result,
-            parser_fragment="tesseract",
+            parser_fragment="tencent-ocr",
             marker_words=("SYNTHETIC", "JPG", "RESUME"),
         )
 
@@ -183,6 +209,10 @@ def run_document_regression() -> None:
         _assert(
             "RUNTIME_SCRIPT_MARKER" not in html_result.raw_text,
             "html_script_was_not_removed_before_extraction",
+        )
+        _assert(
+            image_ocr_calls == [".png", ".jpg"],
+            "tencent_image_ocr_route_was_not_selected",
         )
 
     print("runtime-document-regression: passed")

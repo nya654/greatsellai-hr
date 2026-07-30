@@ -86,11 +86,13 @@ python scripts/run_release_regression.py --all --image greatsellai-hr-ci:local
 - PDF；
 - DOCX（真实 `soffice --headless --convert-to pdf`）；
 - XLSX（真实 OpenPyXL 读取）；
-- PNG / JPG（真实 `tesseract -l chi_sim+eng`）；
+- PNG / JPG（真实图片解析路由、腾讯 OCR 请求合约）；
 - HTML（真实 BeautifulSoup 脚本清理后提取）。
 
 每类 fixture 都有无隐私标记，harness 会检查解析器标识、页计数和标记文本。它不会 mock
-LibreOffice、Tesseract 或项目的统一 `extract_document_text` 链路。
+LibreOffice 或项目的统一 `extract_document_text` 链路；PNG/JPG 会通过受控的腾讯 Provider
+seam 验证实际路由、请求配置和结果写回，因为 CI 不应携带付费云 OCR 凭据。harness 还会断言
+生产镜像中不存在 Tesseract 可执行文件。
 
 `--postgres` 会：
 

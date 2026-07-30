@@ -73,7 +73,6 @@ class AppSettings:
     document_max_spreadsheet_rows_per_sheet: int = 5_000
     document_max_spreadsheet_cells: int = 50_000
     document_office_timeout_seconds: int = 90
-    document_image_ocr_timeout_seconds: int = 60
     mailbox_sync_interval_seconds: float = 600.0
     # The scheduler checks a workspace at this cadence for expired short-lived
     # mail body/attachment cache entries. Candidate resume originals are not
@@ -329,9 +328,6 @@ class AppSettings:
             ),
             document_office_timeout_seconds=int(
                 os.getenv("RESUME_V3_DOCUMENT_OFFICE_TIMEOUT_SECONDS", "90")
-            ),
-            document_image_ocr_timeout_seconds=int(
-                os.getenv("RESUME_V3_DOCUMENT_IMAGE_OCR_TIMEOUT_SECONDS", "60")
             ),
             mailbox_sync_interval_seconds=float(
                 os.getenv("RESUME_V3_MAILBOX_SYNC_INTERVAL_SECONDS", "600")
@@ -645,10 +641,6 @@ class AppSettings:
             raise ValueError(
                 "RESUME_V3_DOCUMENT_OFFICE_TIMEOUT_SECONDS must be at least 1"
             )
-        if self.document_image_ocr_timeout_seconds < 1:
-            raise ValueError(
-                "RESUME_V3_DOCUMENT_IMAGE_OCR_TIMEOUT_SECONDS must be at least 1"
-            )
         if self.mailbox_retention_cleanup_interval_seconds < 60:
             raise ValueError(
                 "RESUME_V3_MAILBOX_RETENTION_CLEANUP_INTERVAL_SECONDS must be at least 60"
@@ -688,15 +680,14 @@ class AppSettings:
                 "RESUME_V3_AI_EXTRACTION_JOB_LEASE_SECONDS must exceed "
                 "DEEPSEEK_TIMEOUT_SECONDS by at least 30 seconds"
             )
-        document_longest_subprocess_seconds = max(
+        document_longest_operation_seconds = max(
             self.document_office_timeout_seconds,
-            self.document_image_ocr_timeout_seconds,
             self.tencent_ocr_timeout_seconds,
         )
-        if self.document_extraction_job_lease_seconds < document_longest_subprocess_seconds + 30:
+        if self.document_extraction_job_lease_seconds < document_longest_operation_seconds + 30:
             raise ValueError(
                 "RESUME_V3_DOCUMENT_EXTRACTION_JOB_LEASE_SECONDS must exceed "
-                "the longest document subprocess timeout by at least 30 seconds"
+                "the longest document operation timeout by at least 30 seconds"
             )
         if self.ai_extraction_worker_poll_seconds <= 0:
             raise ValueError(

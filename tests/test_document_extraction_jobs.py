@@ -7,11 +7,13 @@ from datetime import timedelta
 import zipfile
 
 import pytest
+from fastapi.testclient import TestClient
 from openpyxl import Workbook
 from sqlalchemy import select
 
 from app.config import AppSettings
 from app.database import Database
+from app.main import create_app
 from app.models import (
     Candidate,
     Organization,
@@ -118,11 +120,6 @@ def test_upload_only_persists_original_and_document_job_before_worker_runs(
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ),
         ("candidate.html", b"<html><body>Candidate</body></html>", "text/html"),
-        (
-            "candidate.png",
-            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR",
-            "image/png",
-        ),
     ],
 )
 def test_supported_non_pdf_uploads_only_queue_the_document_worker(
@@ -151,6 +148,53 @@ def test_supported_non_pdf_uploads_only_queue_the_document_worker(
         assert resume.source_blocks == []
         assert document_job is not None
         assert document_job.status == "queued"
+
+
+def test_configured_image_upload_only_queues_the_document_worker(tmp_path) -> None:
+    data_dir = tmp_path / "data"
+    settings = AppSettings(
+        project_dir=tmp_path,
+        data_dir=data_dir,
+        upload_dir=data_dir / "uploads",
+        database_url="sqlite://",
+        allow_unauthenticated=True,
+        min_text_chars_per_page=20,
+        tencent_secret_id="test-secret-id",
+        tencent_secret_key="test-secret-key",
+    )
+    with TestClient(create_app(settings)) as configured_client:
+        response = configured_client.post(
+            "/v1/resumes/upload",
+            files={
+                "file": (
+                    "candidate.png",
+                    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR",
+                    "image/png",
+                )
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        with configured_client.app.state.database.session_factory() as session:
+            job = session.scalar(select(ResumeDocumentExtractionJob))
+            assert job is not None
+            assert job.status == "queued"
+
+
+def test_image_upload_requires_tencent_ocr_configuration(client) -> None:
+    response = client.post(
+        "/v1/resumes/upload",
+        files={
+            "file": (
+                "candidate.png",
+                b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01",
+                "image/png",
+            )
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == "tencent_ocr_not_configured"
 
 
 def test_document_worker_persists_source_blocks_then_queues_ai_job(
@@ -352,7 +396,7 @@ def test_document_worker_enforces_pdf_page_quota_with_explainable_failure(client
     assert detail.json()["quality_flags"] == ["document_page_limit_exceeded"]
 
 
-def test_retryable_document_timeout_retries_then_becomes_actionable(
+def test_retryable_tencent_ocr_failure_retries_then_becomes_actionable(
     client,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -360,7 +404,7 @@ def test_retryable_document_timeout_retries_then_becomes_actionable(
         job_service,
         "extract_document_text",
         lambda *_a, **_k: (_ for _ in ()).throw(
-            DocumentExtractionError("image_ocr_timed_out")
+            DocumentExtractionError("tencent_ocr_request_failed")
         ),
     )
     response = client.post(
@@ -400,7 +444,7 @@ def test_retryable_document_timeout_retries_then_becomes_actionable(
         assert job is not None
         assert job.status == "queued"
         assert job.attempt_count == 1
-        assert job.last_error == "image_ocr_timed_out"
+        assert job.last_error == "tencent_ocr_request_failed"
         job.next_attempt_at = job_service.utcnow() - timedelta(seconds=1)
         session.commit()
 
@@ -412,7 +456,31 @@ def test_retryable_document_timeout_retries_then_becomes_actionable(
     detail = client.get(f"/v1/resumes/{resume_id}")
     assert detail.status_code == 200, detail.text
     assert detail.json()["extraction_status"] == "failed"
-    assert detail.json()["quality_flags"] == ["image_ocr_timed_out"]
+    assert detail.json()["quality_flags"] == ["tencent_ocr_request_failed"]
+
+
+def test_tencent_ocr_rate_limit_uses_a_longer_retry_delay() -> None:
+    assert (
+        job_service._document_retry_delay_seconds(
+            error="tencent_ocr_rate_limited",
+            attempt_count=1,
+        )
+        == 30
+    )
+    assert (
+        job_service._document_retry_delay_seconds(
+            error="tencent_ocr_rate_limited",
+            attempt_count=3,
+        )
+        == 120
+    )
+    assert (
+        job_service._document_retry_delay_seconds(
+            error="tencent_ocr_request_failed",
+            attempt_count=1,
+        )
+        == 1
+    )
 
 
 def test_expired_terminal_document_lease_marks_its_owned_resume_failed(client) -> None:

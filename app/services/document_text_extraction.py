@@ -15,7 +15,11 @@ from app.services.text_extraction import (
     PdfExtractionResult,
     extract_pdf_text,
 )
-from app.services.tencent_ocr_provider import TencentOcrConfig
+from app.services.tencent_ocr_provider import (
+    TencentOcrConfig,
+    TencentOcrError,
+    extract_image_text,
+)
 
 
 class DocumentExtractionError(RuntimeError):
@@ -179,7 +183,6 @@ def extract_document_text(
     max_spreadsheet_rows_per_sheet: int = 5_000,
     max_spreadsheet_cells: int = 50_000,
     office_timeout_seconds: int = 90,
-    image_ocr_timeout_seconds: int = 60,
 ) -> PdfExtractionResult:
     """Normalize one supported original into source-cited page text.
 
@@ -246,7 +249,7 @@ def extract_document_text(
             path,
             minimum=min_text_chars_per_page,
             max_text_chars=max_text_chars,
-            timeout_seconds=image_ocr_timeout_seconds,
+            config=tencent_ocr_config,
         )
     raise DocumentExtractionError("unsupported_document_type")
 
@@ -485,24 +488,18 @@ def _extract_image(
     *,
     minimum: int,
     max_text_chars: int,
-    timeout_seconds: int,
+    config: TencentOcrConfig | None,
 ) -> PdfExtractionResult:
+    if config is None:
+        raise DocumentExtractionError("tencent_ocr_not_configured")
     try:
-        completed = subprocess.run(
-            ["tesseract", str(path), "stdout", "-l", "chi_sim+eng"],
-            check=True,
-            capture_output=True,
-            timeout=timeout_seconds,
-        )
-        text = completed.stdout.decode("utf-8", errors="replace")
-    except subprocess.TimeoutExpired as exc:
-        raise DocumentExtractionError("image_ocr_timed_out") from exc
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise DocumentExtractionError("image_ocr_failed") from exc
+        text = extract_image_text(path=path, config=config)
+    except TencentOcrError as exc:
+        raise DocumentExtractionError(str(exc)) from exc
     return _result(
         [text],
         minimum=minimum,
-        parser="tesseract",
+        parser="tencent-ocr",
         max_pages=1,
         max_text_chars=max_text_chars,
     )

@@ -2,6 +2,7 @@ import type {
   AuthLoginInput,
   AuthRegistrationInput,
   AuthSession,
+  AuthWorkspaceMembershipList,
   CandidateCreateInput,
   CandidateCreated,
   CandidateDataAuditEventList,
@@ -304,12 +305,21 @@ export function createApiClient(options: ApiClientOptions = {}) {
       return request<AuthSession>("/auth/session");
     },
 
-    login(input: AuthLoginInput | string): Promise<AuthSession> {
+    listAuthWorkspaces(): Promise<AuthWorkspaceMembershipList> {
+      return request<AuthWorkspaceMembershipList>("/auth/workspaces");
+    },
+
+    switchAuthWorkspace(membershipId: string): Promise<AuthSession> {
+      return request<AuthSession>(
+        `/auth/workspaces/${resourcePath(membershipId)}/switch`,
+        { method: "POST" },
+      );
+    },
+
+    login(input: AuthLoginInput): Promise<AuthSession> {
       return request<AuthSession>("/auth/login", {
         method: "POST",
-        // Keep the legacy password-only call shape available until the
-        // server-side legacy workspace migration is complete.
-        body: typeof input === "string" ? { password: input } : input,
+        body: input,
       });
     },
 

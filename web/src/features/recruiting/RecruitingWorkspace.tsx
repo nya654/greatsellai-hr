@@ -111,8 +111,12 @@ function applicationTransitionLabel(transition: JobApplicationStageTransition): 
 
 export interface RecruitingWorkspaceProps {
   formatError: (error: unknown) => string;
+  initialJobId?: string;
   notify: (kind: ToastKind, message: string) => void;
   onCreateJob: () => void;
+  onInvalidJobSelection?: () => void;
+  onOpenCandidate?: (application: JobApplication) => void;
+  onJobSelectionChange?: (jobId: string | null) => void;
 }
 
 /**
@@ -122,13 +126,17 @@ export interface RecruitingWorkspaceProps {
  */
 export function RecruitingWorkspace({
   formatError,
+  initialJobId,
   notify,
   onCreateJob,
+  onInvalidJobSelection,
+  onOpenCandidate,
+  onJobSelectionChange,
 }: RecruitingWorkspaceProps) {
   const [jobs, setJobs] = useState<RecruitingJob[]>([]);
   const [workflows, setWorkflows] = useState<RecruitingWorkflow[]>([]);
   const [members, setMembers] = useState<RecruitingMember[]>([]);
-  const [selectedJobId, setSelectedJobId] = useState("");
+  const [selectedJobId, setSelectedJobId] = useState(initialJobId ?? "");
   const [selectedJob, setSelectedJob] = useState<RecruitingJob | null>(null);
   const [applications, setApplications] = useState<JobApplication[]>([]);
   const [workspaceLoading, setWorkspaceLoading] = useState(true);
@@ -156,6 +164,11 @@ export function RecruitingWorkspace({
     hc_total: "1",
     recruiting_workflow_version_id: "",
   });
+
+  const selectJob = useCallback((jobId: string) => {
+    setSelectedJobId(jobId);
+    onJobSelectionChange?.(jobId || null);
+  }, [onJobSelectionChange]);
 
   const workflowReferences = useMemo<WorkflowVersionReference[]>(
     () => workflows.flatMap((workflow) =>
@@ -186,6 +199,10 @@ export function RecruitingWorkspace({
       setJobs(nextJobs.items);
       setWorkflows(nextWorkflows);
       setMembers(nextMembers);
+      if (initialJobId && !nextJobs.items.some((item) => item.job_id === initialJobId)) {
+        notify("error", "该招聘岗位不存在或无权访问，已回到可访问的岗位。");
+        onInvalidJobSelection?.();
+      }
       setSelectedJobId((current) =>
         nextJobs.items.some((item) => item.job_id === current)
           ? current
@@ -197,7 +214,7 @@ export function RecruitingWorkspace({
     } finally {
       setWorkspaceLoading(false);
     }
-  }, [formatError]);
+  }, [formatError, initialJobId, notify, onInvalidJobSelection]);
 
   const loadSelectedJob = useCallback(async (jobId: string) => {
     if (!jobId) {
@@ -227,6 +244,19 @@ export function RecruitingWorkspace({
   useEffect(() => {
     void loadSelectedJob(selectedJobId);
   }, [loadSelectedJob, selectedJobId]);
+
+  useEffect(() => {
+    if (initialJobId) {
+      if (initialJobId === selectedJobId) return;
+      if (!jobs.some((job) => job.job_id === initialJobId)) return;
+      setSelectedJobId(initialJobId);
+      return;
+    }
+    const defaultJobId = jobs[0]?.job_id ?? "";
+    if (defaultJobId && defaultJobId !== selectedJobId) {
+      setSelectedJobId(defaultJobId);
+    }
+  }, [initialJobId, jobs, selectedJobId]);
 
   useEffect(() => {
     if (!selectedJob) return;
@@ -538,7 +568,7 @@ export function RecruitingWorkspace({
     return (
       <div className="page-frame recruiting-workspace">
         <div className="recruiting-loading" role="status">
-          <i className="spinner" />正在加载职位管理
+          <i className="spinner" />正在加载招聘流程
         </div>
       </div>
     );
@@ -550,7 +580,7 @@ export function RecruitingWorkspace({
         <section className="empty-state recruiting-empty-state" role="alert">
           <div className="empty-state-inner">
             <span className="empty-glyph"><Icon name="briefcase" size={23} /></span>
-            <h1>无法加载职位管理</h1>
+            <h1>无法加载招聘流程</h1>
             <p>{workspaceError}</p>
             <button className="button button-primary" onClick={() => void loadWorkspace()} type="button">
               <Icon name="refresh" size={16} />重新加载
@@ -565,7 +595,7 @@ export function RecruitingWorkspace({
     return (
       <div className="page-frame recruiting-workspace">
         <header className="page-heading recruiting-page-heading">
-          <div><h1>职位管理</h1></div>
+          <div><h1>招聘流程</h1></div>
         </header>
         <section className="empty-state recruiting-empty-state">
           <div className="empty-state-inner">
@@ -585,7 +615,8 @@ export function RecruitingWorkspace({
     <div className="page-frame recruiting-workspace">
       <header className="page-heading recruiting-page-heading">
         <div>
-          <h1>职位管理</h1>
+          <h1>招聘流程</h1>
+          <p>查看岗位看板、人工流转和可追溯的阶段历史。</p>
         </div>
         <button className="button button-primary" onClick={onCreateJob} type="button">
           <Icon name="plus" size={16} />新建岗位 JD
@@ -606,7 +637,7 @@ export function RecruitingWorkspace({
                   aria-current={isSelected ? "page" : undefined}
                   className={`recruiting-job-item${isSelected ? " is-selected" : ""}`}
                   key={job.job_id}
-                  onClick={() => setSelectedJobId(job.job_id)}
+                  onClick={() => selectJob(job.job_id)}
                   type="button"
                 >
                   <span className="recruiting-job-item-title">{job.title}</span>
@@ -686,6 +717,7 @@ export function RecruitingWorkspace({
                               ...current,
                               [application.application_id]: note,
                             }))}
+                            onOpenCandidate={onOpenCandidate}
                           />
                         )) : (
                           <p className="recruiting-stage-empty">暂无候选人</p>
@@ -905,6 +937,7 @@ function ApplicationCard({
   onAction,
   onHistory,
   onNoteChange,
+  onOpenCandidate,
 }: {
   activeStages: RecruitingWorkflowStage[];
   application: JobApplication;
@@ -916,6 +949,7 @@ function ApplicationCard({
   onAction: (application: JobApplication, action: ApplicationAction) => void;
   onHistory: () => void;
   onNoteChange: (note: string) => void;
+  onOpenCandidate?: (application: JobApplication) => void;
 }) {
   const currentActiveIndex = activeStages.findIndex(
     (stage) => stage.stage_id === application.current_stage_id,
@@ -937,6 +971,15 @@ function ApplicationCard({
         <span>流程 v{application.workflow_version_number}</span>
         <span>简历事实 v{application.resume_facts_version}</span>
       </div>
+      {onOpenCandidate && (
+        <button
+          className="text-button recruiting-candidate-open"
+          onClick={() => onOpenCandidate(application)}
+          type="button"
+        >
+          <Icon name="document" size={14} />查看候选人
+        </button>
+      )}
       {isActive && (
         <>
           <input

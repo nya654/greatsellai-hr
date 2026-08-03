@@ -723,6 +723,7 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
         loading={authLoading}
         session={authSession}
         onComplete={completeEmailVerification}
+        onExit={logout}
         onRefreshSession={refreshAuthSession}
         onResend={resendEmailVerification}
         workspaceHref={workspaceHref}

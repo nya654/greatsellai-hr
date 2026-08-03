@@ -7,7 +7,6 @@ import {
   useState,
 } from "react";
 import { isApiError } from "./api";
-import { IcpFilingLink } from "./IcpFilingLink";
 import {
   resumeExtractionUserMessage,
   SERVICE_UNAVAILABLE_RETRY_MESSAGE,
@@ -852,9 +851,6 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
             onUploadedResume={openUploadedResume}
           />
         </main>
-        <footer className="workspace-compliance-footer">
-          <IcpFilingLink />
-        </footer>
       </div>
 
       <div

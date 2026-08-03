@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.services import text_extraction
 from app.services.tencent_ocr_provider import TencentOcrConfig, TencentOcrError
 
@@ -58,8 +60,49 @@ def test_sparse_native_text_is_replaced_by_tencent_ocr(monkeypatch, tmp_path) ->
     assert result.pages[0].text.startswith("OCR recovered")
     assert result.parsed_page_count == 1
     assert "tencent-ocr" in result.parser_version
+    assert result.ocr_attempted_page_count == 1
+    assert result.ocr_successful_page_count == 1
+    assert result.ocr_selected_page_count == 1
+    assert result.ocr_failed_page_count == 0
     assert len(calls) == 1
     assert calls[0]["page_no"] == 1
+
+
+def test_late_text_limit_preserves_ocr_usage_counts(monkeypatch, tmp_path) -> None:
+    """A rejected PDF must not make a real OCR request disappear from metrics."""
+
+    monkeypatch.setattr(
+        text_extraction,
+        "PdfReader",
+        lambda path: _FakeReader("short"),
+    )
+    monkeypatch.setattr(
+        text_extraction,
+        "_extract_pymupdf_page_texts",
+        lambda path, pages: {},
+    )
+    monkeypatch.setattr(
+        text_extraction,
+        "extract_pdf_page_text",
+        lambda **kwargs: "Recovered text " * 20,
+    )
+
+    with pytest.raises(text_extraction.PdfExtractionError) as raised:
+        text_extraction.extract_pdf_text(
+            tmp_path / "resume.pdf",
+            min_text_chars_per_page=1,
+            ocr_sparse_text_chars_per_page=100,
+            tencent_ocr_config=_ocr_config(),
+            max_text_chars=20,
+        )
+
+    error = raised.value
+    assert str(error) == "document_text_limit_exceeded"
+    assert error.source_page_count == 1
+    assert error.ocr_attempted_page_count == 1
+    assert error.ocr_successful_page_count == 1
+    assert error.ocr_selected_page_count == 1
+    assert error.ocr_failed_page_count == 0
 
 
 def test_better_pymupdf_text_avoids_an_ocr_request(monkeypatch, tmp_path) -> None:
@@ -90,6 +133,7 @@ def test_better_pymupdf_text_avoids_an_ocr_request(monkeypatch, tmp_path) -> Non
     assert result.pages[0].text.startswith("PyMuPDF recovered")
     assert "pymupdf" in result.parser_version
     assert "tencent-ocr" not in result.parser_version
+    assert result.ocr_attempted_page_count == 0
 
 
 def test_failed_ocr_does_not_silently_accept_sparse_native_text(monkeypatch, tmp_path) -> None:
@@ -119,6 +163,10 @@ def test_failed_ocr_does_not_silently_accept_sparse_native_text(monkeypatch, tmp
     assert result.status == "needs_review"
     assert result.pages[0].text == "short"
     assert "page_1_tencent_ocr_failed" in result.quality_flags
+    assert result.ocr_attempted_page_count == 1
+    assert result.ocr_successful_page_count == 0
+    assert result.ocr_selected_page_count == 0
+    assert result.ocr_failed_page_count == 1
 
 
 def test_unicode_suspect_pypdf_text_uses_pymupdf_before_ocr(
@@ -241,7 +289,7 @@ def test_unrecovered_unicode_suspect_runs_ocr_as_last_fallback(
     assert "tencent-ocr" in result.parser_version
 
 
-def test_unrecovered_unicode_suspect_has_explainable_quality_flag(
+def test_unrecovered_unicode_suspect_below_ten_percent_remains_eligible(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -263,7 +311,63 @@ def test_unrecovered_unicode_suspect_has_explainable_quality_flag(
         ocr_sparse_text_chars_per_page=100,
     )
 
-    assert result.status == "needs_review"
+    assert result.status == "text_ready"
     assert result.pages[0].text == broken_pypdf_text
-    assert "page_1_source_text_unreliable" in result.quality_flags
+    assert "page_1_source_text_unreliable" not in result.quality_flags
     assert "pymupdf" not in result.parser_version
+
+
+def test_unrecovered_unicode_damage_at_ten_percent_blocks_ai_conclusions(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    broken_pypdf_text = "Candidate experience " * 20 + "\u2f64" * 100
+    monkeypatch.setattr(
+        text_extraction,
+        "PdfReader",
+        lambda path: _FakeReader(broken_pypdf_text),
+    )
+    monkeypatch.setattr(
+        text_extraction,
+        "_extract_pymupdf_page_texts",
+        lambda path, pages: {},
+    )
+
+    result = text_extraction.extract_pdf_text(
+        tmp_path / "resume.pdf",
+        min_text_chars_per_page=20,
+        ocr_sparse_text_chars_per_page=100,
+    )
+
+    assert result.status == "needs_review"
+    assert "page_1_source_text_unreliable" in result.quality_flags
+
+
+def test_symbol_heavy_text_does_not_trigger_unicode_repair_or_failure(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    text_with_layout_symbols = "Candidate experience and skills " * 30 + "★" * 90
+    monkeypatch.setattr(
+        text_extraction,
+        "PdfReader",
+        lambda path: _FakeReader(text_with_layout_symbols),
+    )
+
+    def should_not_call_pymupdf(path, pages):
+        raise AssertionError("ordinary layout symbols must not alone trigger repair")
+
+    monkeypatch.setattr(
+        text_extraction,
+        "_extract_pymupdf_page_texts",
+        should_not_call_pymupdf,
+    )
+
+    result = text_extraction.extract_pdf_text(
+        tmp_path / "resume.pdf",
+        min_text_chars_per_page=20,
+        ocr_sparse_text_chars_per_page=100,
+    )
+
+    assert result.status == "text_ready"
+    assert "page_1_source_text_unreliable" not in result.quality_flags

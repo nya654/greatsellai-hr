@@ -149,11 +149,15 @@ docker_config="$(mktemp -d "${TMPDIR:-/tmp}/greatsell-tcr.XXXXXXXX")" || die "Un
 [[ "$docker_config" == "${TMPDIR:-/tmp}"/greatsell-tcr.* ]] || die "Refusing unexpected temporary Docker credential directory."
 chmod 700 "$docker_config"
 cleanup_docker_credentials() {
-  sudo -n env DOCKER_CONFIG="$docker_config" docker logout "$registry" >/dev/null 2>&1 || true
   rm -rf -- "$docker_config"
 }
 trap cleanup_docker_credentials EXIT
-printf '%s\n' "$registry_password" | sudo -n env DOCKER_CONFIG="$docker_config" docker login "$registry" --username "$username" --password-stdin >/dev/null
+registry_auth="$(printf '%s' "$username:$registry_password" | base64 | tr -d '\n')"
+[[ -n "$registry_auth" ]] || die "Unable to encode temporary Docker registry credentials."
+umask 077
+printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$registry" "$registry_auth" > "$docker_config/config.json"
+chmod 600 "$docker_config/config.json"
+unset registry_auth
 unset registry_password
 
 platform="$(sudo -n docker version --format '{{.Server.Os}}/{{.Server.Arch}}')" || die "Unable to inspect Docker platform."

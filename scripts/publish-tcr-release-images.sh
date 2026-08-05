@@ -16,7 +16,8 @@ Options:
   --ci-run-attempt <number>        Required CI workflow run attempt
   --artifact-dir <path>            Required destination for small signed-by-SHA metadata
 
-The caller must already have authenticated Docker to the supplied registry.
+The caller must provide Docker with valid credentials for the supplied registry
+(for example through a short-lived DOCKER_CONFIG directory).
 The command verifies the locally built OCI labels, pushes unique CI tags, then
 records each exact registry manifest digest and image config identity. It never
 reads a registry password or writes a deployment environment file.

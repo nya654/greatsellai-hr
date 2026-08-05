@@ -32,6 +32,7 @@
 ## 故障排查
 
 - CI 中提示缺少 `TCR_*`：检查它们是否为**仓库级** Actions variable/secret，名称完全一致。
-- `docker login` 或 `docker pull` 被拒绝：确认实例地域是广州、仓库与命名空间名称准确，并重新初始化或更新 TCR Docker 登录密码。
+- CI 报 `no scope specify`：发布链路会写入临时 `DOCKER_CONFIG`，让 Docker 为实际仓库请求带 scope 的 token；确认 `TCR_USERNAME` 和 `TCR_PASSWORD` 是个人版 TCR 登录凭据，而不是腾讯云 API 密钥。
+- `docker pull` 被拒绝：确认实例地域是广州、仓库与命名空间名称准确，并重新初始化或更新 TCR Docker 登录密码。
 - TCR 中没有对应仓库：创建私有 `hr-api`、`hr-caddy` 仓库后重新运行该次 main CI；不要在服务器本地重新 build 来补救。
 - metadata 或 digest 不一致：流程会安全失败。修正配置后从 main CI 重新走 staging 验收，不应手动替换镜像标签。

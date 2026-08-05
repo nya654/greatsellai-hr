@@ -191,6 +191,9 @@ def test_public_repository_routes_ci_and_release_jobs_to_hosted_runners() -> Non
     assert "github.event_name == 'push' && github.ref == 'refs/heads/main'" in production_images
     assert "runs-on: [self-hosted, Linux, X64, greatsell-ci]" in production_images
     assert "pull_request" not in production_images
+    assert "--build-arg DEBIAN_MIRROR=mirrors.cloud.tencent.com" in production_images
+    assert "--build-arg PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple" in production_images
+    assert "--build-arg NPM_REGISTRY=https://mirrors.cloud.tencent.com/npm/" in production_images
 
 
 def test_public_repository_routes_all_release_orchestration_to_hosted_runners() -> None:

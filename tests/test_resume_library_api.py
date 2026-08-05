@@ -64,6 +64,7 @@ def test_resume_library_returns_current_ai_summary_preview_and_score(
         "ingestion_source_type",
         "source_mailbox_config_id",
         "source_mailbox_label",
+        "source_tags",
         "quality_flags",
         "graduation_month",
         "employment_months",
@@ -93,6 +94,7 @@ def test_resume_library_returns_current_ai_summary_preview_and_score(
     assert item["ingestion_source_type"] == "manual_upload"
     assert item["source_mailbox_config_id"] is None
     assert item["source_mailbox_label"] is None
+    assert item["source_tags"] == []
     assert item["quality_flags"] == []
     assert item["graduation_month"] is None
     assert item["employment_months"] == 0

@@ -29,6 +29,12 @@ def test_production_is_a_manual_promotion_of_a_completed_staging_candidate() -> 
     assert "needs: verify-staging" in workflow
     assert "environment:\n      name: staging" in workflow
     assert "environment:\n      name: production" in workflow
+    promote = re.search(
+        r"(?ms)^  promote:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)",
+        workflow,
+    )
+    assert promote is not None
+    assert "timeout-minutes: 90" in promote.group("body")
     assert "actions: read" in workflow
     assert "scripts/verify-staging-release.sh" in workflow
     assert "scripts/load-verified-release-images.sh" in workflow

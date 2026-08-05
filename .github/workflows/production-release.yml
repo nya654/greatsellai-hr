@@ -105,7 +105,10 @@ jobs:
     name: Promote the completed staging image to production
     needs: verify-staging
     runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted", "Linux", "X64", "greatsell-ci"]') || 'ubuntu-latest' }}
-    timeout-minutes: 45
+    # A CI image archive can exceed 400 MB.  Keep enough time for the exact
+    # archive to cross a low-bandwidth production link and for Docker to load
+    # it before the release runner tears down the SSH stream.
+    timeout-minutes: 90
     # Do not acquire the deployment lock while this job is waiting for an
     # Environment reviewer; staging must remain available for newer main.
     concurrency:

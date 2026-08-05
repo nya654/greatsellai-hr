@@ -2134,6 +2134,8 @@ test.describe("招聘工作台关键路径", () => {
 
   test("招聘助手将简历依据和未确认状态以招聘语言展示", async ({ page }) => {
     await registerAndVerify(page, "agent-evidence");
+    const candidateScopeRequests: Array<Record<string, unknown>> = [];
+    const contextClearRequests: Array<Record<string, unknown>> = [];
     await page.route("**/v1/recruiting-agent/turns", async (route) => {
       await route.fulfill({
         contentType: "application/json",
@@ -2145,6 +2147,8 @@ test.describe("招聘工作台关键路径", () => {
             candidate_count: 1,
             active_job_version_id: null,
             active_job_title: null,
+            active_talent_profile: null,
+            input_references: [],
             expires_at: "2026-07-25T10:00:00Z",
           },
           message: "找到 1 位简历明确提到英语四级的候选人。",
@@ -2183,6 +2187,50 @@ test.describe("招聘工作台关键路径", () => {
         }),
       });
     });
+    await page.route("**/v1/recruiting-agent/conversations/candidate-scope", async (route) => {
+      candidateScopeRequests.push(route.request().postDataJSON() as Record<string, unknown>);
+      await route.fulfill({
+        json: {
+          conversation_id: "e2e-agent-evidence-conversation",
+          context_version: 3,
+          active_context: {
+            candidate_set_source: "candidate",
+            candidate_count: 1,
+            active_job_version_id: null,
+            active_job_title: null,
+            active_talent_profile: null,
+            input_references: [
+              {
+                reference_id: "candidate-scope-e2e",
+                kind: "candidate",
+                label: "候选人",
+              },
+            ],
+            expires_at: "2026-07-25T10:00:00Z",
+          },
+          chat_history: [],
+        },
+      });
+    });
+    await page.route("**/v1/recruiting-agent/conversations/context/clear", async (route) => {
+      contextClearRequests.push(route.request().postDataJSON() as Record<string, unknown>);
+      await route.fulfill({
+        json: {
+          conversation_id: "e2e-agent-evidence-conversation",
+          context_version: 4,
+          active_context: {
+            candidate_set_source: null,
+            candidate_count: 0,
+            active_job_version_id: null,
+            active_job_title: null,
+            active_talent_profile: null,
+            input_references: [],
+            expires_at: "2026-07-25T10:00:00Z",
+          },
+          chat_history: [],
+        },
+      });
+    });
 
     await page.getByRole("button", { name: "招聘助手", exact: true }).click();
     const dialog = recruitingAgentPage(page);
@@ -2200,6 +2248,39 @@ test.describe("招聘工作台关键路径", () => {
     await expect(
       dialog.getByRole("button", { name: "查看候选人甲详情" }),
     ).toBeVisible();
+    const referenceMenu = dialog.getByRole("listbox", { name: "选择要引用的资料" });
+    await dialog.getByRole("button", { name: "添加引用" }).click();
+    await expect(referenceMenu.getByRole("option", { name: /候选人甲/ })).toBeVisible();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect.poll(() => page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    )).toBe(true);
+    const referenceMenuBox = await referenceMenu.boundingBox();
+    expect(referenceMenuBox).not.toBeNull();
+    if (referenceMenuBox) {
+      expect(referenceMenuBox.x).toBeGreaterThanOrEqual(0);
+      expect(referenceMenuBox.x + referenceMenuBox.width).toBeLessThanOrEqual(390);
+    }
+    await page.keyboard.press("Escape");
+    await expect(referenceMenu).toHaveCount(0);
+    await candidateCard.getByRole("button", { name: "引用" }).click();
+    await expect.poll(() => candidateScopeRequests.length).toBe(1);
+    expect(candidateScopeRequests[0]).toMatchObject({
+      candidate_id: "candidate-e2e-evidence",
+      conversation_id: "e2e-agent-evidence-conversation",
+      context_version: 2,
+    });
+    expect(candidateScopeRequests[0]).not.toHaveProperty("resume_id");
+    expect(candidateScopeRequests[0]).not.toHaveProperty("candidate_detail");
+    await expect(dialog.getByText("候选人", { exact: true })).toBeVisible();
+    await dialog.getByRole("button", { name: "移除引用：候选人" }).click();
+    await expect.poll(() => contextClearRequests.length).toBe(1);
+    expect(contextClearRequests[0]).toMatchObject({
+      target: "candidate_scope",
+      conversation_id: "e2e-agent-evidence-conversation",
+      context_version: 3,
+    });
+    await expect(dialog.getByText("候选人", { exact: true })).toHaveCount(0);
   });
 
   test("招聘助手恢复安全工作范围，并在后续提问携带最新会话版本", async ({ page }) => {
@@ -2276,7 +2357,7 @@ test.describe("招聘工作台关键路径", () => {
     const dialog = recruitingAgentPage(page);
     await dialog.getByLabel("向招聘助手提问").fill("先筛选符合条件的人");
     await dialog.getByRole("button", { name: "发送提问" }).click();
-    await expect(dialog.getByText("助手筛选结果 · 2 位候选人")).toBeVisible();
+    await expect(dialog.getByText("助手筛选结果 · 2 人")).toBeVisible();
 
     await dialog.getByLabel("向招聘助手提问").fill("在刚才这些人中继续比较");
     await dialog.getByRole("button", { name: "发送提问" }).click();
@@ -2292,7 +2373,7 @@ test.describe("招聘工作台关键路径", () => {
     await page.reload();
     await page.getByRole("button", { name: "招聘助手", exact: true }).click();
     const reloadedDialog = recruitingAgentPage(page);
-    await expect(reloadedDialog.getByText("助手筛选结果 · 2 位候选人")).toBeVisible();
+    await expect(reloadedDialog.getByText("助手筛选结果 · 2 人")).toBeVisible();
     await expect(reloadedDialog.getByText("先筛选符合条件的人")).toBeVisible();
     await expect(reloadedDialog.getByText("已保存当前筛选范围。")).toBeVisible();
     await expect(reloadedDialog.getByText("在刚才这些人中继续比较")).toBeVisible();
@@ -2307,7 +2388,7 @@ test.describe("招聘工作台关键路径", () => {
     await reloadedDialog.getByRole("button", { name: "新对话" }).click();
     await expect(
       reloadedDialog.getByText(
-        "直接描述你想找的人，我会先整理条件，确认后才开始找人。",
+        "基于当前授权范围筛选、比较、核验。输入需求，或 @ 引用 JD、筛选范围、人才画像。",
         { exact: true },
       ),
     ).toBeVisible();

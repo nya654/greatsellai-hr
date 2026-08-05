@@ -20,6 +20,7 @@ from app.config import AppSettings
 from app.database import Database
 from app.filter_options import language_credential_label
 from app.models import (
+    Candidate,
     JobMatchBatchItem,
     RecruitingAgentCandidateSet,
     RecruitingAgentCandidateSetItem,
@@ -37,10 +38,13 @@ from app.schemas import (
     RecruitingAgentActiveContext,
     RecruitingAgentAction,
     RecruitingAgentCandidate,
+    RecruitingAgentCandidateScopeRequest,
     RecruitingAgentContextBindRequest,
+    RecruitingAgentContextClearRequest,
     RecruitingAgentConversationResponse,
     RecruitingAgentConversationTurnResponse,
     RecruitingAgentFilterScopeRequest,
+    RecruitingAgentInputReference,
     RecruitingAgentRequest,
     RecruitingAgentResponse,
     RecruitingAgentSearchSummary,
@@ -209,6 +213,7 @@ _MAX_PERSISTED_ASSISTANT_MESSAGE_CHARS = 8_000
 _MAX_PERSISTED_TOOL_TRACE_ITEMS = 12
 _MAX_PERSISTED_TOOL_TRACE_TOOL_CHARS = 120
 _MAX_PERSISTED_TOOL_TRACE_SUMMARY_CHARS = 1_000
+_CONTEXT_SOURCE_CANDIDATE = "candidate"
 _CONTEXT_SOURCE_AGENT_SEARCH = "agent_search"
 _CONTEXT_SOURCE_CANDIDATE_FILTER = "candidate_filter"
 _CONTEXT_SOURCE_TALENT_SEARCH_RUN = "talent_search_run"
@@ -1135,12 +1140,13 @@ def _preserve_candidate_filter_scope(
     *,
     conversation: RecruitingAgentConversation,
 ) -> bool:
-    """Keep only an explicit sidebar scope while Agent drafts/refines a profile."""
+    """Keep an explicitly bound filter or one-candidate scope with a profile."""
 
     candidate_set = _active_candidate_set(session, conversation=conversation)
     return (
         candidate_set is not None
-        and candidate_set.source_kind == _CONTEXT_SOURCE_CANDIDATE_FILTER
+        and candidate_set.source_kind
+        in {_CONTEXT_SOURCE_CANDIDATE_FILTER, _CONTEXT_SOURCE_CANDIDATE}
     )
 
 
@@ -1222,9 +1228,9 @@ def _candidate_set_resume_ids(
     if not stored_resume_ids:
         return []
     # Candidate-set items intentionally carry only opaque IDs and have no
-    # Resume FK. Re-check ordinary tenant and lifecycle visibility whenever
-    # the scope is read, so a deleted, archived, or no-longer-ready resume
-    # cannot inflate the displayed count or receive a new AI match task.
+    # Resume FK. Re-check ordinary tenant/lifecycle visibility whenever the
+    # scope is read, so a deleted, archived, or no-longer-ready resume cannot
+    # inflate the count or receive a new AI match task.
     visible_resume_ids = set(
         session.scalars(
             select(Resume.id).where(
@@ -1235,6 +1241,57 @@ def _candidate_set_resume_ids(
         ).all()
     )
     return [resume_id for resume_id in stored_resume_ids if resume_id in visible_resume_ids]
+
+
+def _active_context_input_references(
+    *,
+    candidate_set: RecruitingAgentCandidateSet | None,
+    job: ResolvedJob | None,
+    active_profile: TalentSearchProfileResponse | None,
+) -> list[RecruitingAgentInputReference]:
+    """Project private work state into generic, PII-free input chips.
+
+    The browser uses these only to render the state that the server has
+    already bound to this conversation.  Candidate and resume identifiers
+    stay inside the candidate-set tables; labels deliberately avoid names,
+    raw JD/profile text, and any source excerpts.
+    """
+
+    references: list[RecruitingAgentInputReference] = []
+    if candidate_set is not None:
+        if candidate_set.source_kind == _CONTEXT_SOURCE_CANDIDATE:
+            references.append(
+                RecruitingAgentInputReference(
+                    reference_id=candidate_set.id,
+                    kind="candidate",
+                    label="候选人",
+                )
+            )
+        elif candidate_set.source_kind == _CONTEXT_SOURCE_CANDIDATE_FILTER:
+            references.append(
+                RecruitingAgentInputReference(
+                    reference_id=candidate_set.id,
+                    kind="filter",
+                    label="当前筛选",
+                )
+            )
+    if job is not None:
+        references.append(
+            RecruitingAgentInputReference(
+                reference_id=job.job_version_id,
+                kind="job",
+                label="关联 JD",
+            )
+        )
+    if active_profile is not None:
+        references.append(
+            RecruitingAgentInputReference(
+                reference_id=active_profile.current_revision.revision_id,
+                kind="talent_profile",
+                label="人才画像",
+            )
+        )
+    return references
 
 
 def _conversation_context(
@@ -1267,6 +1324,11 @@ def _conversation_context(
         ),
         active_job_title=(saved_job.title if saved_job is not None else None),
         active_talent_profile=_active_talent_profile_summary(active_profile),
+        input_references=_active_context_input_references(
+            candidate_set=candidate_set,
+            job=saved_job,
+            active_profile=active_profile,
+        ),
         expires_at=conversation.expires_at,
     )
 
@@ -1609,6 +1671,30 @@ def _set_explicit_conversation_job(
         _advance_conversation_context(conversation)
 
 
+def _resolve_explicit_context_job(
+    session: Session,
+    *,
+    requested_job_version_id: str | None,
+) -> ResolvedJob | None:
+    """Resolve an explicitly selected JD or fail closed.
+
+    A context-binding route is an authorization boundary, unlike ordinary
+    Agent fallback behavior that may choose the workspace default JD.  A
+    non-empty unknown, foreign, archived, or unusable ID must therefore not
+    clear a saved JD or become a resource-existence oracle.
+    """
+
+    normalized_job_version_id = (requested_job_version_id or "").strip()
+    if not normalized_job_version_id:
+        return None
+    job = _resolve_job(session, normalized_job_version_id)
+    if job is None:
+        raise RecruitingAgentContextReferenceNotFoundError(
+            "agent_context_reference_not_found"
+        )
+    return job
+
+
 def bind_recruiting_agent_context(
     session: Session,
     *,
@@ -1630,29 +1716,30 @@ def bind_recruiting_agent_context(
         actor_user_id=actor_user_id,
         require_context_version=True,
     )
-    requested_job_version_id = (payload.job_version_id or "").strip()
-    job = (
-        _resolve_job(session, requested_job_version_id)
-        if requested_job_version_id
-        else None
-    )
-    _set_explicit_conversation_job(conversation, job=job)
-    if payload.context_ref.kind == "talent_search_run":
-        assert payload.context_ref.run_id is not None
-        _bind_talent_search_run_context(
+    job: ResolvedJob | None = None
+    if "job_version_id" in payload.model_fields_set:
+        job = _resolve_explicit_context_job(
             session,
-            conversation=conversation,
-            run_id=payload.context_ref.run_id,
+            requested_job_version_id=payload.job_version_id,
         )
-    else:
-        assert payload.context_ref.profile_id is not None
-        assert payload.context_ref.revision_id is not None
-        _bind_talent_search_profile_context(
-            session,
-            conversation=conversation,
-            profile_id=payload.context_ref.profile_id,
-            revision_id=payload.context_ref.revision_id,
-        )
+        _set_explicit_conversation_job(conversation, job=job)
+    if payload.context_ref is not None:
+        if payload.context_ref.kind == "talent_search_run":
+            assert payload.context_ref.run_id is not None
+            _bind_talent_search_run_context(
+                session,
+                conversation=conversation,
+                run_id=payload.context_ref.run_id,
+            )
+        else:
+            assert payload.context_ref.profile_id is not None
+            assert payload.context_ref.revision_id is not None
+            _bind_talent_search_profile_context(
+                session,
+                conversation=conversation,
+                profile_id=payload.context_ref.profile_id,
+                revision_id=payload.context_ref.revision_id,
+            )
     _touch_conversation(session, conversation=conversation)
     return _conversation_response(
         session,
@@ -1718,6 +1805,118 @@ def _replace_active_candidate_set(
         session.delete(previous_candidate_set)
     _advance_conversation_context(conversation)
     return candidate_set
+
+
+def _current_candidate_scope_resume_id(
+    session: Session,
+    *,
+    candidate_id: str,
+) -> str:
+    """Resolve one current, eligible resume without exposing candidate data.
+
+    Tenant and candidate-lifecycle criteria are installed on every ordinary
+    session query.  The explicit active/ready/quality checks align a direct
+    reference with the existing screening and Agent-scope eligibility rules.
+    """
+
+    normalized_candidate_id = candidate_id.strip()
+    if not normalized_candidate_id:
+        raise RecruitingAgentContextReferenceNotFoundError(
+            "agent_context_reference_not_found"
+        )
+    candidate = session.scalar(
+        select(Candidate)
+        .where(Candidate.id == normalized_candidate_id)
+        .with_for_update()
+    )
+    if candidate is None:
+        raise RecruitingAgentContextReferenceNotFoundError(
+            "agent_context_reference_not_found"
+        )
+    resume = session.scalar(
+        select(Resume)
+        .join(Candidate, Candidate.id == Resume.candidate_id)
+        .where(
+            Resume.candidate_id == candidate.id,
+            Resume.is_active.is_(True),
+            Resume.extraction_status == "ready",
+        )
+        .order_by(Resume.updated_at.desc(), Resume.id.asc())
+        .with_for_update()
+    )
+    if resume is None or not is_resume_screening_eligible(resume):
+        # The public route deliberately uses the same non-oracular 404 for a
+        # foreign, deleted, archived, not-yet-ready, or unknown candidate.
+        raise RecruitingAgentContextReferenceNotFoundError(
+            "agent_context_reference_not_found"
+        )
+    return resume.id
+
+
+def bind_recruiting_agent_candidate_scope(
+    session: Session,
+    *,
+    payload: RecruitingAgentCandidateScopeRequest,
+    actor_user_id: str,
+) -> RecruitingAgentConversationResponse:
+    """Attach one workspace-validated candidate as a private Agent scope.
+
+    This is the only browser-facing candidate-ID boundary for the composer.
+    It immediately converts the ID to a conversation-owned opaque candidate
+    set, so subsequent Agent turns carry only the conversation/version pair.
+    """
+
+    conversation = _conversation_or_create(
+        session,
+        conversation_id=payload.conversation_id,
+        context_version=payload.context_version,
+        actor_user_id=actor_user_id,
+        require_context_version=True,
+    )
+    resume_id = _current_candidate_scope_resume_id(
+        session,
+        candidate_id=payload.candidate_id,
+    )
+    _replace_active_candidate_set(
+        session,
+        conversation=conversation,
+        source_kind=_CONTEXT_SOURCE_CANDIDATE,
+        # Candidate/resume IDs remain in opaque membership rows only. There
+        # is no source reference to echo back to a browser or an LLM.
+        source_ref_id=None,
+        resume_ids=[resume_id],
+    )
+    _touch_conversation(session, conversation=conversation)
+    return _conversation_response(session, conversation=conversation)
+
+
+def clear_recruiting_agent_context(
+    session: Session,
+    *,
+    payload: RecruitingAgentContextClearRequest,
+    actor_user_id: str,
+) -> RecruitingAgentConversationResponse:
+    """Clear one safe composer chip without accepting any resource ID."""
+
+    conversation = _conversation_or_create(
+        session,
+        conversation_id=payload.conversation_id,
+        context_version=payload.context_version,
+        actor_user_id=actor_user_id,
+        require_context_version=True,
+    )
+    if payload.target == "job":
+        _set_explicit_conversation_job(conversation, job=None)
+    elif payload.target == "candidate_scope":
+        if _clear_active_candidate_set(session, conversation=conversation):
+            _advance_conversation_context(conversation)
+    else:
+        _clear_active_talent_profile(conversation)
+    # A successful context command is still a serialized operation. Advancing
+    # its compare-and-swap value even for a no-op clear keeps another tab from
+    # unknowingly applying a stale selection after this request.
+    _touch_conversation(session, conversation=conversation)
+    return _conversation_response(session, conversation=conversation)
 
 
 def _all_candidate_filter_resume_ids(
@@ -1802,11 +2001,9 @@ def bind_recruiting_agent_filter_scope(
         actor_user_id=actor_user_id,
         require_context_version=True,
     )
-    requested_job_version_id = (payload.job_version_id or "").strip()
-    job = (
-        _resolve_job(session, requested_job_version_id)
-        if requested_job_version_id
-        else None
+    job = _resolve_explicit_context_job(
+        session,
+        requested_job_version_id=payload.job_version_id,
     )
     _set_explicit_conversation_job(conversation, job=job)
     resume_ids = _all_candidate_filter_resume_ids(session, request=payload.filter)
@@ -4769,8 +4966,10 @@ __all__ = [
     "RecruitingAgentFilterScopeNotFoundError",
     "RecruitingAgentFilterScopeValidationError",
     "RecruitingAgentServiceError",
+    "bind_recruiting_agent_candidate_scope",
     "bind_recruiting_agent_context",
     "bind_recruiting_agent_filter_scope",
+    "clear_recruiting_agent_context",
     "delete_recruiting_agent_conversation",
     "get_recruiting_agent_conversation",
     "purge_expired_recruiting_agent_conversations",

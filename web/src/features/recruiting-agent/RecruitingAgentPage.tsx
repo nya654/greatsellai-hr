@@ -1,8 +1,8 @@
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { api, isApiError } from "../../api";
 import type {
@@ -28,6 +28,7 @@ import {
   AgentMarkdown,
   AgentSearchSummaryPanel,
 } from "./AgentMessagePresentation";
+import { AgentComposer, type AgentReference } from "./AgentComposer";
 import { useRecruitingAgentConversation } from "./useRecruitingAgentConversation";
 import "./recruiting-agent.css";
 
@@ -126,7 +127,7 @@ function initialAgentMessages(): AgentChatMessage[] {
       id: 1,
       role: "assistant",
       content:
-        "我是招聘助手。可以在当前工作区筛选简历、处理 JD 匹配、查看排行榜，并按已有评分规则发起全量评分。直接告诉我想找什么人，我会先整理可确认的找人条件，确认后才开始找人。",
+        "基于当前授权范围筛选、比较、核验。输入需求，或 @ 引用 JD、筛选范围、人才画像。",
     },
   ];
 }
@@ -150,10 +151,11 @@ function restoredAgentMessages(
 }
 
 function agentContextSourceLabel(
-  source: "agent_search" | "candidate_filter" | "talent_search_run" | null,
+  source: "agent_search" | "candidate_filter" | "candidate" | "talent_search_run" | null,
 ): string {
   if (source === "agent_search") return "助手筛选结果";
   if (source === "candidate_filter") return "初筛结果";
+  if (source === "candidate") return "已引用候选人";
   if (source === "talent_search_run") return "人才画像找人结果";
   return "尚未设置候选范围";
 }
@@ -337,6 +339,7 @@ function TalentProfileMatchCard({
 function TalentSearchRunPanel({
   run,
   onOpenCandidate,
+  onReferenceCandidate,
   onUseAsAgentContext,
   onRefresh,
   onLoadMore,
@@ -345,6 +348,7 @@ function TalentSearchRunPanel({
 }: {
   run: TalentSearchRun;
   onOpenCandidate: (candidate: RecruitingAgentCandidate) => void;
+  onReferenceCandidate?: (candidate: RecruitingAgentCandidate) => void;
   onUseAsAgentContext: () => void;
   onRefresh: () => void;
   onLoadMore: () => void;
@@ -435,6 +439,8 @@ function TalentSearchRunPanel({
                 candidate={candidate}
                 key={candidate.resume_id}
                 onOpen={() => onOpenCandidate(candidate)}
+                onReference={onReferenceCandidate ? () => onReferenceCandidate(candidate) : undefined}
+                referenceDisabled={loading}
               />
             );
           })}
@@ -509,6 +515,7 @@ function TalentSearchProfileCard({
   onLoadMoreRecall,
   onAdjustConditions,
   onOpenCandidate,
+  onReferenceCandidate,
   loading,
   startLabel = "开始找人",
 }: {
@@ -523,6 +530,7 @@ function TalentSearchProfileCard({
   onLoadMoreRecall: () => void;
   onAdjustConditions: () => void;
   onOpenCandidate: (candidate: RecruitingAgentCandidate) => void;
+  onReferenceCandidate?: (candidate: RecruitingAgentCandidate) => void;
   loading: boolean;
   startLabel?: string;
 }) {
@@ -627,6 +635,7 @@ function TalentSearchProfileCard({
         <TalentSearchRunPanel
           loading={loading}
           onOpenCandidate={onOpenCandidate}
+          onReferenceCandidate={onReferenceCandidate}
           onUseAsAgentContext={onUseAsAgentContext}
           onLoadMore={onLoadMoreRecall}
           onRefresh={onRefreshRun}
@@ -667,12 +676,16 @@ export function RecruitingAgentPage({
   const [loading, setLoading] = useState(false);
   const [bindingScopeRequestId, setBindingScopeRequestId] = useState<number | null>(null);
   const [scopeBindingError, setScopeBindingError] = useState<string | null>(null);
+  const [referenceError, setReferenceError] = useState<string | null>(null);
   const {
     adoptConversation,
+    bindCandidateScope,
     bindFilterScope,
+    bindJobVersion,
     bindTalentSearchProfile,
     bindTalentSearchRun,
     buildTurnInput,
+    clearContext,
     clearConversation,
     conversation,
     forgetConversation,
@@ -702,6 +715,7 @@ export function RecruitingAgentPage({
     setRecentTalentProfiles([]);
     setBindingScopeRequestId(null);
     setScopeBindingError(null);
+    setReferenceError(null);
   }, [conversationStorageScope]);
 
   useEffect(() => {
@@ -1039,6 +1053,131 @@ export function RecruitingAgentPage({
       : null
   );
 
+  const activeInputReferences = useMemo<AgentReference[]>(() => (
+    conversation?.active_context.input_references?.map((reference) => ({
+      referenceId: reference.reference_id,
+      kind: reference.kind,
+      label: reference.label,
+    })) ?? []
+  ), [conversation?.active_context.input_references]);
+
+  const availableInputReferences = useMemo<AgentReference[]>(() => {
+    const activeKinds = new Set(activeInputReferences.map((reference) => reference.kind));
+    const options: AgentReference[] = [];
+    if (!activeKinds.has("job")) {
+      [...jobs]
+        .sort((left, right) => (
+          Number(right.job_version_id === jobVersionId) - Number(left.job_version_id === jobVersionId)
+        ))
+        .slice(0, 8)
+        .forEach((job) => {
+          options.push({
+            referenceId: `job:${job.job_version_id}`,
+            kind: "job",
+            label: job.title,
+            description: job.job_version_id === jobVersionId ? "当前选择的 JD" : "关联 JD",
+          });
+        });
+    }
+    if (!activeKinds.has("talent_profile")) {
+      recentTalentProfiles.slice(0, 8).forEach((profile) => {
+        options.push({
+          referenceId: `profile:${profile.profile_id}:${profile.current_revision.revision_id}`,
+          kind: "talent_profile",
+          label: profile.current_revision.title,
+          description: profile.status === "confirmed" ? "已确认的人才画像" : "人才画像草案",
+        });
+      });
+    }
+    if (!activeKinds.has("candidate")) {
+      const seenCandidates = new Set<string>();
+      messages.forEach((message) => {
+        message.candidates?.forEach((candidate) => {
+          if (seenCandidates.has(candidate.candidate_id)) return;
+          seenCandidates.add(candidate.candidate_id);
+          options.push({
+            referenceId: `candidate:${candidate.candidate_id}`,
+            kind: "candidate",
+            label: candidate.display_name || "候选人",
+            description: "来自当前对话结果",
+          });
+        });
+      });
+    }
+    return options.slice(0, 24);
+  }, [
+    activeInputReferences,
+    jobVersionId,
+    jobs,
+    messages,
+    recentTalentProfiles,
+  ]);
+
+  const applyInputReference = async (reference: AgentReference) => {
+    if (interactionPending || reference.kind === "filter") return;
+    setReferenceError(null);
+    setLoading(true);
+    try {
+      if (reference.kind === "candidate") {
+        await bindCandidateScope({
+          candidateId: reference.referenceId.slice("candidate:".length),
+        });
+      } else if (reference.kind === "job") {
+        const nextJobVersionId = reference.referenceId.slice("job:".length);
+        await bindJobVersion({ jobVersionId: nextJobVersionId });
+        setJobVersionId(nextJobVersionId);
+      } else {
+        const profile = recentTalentProfiles.find((item) => (
+          reference.referenceId === `profile:${item.profile_id}:${item.current_revision.revision_id}`
+        ));
+        if (!profile) return;
+        await bindTalentSearchProfile({
+          profileId: profile.profile_id,
+          revisionId: profile.current_revision.revision_id,
+          jobVersionId: matchableJobVersionId(jobVersionId),
+        });
+      }
+      window.requestAnimationFrame(() => composerInputRef.current?.focus());
+    } catch (error) {
+      const recoveredMessage = await recoverAgentConversationError(error);
+      setReferenceError(recoveredMessage ?? humanizeAgentError(error, formatError));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const applyCandidateReference = (candidate: RecruitingAgentCandidate) => {
+    void applyInputReference({
+      referenceId: `candidate:${candidate.candidate_id}`,
+      kind: "candidate",
+      label: candidate.display_name || "候选人",
+      description: "来自当前对话结果",
+    });
+  };
+
+  const removeInputReference = async (referenceId: string) => {
+    const reference = activeInputReferences.find((item) => item.referenceId === referenceId);
+    if (!reference || interactionPending) return;
+    setReferenceError(null);
+    setLoading(true);
+    try {
+      await clearContext(
+        reference.kind === "job"
+          ? "job"
+          : reference.kind === "talent_profile"
+            ? "talent_profile"
+            : "candidate_scope",
+      );
+      if (reference.kind === "job") setJobVersionId("");
+      window.requestAnimationFrame(() => composerInputRef.current?.focus());
+    } catch (error) {
+      const recoveredMessage = await recoverAgentConversationError(error);
+      setReferenceError(recoveredMessage ?? humanizeAgentError(error, formatError));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const recoverAgentConversationError = async (error: unknown): Promise<string | null> => {
     if (!isApiError(error)) return null;
     if (error.status === 409 && error.message === "agent_conversation_stale") {
@@ -1250,21 +1389,6 @@ export function RecruitingAgentPage({
     }
   };
 
-  const handleComposerKeyDown = (
-    event: ReactKeyboardEvent<HTMLTextAreaElement>,
-  ) => {
-    if (
-      event.key !== "Enter"
-      || event.shiftKey
-      || event.repeat
-      || event.nativeEvent.isComposing
-    ) {
-      return;
-    }
-    event.preventDefault();
-    void send(input);
-  };
-
   return (
     <section
       aria-labelledby="recruiting-agent-title"
@@ -1276,7 +1400,6 @@ export function RecruitingAgentPage({
           <span className="agent-mark"><Icon name="spark" size={17} /></span>
           <div>
             <h1 id="recruiting-agent-title" ref={pageHeadingRef} tabIndex={-1}>招聘 Agent</h1>
-            <p>对话协作 · 工具执行 · 结论可追溯</p>
           </div>
         </div>
         <div className="agent-header-actions">
@@ -1345,31 +1468,30 @@ export function RecruitingAgentPage({
               </button>
             </>
           ) : conversation ? (
-            <>
-              <div>
-                <span>当前工作范围</span>
-                <strong>
-                  {agentContextSourceLabel(conversation.active_context.candidate_set_source)}
-                  {` · ${conversation.active_context.candidate_count} 位候选人`}
-                </strong>
-                <small>
-                  {conversation.active_context.active_job_title
-                    ? `关联 JD：${conversation.active_context.active_job_title}`
-                    : "未关联 JD"}
-                  {conversation.active_context.active_talent_profile
-                    ? `；当前找人条件：${conversation.active_context.active_talent_profile.title}（${conversation.active_context.active_talent_profile.status === "draft" ? "草案" : "已确认"}）`
-                    : ""}
-                  {"；最近 12 轮对话会在 24 小时无操作后自动清除"}
-                </small>
-              </div>
-            </>
+            <div className="agent-work-context-main">
+              <span>当前范围</span>
+              <strong>
+                {agentContextSourceLabel(conversation.active_context.candidate_set_source)}
+                {` · ${conversation.active_context.candidate_count} 人`}
+              </strong>
+              {conversation.active_context.active_job_title && (
+                <small>{conversation.active_context.active_job_title}</small>
+              )}
+              {conversation.active_context.active_talent_profile && (
+                <small>{conversation.active_context.active_talent_profile.title}</small>
+              )}
+            </div>
           ) : (
-            <span>直接描述你想找的人，我会先整理条件，确认后才开始找人。</span>
+            <span>描述你想找的人，系统会先整理可确认的条件。</span>
           )}
         </div>
         {!!recentTalentProfiles.length && (
-          <div className="agent-profile-history" aria-label="已保存的人才画像">
-            <span>已保存画像</span>
+          <details className="agent-profile-history">
+            <summary>
+              <span>已保存画像</span>
+              <small>{recentTalentProfiles.length}</small>
+              <Icon name="chevron-down" size={14} />
+            </summary>
             <div>
               {recentTalentProfiles.slice(0, 4).map((profile) => (
                 <button
@@ -1384,7 +1506,7 @@ export function RecruitingAgentPage({
                 </button>
               ))}
             </div>
-          </div>
+          </details>
         )}
       </div>
       <div className="agent-conversation" aria-live="polite">
@@ -1422,6 +1544,7 @@ export function RecruitingAgentPage({
                 loading={interactionPending}
                 onConfirm={() => void confirmTalentProfile(item.talentProfile!)}
                 onOpenCandidate={onOpenResume}
+                onReferenceCandidate={applyCandidateReference}
                 onLoadMoreRecall={() => {
                   if (item.talentRun) {
                     void loadMoreTalentProfileRecall(item.talentProfile!, item.talentRun);
@@ -1457,6 +1580,8 @@ export function RecruitingAgentPage({
                     key={candidate.resume_id}
                     candidate={candidate}
                     onOpen={() => onOpenResume(candidate)}
+                    onReference={() => applyCandidateReference(candidate)}
+                    referenceDisabled={interactionPending}
                   />
                 ))}
               </div>
@@ -1491,37 +1616,18 @@ export function RecruitingAgentPage({
           </article>
         )}
       </div>
-      <div className="agent-composer">
-        <form
-          className="agent-input-row"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void send(input);
-          }}
-        >
-          <label className="sr-only" htmlFor="agent-message">向招聘助手提问</label>
-          <textarea
-            disabled={interactionPending}
-            id="agent-message"
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={handleComposerKeyDown}
-            placeholder={
-              conversation?.active_context.candidate_set_source === "candidate_filter"
-                ? "在当前初筛结果中描述精筛要求，例如：有 Agent 落地经验"
-                : "直接描述你想找的人，例如：找做过 Agent、RAG 和 LLM 服务部署，3 年以上经验的人"
-            }
-            ref={composerInputRef}
-            rows={2}
-            value={input}
-          />
-          <button aria-label="发送提问" className="button button-primary" disabled={interactionPending || !input.trim()} type="submit">
-            <Icon name="arrow-right" size={17} />
-          </button>
-        </form>
-        <p className="agent-composer-hint">
-          <kbd>Enter</kbd> 发送　<kbd>Shift + Enter</kbd> 换行
-        </p>
-      </div>
+      <AgentComposer
+        availableReferences={availableInputReferences}
+        disabled={interactionPending}
+        inputRef={composerInputRef}
+        onChange={setInput}
+        onRemoveReference={(referenceId) => void removeInputReference(referenceId)}
+        onSelectReference={(reference) => void applyInputReference(reference)}
+        onSubmit={() => void send(input)}
+        references={activeInputReferences}
+        value={input}
+      />
+      {referenceError && <p className="agent-reference-status" role="status">{referenceError}</p>}
     </section>
   );
 }

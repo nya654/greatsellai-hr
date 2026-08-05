@@ -80,9 +80,13 @@ export function AgentSearchSummaryPanel({
 export function AgentCandidateCard({
   candidate,
   onOpen,
+  onReference,
+  referenceDisabled = false,
 }: {
   candidate: RecruitingAgentCandidate;
   onOpen: () => void;
+  onReference?: () => void;
+  referenceDisabled?: boolean;
 }) {
   const verificationEvidence = candidate.verification_evidence ?? [];
   const confirmationLabel =
@@ -96,6 +100,17 @@ export function AgentCandidateCard({
         </div>
         <div className="agent-candidate-card-actions">
           {candidate.score !== null && <b>{candidate.score.toFixed(1)}</b>}
+          {onReference && (
+            <button
+              className="agent-candidate-reference"
+              disabled={referenceDisabled}
+              onClick={onReference}
+              type="button"
+            >
+              <Icon name="bookmark" size={14} />
+              引用
+            </button>
+          )}
           <button
             aria-label={`查看${candidate.display_name?.trim() || "候选人"}详情`}
             className="icon-button agent-candidate-open"

@@ -557,17 +557,27 @@ export interface RecruitingAgentActiveTalentProfile {
   status: "draft" | "confirmed";
 }
 
+/** A compact, server-authored label for context attached to the next Agent turn. */
+export interface RecruitingAgentInputReference {
+  reference_id: string;
+  kind: "candidate" | "job" | "filter" | "talent_profile";
+  label: string;
+}
+
 /** The only durable Agent state shown back to a recruiter. */
 export interface RecruitingAgentActiveContext {
   candidate_set_source:
     | "agent_search"
     | "candidate_filter"
+    | "candidate"
     | "talent_search_run"
     | null;
   candidate_count: number;
   active_job_version_id: string | null;
   active_job_title: string | null;
   active_talent_profile: RecruitingAgentActiveTalentProfile | null;
+  /** Never contains resume text, contact details, or browser-provided history. */
+  input_references: RecruitingAgentInputReference[];
   expires_at: string;
 }
 
@@ -597,10 +607,23 @@ export interface RecruitingAgentTurnInput {
 }
 
 export interface RecruitingAgentContextBindInput {
-  context_ref: RecruitingAgentContextReference;
+  context_ref?: RecruitingAgentContextReference | null;
   job_version_id?: string | null;
   conversation_id?: string | null;
   context_version?: number | null;
+}
+
+/** Candidate IDs are accepted only by the explicit server-validated binding route. */
+export interface RecruitingAgentCandidateScopeBindInput {
+  candidate_id: string;
+  conversation_id?: string | null;
+  context_version?: number | null;
+}
+
+export interface RecruitingAgentContextClearInput {
+  target: "job" | "candidate_scope" | "talent_profile";
+  conversation_id: string;
+  context_version: number;
 }
 
 /** A server-side snapshot of the current first-pass filter, never client IDs. */

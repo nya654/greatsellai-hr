@@ -65,6 +65,14 @@ interface BindFilterScopeOptions {
   jobVersionId: string | null;
 }
 
+interface BindCandidateScopeOptions {
+  candidateId: string;
+}
+
+interface BindJobVersionOptions {
+  jobVersionId: string | null;
+}
+
 /**
  * Keeps only an opaque server conversation reference in this browser tab.
  *
@@ -213,6 +221,53 @@ export function useRecruitingAgentConversation({
     return bound;
   }, [conversation, persistConversation]);
 
+  const bindCandidateScope = useCallback(async ({
+    candidateId,
+  }: BindCandidateScopeOptions): Promise<RecruitingAgentConversation> => {
+    const input = {
+      candidate_id: candidateId,
+      ...(conversation
+        ? {
+          conversation_id: conversation.conversation_id,
+          context_version: conversation.context_version,
+        }
+        : {}),
+    };
+    const bound = await api.bindRecruitingAgentCandidateScope(input);
+    persistConversation(bound);
+    return bound;
+  }, [conversation, persistConversation]);
+
+  const bindJobVersion = useCallback(async ({
+    jobVersionId,
+  }: BindJobVersionOptions): Promise<RecruitingAgentConversation> => {
+    const input: RecruitingAgentContextBindInput = {
+      job_version_id: jobVersionId,
+      ...(conversation
+        ? {
+          conversation_id: conversation.conversation_id,
+          context_version: conversation.context_version,
+        }
+        : {}),
+    };
+    const bound = await api.bindRecruitingAgentContext(input);
+    persistConversation(bound);
+    return bound;
+  }, [conversation, persistConversation]);
+
+  const clearContext = useCallback(async (
+    target: "job" | "candidate_scope" | "talent_profile",
+  ): Promise<RecruitingAgentConversation | null> => {
+    if (!conversation) return null;
+    const cleared = await api.clearRecruitingAgentContext({
+      target,
+      conversation_id: conversation.conversation_id,
+      context_version: conversation.context_version,
+    });
+    persistConversation(cleared);
+    return cleared;
+  }, [conversation, persistConversation]);
+
   const clearConversation = useCallback(async () => {
     if (!conversation) {
       forgetConversation();
@@ -234,6 +289,9 @@ export function useRecruitingAgentConversation({
     bindTalentSearchRun,
     bindTalentSearchProfile,
     bindFilterScope,
+    bindCandidateScope,
+    bindJobVersion,
+    clearContext,
     clearConversation,
     conversation,
     forgetConversation,
@@ -245,8 +303,11 @@ export function useRecruitingAgentConversation({
     bindTalentSearchProfile,
     bindTalentSearchRun,
     bindFilterScope,
+    bindCandidateScope,
+    bindJobVersion,
     buildTurnInput,
     clearConversation,
+    clearContext,
     conversation,
     forgetConversation,
     restoreConversation,

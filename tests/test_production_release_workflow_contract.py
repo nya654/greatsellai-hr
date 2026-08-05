@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -261,10 +264,11 @@ def test_main_ci_publishes_labeled_images_to_tcr_and_hands_off_small_metadata() 
     assert "org.opencontainers.image.workflow_run_attempt=" in ci
     assert "org.opencontainers.image.source=https://github.com/" in ci
     assert '--image "greatsellai-hr-api:' in ci
-    assert "Log in to Tencent Container Registry" in ci
-    assert 'printf \'%s\\n\' "$TCR_PASSWORD" | docker login "$TCR_REGISTRY"' in ci
-    assert "--password-stdin" in ci
     assert "Publish immutable CI images to TCR" in ci
+    assert "scripts/write-docker-registry-auth.sh" in ci
+    assert 'DOCKER_CONFIG="$docker_config" scripts/publish-tcr-release-images.sh' in ci
+    assert "docker login" not in ci
+    assert "--password-stdin" in ci
     assert "scripts/publish-tcr-release-images.sh" in ci
     assert "release-image-metadata-" in ci
     assert "docker image save" not in ci
@@ -326,7 +330,8 @@ def test_staging_and_production_pull_the_same_digest_pinned_tcr_images() -> None
     assert "password-stdin" in pull
     assert "read -r registry_password" in pull
     assert 'printf \'%s\\n\' "$registry_password" | ssh' in pull
-    assert 'DOCKER_CONFIG="$docker_config" docker login "$registry"' in pull
+    assert 'printf \'{"auths":{"%s":{"auth":"%s"}}}\\n\'' in pull
+    assert "docker login" not in pull
     assert 'DOCKER_CONFIG="$docker_config" docker pull "$registry_image"' in pull
     assert 'mktemp -d "${TMPDIR:-/tmp}/greatsell-tcr.XXXXXXXX"' in pull
     assert 'trap cleanup_docker_credentials EXIT' in pull
@@ -334,6 +339,62 @@ def test_staging_and_production_pull_the_same_digest_pinned_tcr_images() -> None
     assert "RepoDigests" in pull
     assert "sudo -n docker tag" in pull
     assert "TCR_PASSWORD" not in pull
+
+
+def test_tcr_docker_auth_writer_creates_private_standard_credentials(
+    tmp_path: Path,
+) -> None:
+    if os.name != "posix":
+        pytest.skip("the Bash Docker auth writer is exercised in Linux CI")
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("Bash is required for the Docker auth writer contract")
+
+    docker_config = tmp_path / "docker-config"
+    docker_config.mkdir(mode=0o700)
+    writer = ROOT / "scripts" / "write-docker-registry-auth.sh"
+    command = (
+        bash,
+        str(writer),
+        "--registry",
+        "ccr.ccs.tencentyun.com",
+        "--username",
+        "100051348794",
+        "--docker-config",
+        str(docker_config),
+        "--password-stdin",
+    )
+
+    completed = subprocess.run(
+        command,
+        input="example-tcr-password\n",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+    expected_auth = base64.b64encode(
+        b"100051348794:example-tcr-password"
+    ).decode("ascii")
+    config = docker_config / "config.json"
+    assert json.loads(config.read_text(encoding="utf-8")) == {
+        "auths": {"ccr.ccs.tencentyun.com": {"auth": expected_auth}}
+    }
+    assert stat.S_IMODE(config.stat().st_mode) == 0o600
+
+    refused = subprocess.run(
+        command,
+        input="example-tcr-password\n",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert refused.returncode != 0
+    assert "must not already contain config.json" in refused.stderr
+    assert json.loads(config.read_text(encoding="utf-8")) == {
+        "auths": {"ccr.ccs.tencentyun.com": {"auth": expected_auth}}
+    }
 
 
 def test_tcr_metadata_verifier_rejects_tampering_and_returns_digest_pinned_references(

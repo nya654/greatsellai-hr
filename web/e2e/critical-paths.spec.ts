@@ -1311,7 +1311,7 @@ test.describe("招聘工作台关键路径", () => {
 
       const agentPage = recruitingAgentPage(page);
       await expect(agentPage).toBeVisible();
-      await expect(agentPage.getByText("初筛结果 · 17 位候选人", { exact: true })).toBeVisible();
+      await expect(agentPage.getByText("初筛结果 · 17 人", { exact: true })).toBeVisible();
       expect(filterScopeRequests).toHaveLength(1);
       const scopePayload = filterScopeRequests[0];
       expect(scopePayload).toMatchObject({
@@ -1349,7 +1349,7 @@ test.describe("招聘工作台关键路径", () => {
       await tenureRange.press("ArrowRight");
       await changedFilterResponse;
       await page.getByRole("button", { name: "招聘助手", exact: true }).click();
-      await expect(agentPage.getByText("初筛结果 · 17 位候选人", { exact: true })).toBeVisible();
+      await expect(agentPage.getByText("初筛结果 · 17 人", { exact: true })).toBeVisible();
       expect(filterScopeRequests).toHaveLength(1);
       expect(agentTurnRequestCount).toBe(0);
     } finally {
@@ -2120,7 +2120,7 @@ test.describe("招聘工作台关键路径", () => {
     await expect(dialog.getByText("没有候选人同时满足本次严格条件").last()).toBeVisible();
     await expect(dialog.getByText("筛掉 3，剩余 0").last()).toBeVisible();
     await expect(dialog.getByRole("button", { name: "调整条件" })).toBeVisible();
-    await expect(dialog.getByText("人才画像找人结果 · 0 位候选人")).toBeVisible();
+    await expect(dialog.getByText("人才画像找人结果 · 0 人")).toBeVisible();
     await dialog.getByRole("button", { name: "精简画像" }).last().click();
     await expect(
       dialog.getByText("已精简人才画像，已生成待确认的第 3 版。"),

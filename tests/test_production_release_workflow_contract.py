@@ -183,14 +183,14 @@ def test_public_repository_routes_ci_and_release_jobs_to_hosted_runners() -> Non
         "fromJSON('[\"self-hosted\", \"Linux\", \"X64\", \"greatsell-ci\"]') "
         "|| 'ubuntu-latest'"
     )
-    assert ci.count(runner_selector) == 5
+    assert ci.count(runner_selector) == 4
     assert runner_selector in encoding
 
     production_images = ci.split("  production-images:", maxsplit=1)[1]
-    assert runner_selector in production_images
     assert "needs.main-release-provenance.result == 'success'" in production_images
     assert "github.event_name == 'push' && github.ref == 'refs/heads/main'" in production_images
-    assert "runs-on: [self-hosted, Linux, X64, greatsell-ci]" not in production_images
+    assert "runs-on: [self-hosted, Linux, X64, greatsell-ci]" in production_images
+    assert "pull_request" not in production_images
 
 
 def test_public_repository_routes_all_release_orchestration_to_hosted_runners() -> None:

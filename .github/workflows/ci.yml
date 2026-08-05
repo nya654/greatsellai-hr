@@ -184,8 +184,8 @@ jobs:
           # operations. Retry once so a transient hosted-runner failure does
           # not block a healthy production release.
           for attempt in 1 2; do
-            if docker build --build-arg DEBIAN_MIRROR=deb.debian.org \
-              --build-arg PIP_INDEX_URL=https://pypi.org/simple \
+            if docker build --build-arg DEBIAN_MIRROR=mirrors.cloud.tencent.com \
+              --build-arg PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple \
               --label "org.opencontainers.image.revision=${{ github.sha }}" \
               --label "org.opencontainers.image.workflow_run_id=${{ github.run_id }}" \
               --label "org.opencontainers.image.workflow_run_attempt=${{ github.run_attempt }}" \
@@ -208,7 +208,7 @@ jobs:
           # transient registry/network failure on hosted runners. Retrying
           # once keeps a healthy commit from blocking the production release.
           for attempt in 1 2; do
-            if docker build --build-arg NPM_REGISTRY=https://registry.npmjs.org/ \
+            if docker build --build-arg NPM_REGISTRY=https://mirrors.cloud.tencent.com/npm/ \
               --file deploy/Caddy.Dockerfile \
               --label "org.opencontainers.image.revision=${{ github.sha }}" \
               --label "org.opencontainers.image.workflow_run_id=${{ github.run_id }}" \

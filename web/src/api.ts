@@ -80,7 +80,9 @@ import type {
   ResumeSummary,
   ResumeSummaryManualCreate,
   ResumeUploadResponse,
+  RecruitingAgentCandidateScopeBindInput,
   RecruitingAgentContextBindInput,
+  RecruitingAgentContextClearInput,
   RecruitingAgentConversation,
   RecruitingAgentFilterScopeBindInput,
   RecruitingAgentScopedTalentProfileRunInput,
@@ -554,6 +556,24 @@ export function createApiClient(options: ApiClientOptions = {}) {
         method: "POST",
         body: input,
       });
+    },
+
+    bindRecruitingAgentCandidateScope(
+      input: RecruitingAgentCandidateScopeBindInput,
+    ): Promise<RecruitingAgentConversation> {
+      return request<RecruitingAgentConversation>(
+        "/recruiting-agent/conversations/candidate-scope",
+        { method: "POST", body: input },
+      );
+    },
+
+    clearRecruitingAgentContext(
+      input: RecruitingAgentContextClearInput,
+    ): Promise<RecruitingAgentConversation> {
+      return request<RecruitingAgentConversation>(
+        "/recruiting-agent/conversations/context/clear",
+        { method: "POST", body: input },
+      );
     },
 
     bindRecruitingAgentFilterScope(

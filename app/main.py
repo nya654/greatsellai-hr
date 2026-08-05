@@ -139,6 +139,8 @@ from app.schemas import (
     CandidateSearchRequest,
     CandidateSearchResponse,
     CandidateResumeVersionsResponse,
+    RecruitingAgentCandidateScopeRequest,
+    RecruitingAgentContextClearRequest,
     RecruitingAgentFilterScopeRequest,
     RecruitingAgentTalentSearchProfileRunRequest,
     TalentSearchProfileConfirmRequest,
@@ -374,8 +376,10 @@ from app.services.recruiting_agent_service import (
     RecruitingAgentFilterScopeNotFoundError,
     RecruitingAgentFilterScopeValidationError,
     RecruitingAgentServiceError,
+    bind_recruiting_agent_candidate_scope,
     bind_recruiting_agent_context,
     bind_recruiting_agent_filter_scope,
+    clear_recruiting_agent_context,
     delete_recruiting_agent_conversation,
     get_recruiting_agent_conversation,
     run_recruiting_agent_turn,
@@ -4449,6 +4453,96 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         return response
 
     @app.post(
+        "/v1/recruiting-agent/conversations/candidate-scope",
+        response_model=RecruitingAgentConversationResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def bind_recruiting_agent_candidate_scope_route(
+        payload: RecruitingAgentCandidateScopeRequest,
+        principal: AuthPrincipal = Depends(require_single_admin),
+        session: Session = Depends(get_session),
+    ) -> RecruitingAgentConversationResponse:
+        """Convert one validated candidate into private Agent work state.
+
+        Candidate IDs are accepted only at this boundary, never by an Agent
+        turn. The service validates the active workspace, owner, session
+        version, and current eligible resume before it stores an opaque scope.
+        """
+
+        try:
+            response = bind_recruiting_agent_candidate_scope(
+                session,
+                payload=payload,
+                actor_user_id=principal.user.id,
+            )
+            _commit_or_raise(session)
+        except (
+            RecruitingAgentConversationNotFoundError,
+            RecruitingAgentContextReferenceNotFoundError,
+        ) as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    "agent_context_reference_not_found"
+                    if isinstance(exc, RecruitingAgentContextReferenceNotFoundError)
+                    else "agent_conversation_not_found"
+                ),
+            ) from exc
+        except RecruitingAgentConversationConflictError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="agent_conversation_stale",
+            ) from exc
+        except StaleDataError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="agent_conversation_stale",
+            ) from exc
+        return response
+
+    @app.post(
+        "/v1/recruiting-agent/conversations/context/clear",
+        response_model=RecruitingAgentConversationResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def clear_recruiting_agent_work_context_route(
+        payload: RecruitingAgentContextClearRequest,
+        principal: AuthPrincipal = Depends(require_single_admin),
+        session: Session = Depends(get_session),
+    ) -> RecruitingAgentConversationResponse:
+        """Remove one server-owned input chip using only a safe target kind."""
+
+        try:
+            response = clear_recruiting_agent_context(
+                session,
+                payload=payload,
+                actor_user_id=principal.user.id,
+            )
+            _commit_or_raise(session)
+        except RecruitingAgentConversationNotFoundError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="agent_conversation_not_found",
+            ) from exc
+        except RecruitingAgentConversationConflictError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="agent_conversation_stale",
+            ) from exc
+        except StaleDataError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="agent_conversation_stale",
+            ) from exc
+        return response
+
+    @app.post(
         "/v1/recruiting-agent/conversations/filter-scope",
         response_model=RecruitingAgentConversationResponse,
         dependencies=[Depends(require_single_admin)],
@@ -4472,11 +4566,18 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                 actor_user_id=principal.user.id,
             )
             _commit_or_raise(session)
-        except RecruitingAgentConversationNotFoundError as exc:
+        except (
+            RecruitingAgentConversationNotFoundError,
+            RecruitingAgentContextReferenceNotFoundError,
+        ) as exc:
             session.rollback()
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="agent_conversation_not_found",
+                detail=(
+                    "agent_context_reference_not_found"
+                    if isinstance(exc, RecruitingAgentContextReferenceNotFoundError)
+                    else "agent_conversation_not_found"
+                ),
             ) from exc
         except RecruitingAgentConversationConflictError as exc:
             session.rollback()

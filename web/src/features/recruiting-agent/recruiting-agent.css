@@ -1261,3 +1261,632 @@
     transition: none;
   }
 }
+
+/* Focused recruiting-agent canvas — intentionally overrides the older card UI. */
+.backoffice-ui-root .recruiting-agent-page {
+  --agent-z-dropdown: 30;
+  background: #f7f7f6;
+}
+
+.backoffice-ui-root .recruiting-agent-page::before {
+  display: none;
+}
+
+.backoffice-ui-root .agent-header {
+  min-height: 4.25rem;
+  padding: 0.75rem clamp(1rem, 3.25vw, 3rem);
+  background: #fff;
+}
+
+.backoffice-ui-root .agent-title-wrap {
+  gap: 0.5625rem;
+}
+
+.backoffice-ui-root .agent-mark {
+  width: 1.75rem;
+  height: 1.75rem;
+  color: #fff;
+  background: var(--red);
+  border-radius: 0.25rem;
+  box-shadow: none;
+}
+
+.backoffice-ui-root .agent-title-wrap h1 {
+  font-size: 0.9375rem;
+  letter-spacing: -0.02em;
+}
+
+.backoffice-ui-root .agent-title-wrap p {
+  display: none;
+}
+
+.backoffice-ui-root .agent-header-actions {
+  gap: 0.375rem;
+}
+
+.backoffice-ui-root .agent-job-select .select-field,
+.backoffice-ui-root .agent-new-conversation {
+  min-height: 2.125rem;
+  font-size: 0.75rem;
+  background: #fff;
+}
+
+.backoffice-ui-root .agent-context {
+  gap: 0.375rem;
+  padding: 0.5rem clamp(1rem, 3.25vw, 3rem);
+  background: #f7f7f6;
+}
+
+.backoffice-ui-root .agent-work-context,
+.backoffice-ui-root .agent-work-context.is-error {
+  width: 100%;
+  padding: 0.1875rem 0;
+  color: var(--ink-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.backoffice-ui-root .agent-work-context > .agent-work-context-main {
+  display: flex;
+  min-width: 0;
+  gap: 0.375rem;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.backoffice-ui-root .agent-work-context-main > span,
+.backoffice-ui-root .agent-work-context-main > strong,
+.backoffice-ui-root .agent-work-context-main > small {
+  overflow: hidden;
+  font-size: 0.6875rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backoffice-ui-root .agent-work-context-main > span {
+  color: var(--ink-muted);
+}
+
+.backoffice-ui-root .agent-work-context-main > strong {
+  color: var(--ink-soft);
+}
+
+.backoffice-ui-root .agent-profile-history {
+  width: 100%;
+  padding-top: 0.375rem;
+  border-top: 1px solid var(--line);
+}
+
+.backoffice-ui-root .agent-profile-history summary {
+  display: inline-flex;
+  gap: 0.375rem;
+  align-items: center;
+  color: var(--ink-muted);
+  font-size: 0.6875rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.backoffice-ui-root .agent-profile-history summary::-webkit-details-marker {
+  display: none;
+}
+
+.backoffice-ui-root .agent-profile-history summary small {
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.backoffice-ui-root .agent-profile-history summary > svg {
+  transition: transform 150ms var(--ease-out);
+}
+
+.backoffice-ui-root .agent-profile-history[open] summary > svg {
+  transform: rotate(180deg);
+}
+
+.backoffice-ui-root .agent-profile-history > div {
+  gap: 0.25rem;
+  padding-top: 0.375rem;
+}
+
+.backoffice-ui-root .agent-profile-history .button {
+  min-height: 1.875rem;
+  padding: 0.1875rem 0.375rem;
+  background: #fff;
+  border-radius: 0.25rem;
+}
+
+.backoffice-ui-root .agent-conversation {
+  gap: 1.5rem;
+  padding: 1.5rem clamp(1rem, 12vw, 13rem) 2.25rem;
+}
+
+.backoffice-ui-root .agent-message {
+  width: min(100%, 44rem);
+  color: var(--ink-soft);
+  font-size: 0.9375rem;
+  line-height: 1.68;
+}
+
+.backoffice-ui-root .agent-message.is-user {
+  max-width: min(76%, 34rem);
+  padding: 0.625rem 0.75rem;
+  background: #1c1d20;
+  border: 0;
+  border-radius: 0.375rem;
+  box-shadow: none;
+}
+
+.backoffice-ui-root .agent-message.is-assistant {
+  padding-bottom: 0.125rem;
+}
+
+.backoffice-ui-root .agent-markdown h1,
+.backoffice-ui-root .agent-markdown h2,
+.backoffice-ui-root .agent-markdown h3 {
+  margin-top: 1.25rem;
+  color: var(--ink);
+}
+
+.backoffice-ui-root .agent-markdown p {
+  margin: 0.625rem 0;
+}
+
+.backoffice-ui-root .agent-markdown blockquote {
+  color: var(--ink-muted);
+  border-inline-start: 0;
+}
+
+.backoffice-ui-root .agent-execution-trace,
+.backoffice-ui-root .agent-search-summary,
+.backoffice-ui-root .talent-profile-card,
+.backoffice-ui-root .talent-profile-match-card,
+.backoffice-ui-root .agent-candidate-list {
+  margin-top: 1rem;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--line-strong);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.backoffice-ui-root .agent-execution-trace {
+  overflow: visible;
+}
+
+.backoffice-ui-root .agent-execution-trace summary {
+  padding: 0.625rem 0;
+  font-size: 0.6875rem;
+}
+
+.backoffice-ui-root .agent-execution-trace-body {
+  padding: 0.625rem 0 0;
+  border-top-color: var(--line);
+  animation: none;
+}
+
+.backoffice-ui-root .agent-search-summary,
+.backoffice-ui-root .talent-profile-card {
+  gap: 0.75rem;
+  padding: 0.75rem 0 0;
+}
+
+.backoffice-ui-root .agent-search-summary-metrics {
+  gap: 0.75rem;
+}
+
+.backoffice-ui-root .agent-search-summary-metrics > div,
+.backoffice-ui-root .agent-search-summary-metrics > div.is-unconfirmed {
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+
+.backoffice-ui-root .agent-search-summary-metrics strong,
+.backoffice-ui-root .agent-search-summary-metrics .is-unconfirmed strong {
+  color: var(--ink);
+  font-size: 0.9375rem;
+}
+
+.backoffice-ui-root .talent-profile-card-heading,
+.backoffice-ui-root .talent-profile-run-heading {
+  gap: 0.75rem;
+}
+
+.backoffice-ui-root .talent-profile-card-heading strong,
+.backoffice-ui-root .talent-profile-run-heading strong {
+  font-size: 0.875rem;
+}
+
+.backoffice-ui-root .talent-profile-card-heading small,
+.backoffice-ui-root .talent-profile-chips small,
+.backoffice-ui-root .agent-verification-status,
+.backoffice-ui-root .agent-verification-evidence li > span {
+  background: #fff;
+  border-radius: 0.25rem;
+}
+
+.backoffice-ui-root .talent-profile-section,
+.backoffice-ui-root .talent-profile-run,
+.backoffice-ui-root .talent-profile-match-note,
+.backoffice-ui-root .agent-verification {
+  padding-top: 0.75rem;
+}
+
+.backoffice-ui-root .talent-profile-question,
+.backoffice-ui-root .talent-profile-zero-state {
+  padding: 0.625rem 0;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+}
+
+.backoffice-ui-root .talent-profile-match-list {
+  gap: 0;
+}
+
+.backoffice-ui-root .talent-profile-match-card {
+  gap: 0.5rem;
+  padding: 0.625rem 0;
+  margin-top: 0;
+}
+
+.backoffice-ui-root .talent-profile-match-card:first-child {
+  border-top: 0;
+}
+
+.backoffice-ui-root .agent-candidate-list {
+  overflow: visible;
+}
+
+.backoffice-ui-root .agent-candidate-card {
+  gap: 0.4375rem;
+  padding: 0.75rem 0;
+  background: transparent;
+}
+
+.backoffice-ui-root .agent-candidate-card strong {
+  font-size: 0.8125rem;
+}
+
+.backoffice-ui-root .agent-candidate-reference {
+  display: inline-flex;
+  min-height: 1.75rem;
+  gap: 0.25rem;
+  align-items: center;
+  padding: 0.125rem 0.3125rem;
+  color: var(--ink-muted);
+  font-size: 0.625rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 0.25rem;
+}
+
+.backoffice-ui-root .agent-candidate-reference:hover:not(:disabled) {
+  color: var(--red-pressed);
+  background: var(--red-tint);
+  border-color: #f2c4c5;
+}
+
+.backoffice-ui-root .agent-loading {
+  gap: 0.25rem;
+  padding: 0.625rem 0;
+  color: var(--ink-muted);
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--line-strong);
+  border-radius: 0;
+  animation: none;
+}
+
+.backoffice-ui-root .agent-composer {
+  padding: 0.75rem clamp(1rem, 12vw, 13rem) 1rem;
+  background: #fff;
+  border-top: 1px solid var(--line-strong);
+}
+
+.backoffice-ui-root .agent-input-row {
+  display: block;
+  width: min(100%, 44rem);
+  padding: 0;
+  margin: 0 auto;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.backoffice-ui-root .agent-composer-surface {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  background: #fff;
+  border: 1px solid #cfd0d2;
+  border-radius: 0.5rem;
+  transition: border-color 150ms var(--ease-out), box-shadow 150ms var(--ease-out);
+}
+
+.backoffice-ui-root .agent-composer-surface:focus-within {
+  border-color: var(--red);
+  box-shadow: 0 0 0 3px rgb(215 22 24 / 0.1);
+}
+
+.backoffice-ui-root .agent-input-row textarea {
+  min-height: 3rem;
+  max-height: 7rem;
+  padding: 0.1875rem 0.25rem;
+  color: var(--ink);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  border-radius: 0.25rem;
+}
+
+.backoffice-ui-root .agent-input-row textarea::placeholder {
+  color: #8b8d91;
+}
+
+.backoffice-ui-root .agent-composer-actions {
+  display: flex;
+  gap: 0.375rem;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.backoffice-ui-root .agent-reference-trigger {
+  width: 1.875rem;
+  height: 1.875rem;
+  padding: 0;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 700;
+  background: #fff;
+  border: 1px solid var(--line-strong);
+  border-radius: 0.25rem;
+}
+
+.backoffice-ui-root .agent-reference-trigger:hover:not(:disabled),
+.backoffice-ui-root .agent-reference-trigger[aria-expanded="true"] {
+  color: var(--red-pressed);
+  border-color: var(--red);
+}
+
+.backoffice-ui-root .agent-composer-keyboard-hint {
+  margin-right: auto;
+  color: var(--ink-muted);
+  font-size: 0.625rem;
+}
+
+.backoffice-ui-root .agent-input-row .agent-send-button {
+  width: 1.875rem;
+  min-width: 1.875rem;
+  height: 1.875rem;
+  padding: 0;
+  color: #fff;
+  background: var(--red);
+  border: 1px solid var(--red);
+  border-radius: 0.25rem;
+  box-shadow: none;
+}
+
+.backoffice-ui-root .agent-input-row .agent-send-button:hover:not(:disabled) {
+  background: var(--red-pressed);
+  border-color: var(--red-pressed);
+}
+
+.backoffice-ui-root .agent-reference-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3125rem;
+  padding-bottom: 0.125rem;
+}
+
+.backoffice-ui-root .agent-reference-chip {
+  display: inline-flex;
+  max-width: 100%;
+  min-height: 1.75rem;
+  gap: 0.25rem;
+  align-items: center;
+  padding: 0.125rem 0.25rem 0.125rem 0.375rem;
+  color: var(--ink-soft);
+  font-size: 0.6875rem;
+  background: #f4f4f3;
+  border: 1px solid #dededc;
+  border-radius: 0.25rem;
+}
+
+.backoffice-ui-root .agent-reference-chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backoffice-ui-root .agent-reference-chip > svg {
+  flex: 0 0 auto;
+  color: var(--red-pressed);
+}
+
+.backoffice-ui-root .agent-reference-chip button {
+  display: inline-grid;
+  width: 1.25rem;
+  height: 1.25rem;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  color: var(--ink-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 0.1875rem;
+}
+
+.backoffice-ui-root .agent-reference-chip button:hover:not(:disabled) {
+  color: var(--red-pressed);
+  background: #fff;
+}
+
+.backoffice-ui-root .agent-reference-menu {
+  z-index: var(--agent-z-dropdown);
+  overflow: hidden;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid #cfd0d2;
+  border-radius: 0.5rem;
+  box-shadow: 0 1rem 2.5rem rgb(16 24 40 / 0.16);
+}
+
+.backoffice-ui-root .agent-reference-menu-search {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.375rem;
+  align-items: center;
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.backoffice-ui-root .agent-reference-menu-search > svg {
+  color: var(--ink-muted);
+}
+
+.backoffice-ui-root .agent-reference-menu-search input {
+  min-width: 0;
+  padding: 0.25rem 0;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.75rem;
+  background: transparent;
+  border: 0;
+  outline: 0;
+}
+
+.backoffice-ui-root .agent-reference-menu-search input:focus-visible {
+  outline: 0.125rem solid rgb(215 22 24 / 0.48);
+  outline-offset: 0.125rem;
+}
+
+.backoffice-ui-root .agent-reference-menu-search button {
+  display: inline-grid;
+  width: 1.5rem;
+  height: 1.5rem;
+  place-items: center;
+  padding: 0;
+  color: var(--ink-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 0.25rem;
+}
+
+.backoffice-ui-root .agent-reference-menu-list {
+  max-height: min(18rem, calc(100dvh - 9rem));
+  overflow-y: auto;
+  padding: 0.25rem;
+}
+
+.backoffice-ui-root .agent-reference-menu-list > button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  width: 100%;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.5rem;
+  color: var(--ink-soft);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 0.25rem;
+}
+
+.backoffice-ui-root .agent-reference-menu-list > button:hover,
+.backoffice-ui-root .agent-reference-menu-list > button.is-active {
+  color: var(--ink);
+  background: #f3f3f2;
+}
+
+.backoffice-ui-root .agent-reference-menu-list > button > svg {
+  color: var(--red-pressed);
+}
+
+.backoffice-ui-root .agent-reference-menu-list > button > span {
+  display: grid;
+  min-width: 0;
+  gap: 0.0625rem;
+}
+
+.backoffice-ui-root .agent-reference-menu-list strong,
+.backoffice-ui-root .agent-reference-menu-list small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backoffice-ui-root .agent-reference-menu-list strong {
+  font-size: 0.75rem;
+}
+
+.backoffice-ui-root .agent-reference-menu-list small,
+.backoffice-ui-root .agent-reference-menu-list em,
+.backoffice-ui-root .agent-reference-menu-empty {
+  color: var(--ink-muted);
+  font-size: 0.625rem;
+  font-style: normal;
+}
+
+.backoffice-ui-root .agent-reference-menu-empty {
+  padding: 0.75rem 0.5rem;
+  margin: 0;
+  text-align: center;
+}
+
+.backoffice-ui-root .agent-reference-status {
+  position: absolute;
+  right: clamp(1rem, 12vw, 13rem);
+  bottom: 5.5rem;
+  z-index: 2;
+  max-width: min(28rem, calc(100% - 2rem));
+  padding: 0.375rem 0.5rem;
+  margin: 0;
+  color: #8f1719;
+  font-size: 0.6875rem;
+  background: #fff7f7;
+  border: 1px solid #f0c7c7;
+  border-radius: 0.25rem;
+}
+
+@media (max-width: 47rem) {
+  .backoffice-ui-root .agent-header {
+    min-height: auto;
+  }
+
+  .backoffice-ui-root .agent-conversation {
+    gap: 1.125rem;
+    padding: 1rem 0.875rem 1.5rem;
+  }
+
+  .backoffice-ui-root .agent-message.is-user {
+    max-width: 88%;
+  }
+
+  .backoffice-ui-root .agent-composer {
+    padding: 0.625rem 0.875rem 0.75rem;
+  }
+
+  .backoffice-ui-root .agent-composer-keyboard-hint {
+    display: none;
+  }
+
+  .backoffice-ui-root .agent-reference-status {
+    right: 0.875rem;
+    bottom: 5rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .backoffice-ui-root .agent-composer-surface,
+  .backoffice-ui-root .agent-profile-history summary > svg {
+    transition: none;
+  }
+}

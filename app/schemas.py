@@ -1619,10 +1619,25 @@ class RecruitingAgentActiveTalentProfile(ApiModel):
     status: Literal["draft", "confirmed"]
 
 
+class RecruitingAgentInputReference(ApiModel):
+    """One safe, opaque chip describing server-owned Agent work state.
+
+    ``reference_id`` is intentionally an opaque database identifier.  It is
+    never a candidate ID, resume ID, resume excerpt, or a browser-provided
+    source of truth.  Labels are deliberately generic so a reference chip
+    cannot reveal a candidate's name or other personal data.
+    """
+
+    reference_id: str = Field(min_length=1, max_length=64)
+    kind: Literal["candidate", "job", "filter", "talent_profile"]
+    label: Literal["候选人", "关联 JD", "当前筛选", "人才画像"]
+
+
 class RecruitingAgentActiveContext(ApiModel):
     """Safe, recruiter-visible status for the current work-session scope."""
 
     candidate_set_source: Literal[
+        "candidate",
         "agent_search",
         "candidate_filter",
         "talent_search_run",
@@ -1631,6 +1646,9 @@ class RecruitingAgentActiveContext(ApiModel):
     active_job_version_id: str | None = None
     active_job_title: str | None = None
     active_talent_profile: RecruitingAgentActiveTalentProfile | None = None
+    input_references: list[RecruitingAgentInputReference] = Field(
+        default_factory=list
+    )
     expires_at: datetime
 
 
@@ -1660,16 +1678,16 @@ class RecruitingAgentConversationResponse(ApiModel):
 
 
 class RecruitingAgentContextBindRequest(ApiModel):
-    """Bind a server-owned talent-search run without spending an AI turn.
+    """Bind server-owned work state without spending an AI turn.
 
-    This keeps the browser interaction explicit: selecting a result scope in
-    the recruiting UI updates only the private work session.  It cannot carry
+    This keeps browser interaction explicit: selecting a profile/run or an
+    associated JD updates only the private work session. It cannot carry
     candidate IDs, chat history, source text, or arbitrary model instructions.
     """
 
-    context_ref: RecruitingAgentContextReference
-    # Unlike a normal turn, this action always applies the visible JD choice:
-    # null deliberately clears a previously selected JD from the work scope.
+    context_ref: RecruitingAgentContextReference | None = None
+    # An explicitly supplied null clears the previously associated JD.  If
+    # omitted while binding a profile/run, the saved JD remains unchanged.
     job_version_id: str | None = Field(default=None, max_length=64)
     conversation_id: str | None = Field(default=None, min_length=1, max_length=64)
     context_version: int | None = Field(default=None, ge=1)
@@ -1682,7 +1700,40 @@ class RecruitingAgentContextBindRequest(ApiModel):
             raise ValueError("context_version_required_for_conversation")
         if self.conversation_id is None and self.context_version is not None:
             raise ValueError("context_version_requires_conversation")
+        if self.context_ref is None and "job_version_id" not in self.model_fields_set:
+            raise ValueError("recruiting_agent_context_update_required")
         return self
+
+
+class RecruitingAgentCandidateScopeRequest(ApiModel):
+    """Bind one validated candidate without sending it through an Agent turn.
+
+    The candidate identifier is accepted only at this bounded binding
+    boundary.  The service resolves its current, eligible resume in the
+    authenticated workspace and persists only an opaque internal scope.
+    """
+
+    candidate_id: str = Field(min_length=1, max_length=64)
+    conversation_id: str | None = Field(default=None, min_length=1, max_length=64)
+    context_version: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def require_version_for_existing_conversation(
+        self,
+    ) -> "RecruitingAgentCandidateScopeRequest":
+        if self.conversation_id is not None and self.context_version is None:
+            raise ValueError("context_version_required_for_conversation")
+        if self.conversation_id is None and self.context_version is not None:
+            raise ValueError("context_version_requires_conversation")
+        return self
+
+
+class RecruitingAgentContextClearRequest(ApiModel):
+    """Remove one server-owned input reference from an existing chat."""
+
+    target: Literal["job", "candidate_scope", "talent_profile"]
+    conversation_id: str = Field(min_length=1, max_length=64)
+    context_version: int = Field(ge=1)
 
 
 class RecruitingAgentFilterScopeRequest(ApiModel):

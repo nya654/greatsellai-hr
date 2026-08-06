@@ -110,6 +110,14 @@ jobs:
           chmod 755 /home/ubuntu/.relay-allow.sh 2>/dev/null || true
           chown ubuntu:ubuntu /home/ubuntu/.relay-allow.sh 2>/dev/null || true
 
+          # Relay dir that the whitelist wrapper restricts all stream/load/rm to.
+          echo "=== relay dir ==="
+          if [[ "$can_sudo" == "yes" ]]; then
+            sudo mkdir -p /var/lib/greatsellai-relay && echo "OK: /var/lib/greatsellai-relay ready"
+          else
+            mkdir -p /var/lib/greatsellai-relay 2>/dev/null && echo "OK: /var/lib/greatsellai-relay ready (no sudo)" || echo "WARN: cannot create /var/lib/greatsellai-relay"
+          fi
+
           for f in "${files[@]}"; do
             echo "--- target: $f ---"
             if [[ "$can_sudo" == "yes" ]]; then

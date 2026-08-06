@@ -222,8 +222,16 @@ def enqueue_resume_score_batch(
     *,
     template_id: str,
     settings: AppSettings,
+    resume_id: str | None = None,
 ) -> ResumeScoreBatchResponse:
-    """Queue all currently scoreable resumes for one fixed score template."""
+    """Queue currently scoreable resumes for one fixed score template.
+
+    When ``resume_id`` is given, the batch contains exactly that one resume
+    item instead of every scoreable resume in the workspace.  A scoped resume
+    that is not scoreable (missing, inactive, or in another workspace) simply
+    produces today's zero-item completed batch rather than raising, so callers
+    may safely use this inside a broader extraction transaction.
+    """
 
     template, _ = _require_scoreable_template(session, template_id=template_id)
     route_policy_version_id, route_error = _route_pin_for_new_score_batch(
@@ -244,7 +252,7 @@ def enqueue_resume_score_batch(
         return _batch_response(existing)
 
     now = _utcnow()
-    snapshot_rows = session.execute(
+    snapshot_query = (
         select(
             Resume.id,
             ResumeFactSnapshot.id,
@@ -265,7 +273,10 @@ def enqueue_resume_score_batch(
             ResumeFactSnapshot.organization_id == organization_id,
         )
         .order_by(Resume.created_at.asc(), Resume.id.asc())
-    ).all()
+    )
+    if resume_id is not None:
+        snapshot_query = snapshot_query.where(Resume.id == resume_id)
+    snapshot_rows = session.execute(snapshot_query).all()
     snapshots = [
         (resume_id, snapshot_id, facts_version)
         for resume_id, snapshot_id, facts_version, quality_flags in snapshot_rows

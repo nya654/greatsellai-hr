@@ -1,0 +1,249 @@
+from __future__ import annotations
+
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.config import AppSettings
+from app.database import Database
+from app.models import (
+    Candidate,
+    Organization,
+    Resume,
+    ResumeFactSnapshot,
+    ResumeScoreBatchItem,
+    ScoreTemplate,
+    ScoreTemplateDimension,
+)
+from app.services import resume_score_batch_service
+from app.tenant_scope import (
+    clear_organization_context,
+    set_organization_context,
+)
+
+
+@contextmanager
+def _workspace(session: Session, organization_id: str) -> Iterator[None]:
+    set_organization_context(session, organization_id)
+    try:
+        yield
+    finally:
+        clear_organization_context(session)
+
+
+def _settings(tmp_path: Path) -> AppSettings:
+    data_dir = tmp_path / "data"
+    return AppSettings(
+        project_dir=tmp_path,
+        data_dir=data_dir,
+        upload_dir=data_dir / "uploads",
+        database_url="sqlite://",
+        allow_unauthenticated=False,
+        session_secret="resume-score-batch-single-test-secret",
+        transactional_email_provider="test",
+        public_app_url="http://testserver",
+        deepseek_api_key="resume-score-batch-single-test-key",
+        deepseek_model="unit-test-model",
+        min_text_chars_per_page=20,
+    )
+
+
+def _seed_ready_resume(
+    session: Session,
+    *,
+    organization_id: str,
+    label: str,
+) -> tuple[str, str]:
+    """Persist a ready, trusted resume and its current immutable fact snapshot."""
+
+    with _workspace(session, organization_id):
+        candidate = Candidate(display_name=f"Candidate {label}")
+        session.add(candidate)
+        session.flush()
+        resume = Resume(
+            candidate_id=candidate.id,
+            original_filename=f"{label}.pdf",
+            storage_key=f"{organization_id}/{label}.pdf",
+            sha256=(label * 64)[:64],
+            source_page_count=1,
+            parsed_page_count=1,
+            extraction_status="ready",
+            quality_flags=[],
+            parser_version="resume-score-batch-single-test",
+            raw_text="Synthetic resume used only for single-resume scoping tests.",
+            is_active=True,
+            facts_version=1,
+        )
+        session.add(resume)
+        session.flush()
+        snapshot = ResumeFactSnapshot(
+            resume_id=resume.id,
+            facts_version=1,
+            canonical_facts_json='{"schema_version":"resume_facts.v1","education":[],"experiences":[],"skills":[]}',
+            facts_sha256=(f"snapshot-{label}" * 64)[:64],
+            source_block_ids=[],
+            created_by="single-test",
+        )
+        session.add(snapshot)
+        session.flush()
+        return resume.id, snapshot.id
+
+
+def _scoreable_template(session: Session, *, name: str) -> ScoreTemplate:
+    template = ScoreTemplate(name=name, version=1)
+    session.add(template)
+    session.flush()
+    session.add(
+        ScoreTemplateDimension(
+            template_id=template.id,
+            key="skills",
+            label="Skills",
+            weight=100,
+            guidance=None,
+            sort_order=0,
+        )
+    )
+    session.flush()
+    return template
+
+
+def test_enqueue_score_batch_scoped_to_single_resume(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    database = Database("sqlite://")
+    database.create_all()
+    try:
+        with database.session_factory() as session:
+            organization = Organization(name="Single score batch org")
+            session.add(organization)
+            session.flush()
+            organization_id = organization.id
+
+            first_resume_id, _ = _seed_ready_resume(
+                session,
+                organization_id=organization_id,
+                label="scoped-one",
+            )
+            second_resume_id, _ = _seed_ready_resume(
+                session,
+                organization_id=organization_id,
+                label="scoped-two",
+            )
+
+            with _workspace(session, organization_id):
+                template = _scoreable_template(
+                    session,
+                    name="Single resume template",
+                )
+
+                response = resume_score_batch_service.enqueue_resume_score_batch(
+                    session,
+                    template_id=template.id,
+                    settings=settings,
+                    resume_id=first_resume_id,
+                )
+
+                assert response.total_count == 1
+                assert response.status == "queued"
+                assert response.completed_count == 0
+                items = session.scalars(
+                    select(ResumeScoreBatchItem).where(
+                        ResumeScoreBatchItem.batch_id == response.batch_id
+                    )
+                ).all()
+                assert len(items) == 1
+                assert items[0].resume_id == first_resume_id
+                assert items[0].resume_id != second_resume_id
+                assert items[0].status == "queued"
+    finally:
+        database.dispose()
+
+
+def test_enqueue_score_batch_scoped_to_unknown_resume_is_empty(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    database = Database("sqlite://")
+    database.create_all()
+    try:
+        with database.session_factory() as session:
+            organization = Organization(name="Empty score batch org")
+            session.add(organization)
+            session.flush()
+            organization_id = organization.id
+
+            _seed_ready_resume(
+                session,
+                organization_id=organization_id,
+                label="still-scoreable",
+            )
+
+            with _workspace(session, organization_id):
+                template = _scoreable_template(
+                    session,
+                    name="Unknown-resume template",
+                )
+
+                response = resume_score_batch_service.enqueue_resume_score_batch(
+                    session,
+                    template_id=template.id,
+                    settings=settings,
+                    resume_id="00000000-0000-4000-8000-000000000000",
+                )
+
+            assert response.total_count == 0
+            assert response.status == "completed"
+            assert response.completed_count == 0
+            assert response.failed_count == 0
+    finally:
+        database.dispose()
+
+
+def test_enqueue_score_batch_scoped_to_foreign_resume_is_empty(
+    tmp_path: Path,
+) -> None:
+    """A cross-organization resume id must not be admitted to the batch."""
+
+    settings = _settings(tmp_path)
+    database = Database("sqlite://")
+    database.create_all()
+    try:
+        with database.session_factory() as session:
+            organization_a = Organization(name="Single score batch org A")
+            organization_b = Organization(name="Single score batch org B")
+            session.add_all((organization_a, organization_b))
+            session.flush()
+            organization_a_id = organization_a.id
+            organization_b_id = organization_b.id
+
+            foreign_resume_id, _ = _seed_ready_resume(
+                session,
+                organization_id=organization_b_id,
+                label="foreign-ready",
+            )
+            _seed_ready_resume(
+                session,
+                organization_id=organization_a_id,
+                label="local-ready",
+            )
+
+            with _workspace(session, organization_a_id):
+                template = _scoreable_template(
+                    session,
+                    name="Foreign-resume template",
+                )
+
+                response = resume_score_batch_service.enqueue_resume_score_batch(
+                    session,
+                    template_id=template.id,
+                    settings=settings,
+                    resume_id=foreign_resume_id,
+                )
+
+            assert response.total_count == 0
+            assert response.status == "completed"
+            assert response.completed_count == 0
+    finally:
+        database.dispose()

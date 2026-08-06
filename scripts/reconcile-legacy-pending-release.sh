@@ -67,7 +67,7 @@ while (($#)); do
   esac
 done
 
-[[ "$pending_tag" =~ ^prod-[0-9]{8}-[0-9a-f]{7,40}$ ]] || die "Invalid pending production tag."
+[[ "$pending_tag" =~ ^prod-[0-9]{8}-([0-9a-f]{7,40}|[1-9][0-9]*)$ ]] || die "Invalid pending production tag."
 [[ "$pending_commit" =~ ^[0-9a-f]{40}$ ]] || die "Invalid pending production commit."
 [[ "$confirmed" -eq 1 ]] || die "Pass --confirm to acknowledge legacy pending-release reconciliation."
 [[ -n "$remote_host" ]] || die "Missing deployment target; pass --host or set RESUME_V3_DEPLOY_HOST."

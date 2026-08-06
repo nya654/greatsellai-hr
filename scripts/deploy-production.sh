@@ -66,7 +66,7 @@ while (($#)); do
   esac
 done
 
-[[ "$tag" =~ ^prod-[0-9]{8}-[0-9a-f]{7,40}$ ]] || die "Invalid production tag: $tag"
+[[ "$tag" =~ ^prod-[0-9]{8}-([0-9a-f]{7,40}|[1-9][0-9]*)$ ]] || die "Invalid production tag: $tag"
 [[ -n "$remote_host" ]] || die "Missing deployment target; pass --host or set RESUME_V3_DEPLOY_HOST."
 [[ -n "$project_dir" ]] || die "Missing project directory; pass --project-dir or set RESUME_V3_REMOTE_DIR."
 [[ -n "$history_dir" ]] || die "Missing history directory; pass --history-dir or set RESUME_V3_DEPLOY_HISTORY_DIR."
@@ -82,9 +82,6 @@ fi
 
 git fetch origin main --tags --prune
 release_commit="$(git rev-parse -q --verify "refs/tags/$tag^{commit}")" || die "Unknown local tag: $tag"
-tag_short_commit="${tag##*-}"
-[[ "$release_commit" == "$tag_short_commit"* ]] || \
-  die "Tag '$tag' suffix does not match its target commit."
 git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 || \
   die "Tag '$tag' has not been pushed to GitHub."
 git merge-base --is-ancestor "$release_commit" origin/main || \
@@ -103,7 +100,7 @@ remote_current="$(ssh_run "if [ -f $(shell_quote "$history_dir/current-release.e
 previous_tag=""
 previous_commit=""
 while IFS= read -r line; do
-  if [[ "$line" =~ ^prod-[0-9]{8}-[0-9a-f]{7,40}$ ]]; then
+  if [[ "$line" =~ ^prod-[0-9]{8}-([0-9a-f]{7,40}|[1-9][0-9]*)$ ]]; then
     previous_tag="$line"
   elif [[ "$line" =~ ^[0-9a-f]{40}$ ]]; then
     previous_commit="$line"

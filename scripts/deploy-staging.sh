@@ -98,7 +98,7 @@ while (($#)); do
   esac
 done
 
-[[ "$tag" =~ ^stg-[0-9]{8}-[0-9a-f]{7,40}$ ]] || die "Invalid staging tag: $tag"
+[[ "$tag" =~ ^stg-[0-9]{8}-([0-9a-f]{7,40}|[1-9][0-9]*)$ ]] || die "Invalid staging tag: $tag"
 [[ -n "$remote_host" ]] || die "Missing deployment target; pass --host or set RESUME_V3_DEPLOY_HOST."
 [[ -n "$project_dir" ]] || die "Missing project directory; pass --project-dir or set RESUME_V3_REMOTE_DIR."
 [[ -n "$history_dir" ]] || die "Missing history directory; pass --history-dir or set RESUME_V3_DEPLOY_HISTORY_DIR."
@@ -131,8 +131,6 @@ fi
 
 git fetch origin main --tags --prune
 release_commit="$(git rev-parse -q --verify "refs/tags/$tag^{commit}")" || die "Unknown local tag: $tag"
-tag_short_commit="${tag##*-}"
-[[ "$release_commit" == "$tag_short_commit"* ]] || die "Tag suffix does not match its target commit."
 git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 || \
   die "Staging tag '$tag' has not been pushed to GitHub."
 [[ "$release_commit" == "$(git rev-parse origin/main)" ]] || \
@@ -213,7 +211,7 @@ require_image() {
   printf '%s' "$actual_id"
 }
 
-[[ "$tag" =~ ^stg-[0-9]{8}-[0-9a-f]{7,40}$ ]] || die "Invalid staging tag."
+[[ "$tag" =~ ^stg-[0-9]{8}-([0-9a-f]{7,40}|[1-9][0-9]*)$ ]] || die "Invalid staging tag."
 [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]] || die "Invalid staging commit."
 [[ "$archive_sha256" =~ ^[0-9a-f]{64}$ ]] || die "Invalid staging archive checksum."
 if [[ "$delivery" == "direct" ]]; then
@@ -373,7 +371,7 @@ tag="$2"
 release_commit="$3"
 record="$history_dir/current-release.env"
 [[ "$history_dir" == /home/ubuntu/* && "$history_dir" == *staging* && "$history_dir" != /home/ubuntu/ ]]
-[[ "$tag" =~ ^stg-[0-9]{8}-[0-9a-f]{7,40}$ ]]
+[[ "$tag" =~ ^stg-[0-9]{8}-([0-9a-f]{7,40}|[1-9][0-9]*)$ ]]
 [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
 test -f "$record"
 record_value() { sed -n "s/^$2=//p" "$1" | tail -n 1; }

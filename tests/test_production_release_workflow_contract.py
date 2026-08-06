@@ -189,7 +189,12 @@ def test_public_repository_routes_ci_and_release_jobs_to_hosted_runners() -> Non
     production_images = ci.split("  production-images:", maxsplit=1)[1]
     assert "needs.main-release-provenance.result == 'success'" in production_images
     assert "github.event_name == 'push' && github.ref == 'refs/heads/main'" in production_images
-    assert "runs-on: [self-hosted, Linux, X64, greatsell-ci]" in production_images
+    # Production images always build on GitHub-hosted runners. The repo has a
+    # single self-hosted runner; when it wedges at job teardown it blocks every
+    # deploy (staging requires a successful main CI for the exact commit), so
+    # the release-image build must not depend on that runner in any mode.
+    assert "runs-on: ubuntu-latest" in production_images
+    assert "self-hosted" not in production_images
     assert "pull_request" not in production_images
     assert "--build-arg DEBIAN_MIRROR=mirrors.cloud.tencent.com" in production_images
     assert "--build-arg PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple" in production_images

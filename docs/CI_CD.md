@@ -6,26 +6,35 @@
 
 ## Runner 路由与镜像交接
 
-仓库为私有时，测试工作流通过标签 `self-hosted`、`Linux`、`X64` 和 `greatsell-ci` 路由到
-受信任 Linux 自托管 Runner。该 Runner 必须保持在线，并具备 Docker、Docker Compose、Python
-3.12、Node 22、Chromium 运行依赖和对 GitHub Actions 的网络访问；`postgres-mailbox-race`、
-生产镜像构建和运行时回归会直接使用其 Docker daemon。
+测试工作流（PR 检查、`main` 溯源、Playwright 关键路径、PostgreSQL 并发回归）在仓库为私有时
+通过标签 `self-hosted`、`Linux`、`X64` 和 `greatsell-ci` 路由到受信任 Linux 自托管 Runner；
+仓库为公开时自动改用标准 GitHub-hosted Ubuntu Runner。自托管 Runner 必须保持在线，并具备
+Docker、Docker Compose、Python 3.12、Node 22、Chromium 运行依赖和对 GitHub Actions 的
+网络访问；`postgres-mailbox-race` 和 Playwright 会直接使用其 Docker daemon。
 
-仓库为公开时，PR 检查、`main` 溯源与镜像构建、staging 及生产发布编排均自动改用标准
+`production-images` job 一律在 GitHub-hosted Ubuntu Runner 上构建并发布生产镜像，不依赖任何
+自托管 Runner。这是有意的取舍：本仓库只有一台自托管 Runner，一旦它卡在 job 收尾阶段，唯一的
+Runner 会被占用且无法处理取消请求，`main` CI 排队、后续 staging 发布全被阻塞。迁移到
+GitHub-hosted 后，即使自托管 Runner 离线或卡死也不会阻塞发布；`docker build` 的腾讯镜像
+build args 让基础镜像、apt 与包索引拉取保持快速，首次向 TCR 推送大层跨越边境的耗时由构建
+重试和 55 分钟超时吸收。
+
+仓库为公开时，PR 检查、`main` 溯源与镜像构建、staging 及生产发布编排均使用标准
 GitHub-hosted Ubuntu Runner。成功的 `main` CI 会把两份带 commit SHA、CI run ID 与 run attempt
 标签的镜像，以及 checksum 和 metadata 打包为短期 Actions artifact；**Staging release** 只从触发
 它的那次成功 CI 下载该 artifact，校验 checksum、commit、run ID 与 run attempt 后才加载并传输到
-staging。镜像不再依赖某台本机 Runner 的
-Docker 缓存跨工作流保留。切回私有仓库时，所有这些工作流会自动恢复自托管 Runner，无需改回
-YAML；artifact 交接仍保持相同的完整性校验。
+staging。镜像不再依赖某台本机 Runner 的 Docker 缓存跨工作流保留。artifact 交接保持相同的
+完整性校验。
 
 这只是工作流的默认路由，不是公开仓库的自托管 Runner 安全边界。公开前必须将该仓库的
 repo-level 自托管 Runner 解绑，或将其迁入只允许受保护 `main` 发布工作流的私有部署中继/
 组织 Runner group；外部 fork 可以提交修改过的 workflow，不能仅依赖本文件中的 `if` 或
 `runs-on` 约束来保护本机。公开仓库使用 GitHub-hosted CI 期间，现有自托管 Runner 的安装、
-标签和私有仓库工作流可以保留，转回私有后再重新绑定即可恢复完整链路。
+标签和私有仓库测试工作流可以保留，转回私有后再重新绑定即可恢复测试链路；生产镜像构建
+始终使用 GitHub-hosted。
 
-私有仓库的 Runner 离线时，工作流会排队而非自动回退到 GitHub 托管 Runner。生产工作流仍仅从受保护的
+私有仓库的 Runner 离线时，测试工作流会排队而非自动回退到 GitHub 托管 Runner；生产镜像构建与
+发布不受影响。生产工作流仍仅从受保护的
 `main` 或 `prod-*` 进入 `production` Environment，并只在该 Environment 中读取部署密钥与
 变量；不要把这些值加入 Runner 配置、仓库变量或源码。
 
@@ -172,8 +181,7 @@ staging 或 production。
 
 ## 安全与边界
 
-- 公开仓库中，默认 PR、`main` 发布预检和发布编排均必须保持 GitHub-hosted；生产镜像 job 在公开
-  仓库只接受 `main` 的 `push`，staging 只能下载同一成功 CI run 的精确 artifact。在公开前还必须解绑 repo-level 自托管 Runner 或使用受限私有
+- 公开仓库中，默认 PR、`main` 发布预检和发布编排均必须保持 GitHub-hosted；生产镜像 job 只接受 `main` 的 `push`，staging 只能下载同一成功 CI run 的精确 artifact。在公开前还必须解绑 repo-level 自托管 Runner 或使用受限私有
   部署中继，因为外部 fork 可以在自己的分支改写 workflow，YAML 条件本身不是 Runner 隔离。
 - CI 不读取生产 Environment 的 SSH 密钥或变量。
 - 自动 staging 只接受本仓库的成功 `main` 推送 CI；PR CI、手动 CI、取消或失败的 CI 都不能

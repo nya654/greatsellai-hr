@@ -1,5 +1,46 @@
 /* Score template workspace, scoped to the authenticated backoffice. */
 
+.backoffice-ui-root .score-workspace .score-field-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  margin: 0 0 1rem;
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.backoffice-ui-root .score-workspace .score-field-legend .score-field-badge {
+  flex: none;
+}
+
+.backoffice-ui-root .score-workspace .score-field-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.125rem 0.5rem;
+  color: var(--ink-soft);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+  vertical-align: 0.1em;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+}
+
+.backoffice-ui-root .score-workspace .score-field-badge.is-ai {
+  color: var(--red-pressed);
+  background: var(--red-tint);
+  border-color: rgb(215 22 24 / 0.35);
+}
+
 .backoffice-ui-root .score-workspace .score-template-preset-section {
   display: grid;
   gap: 0.75rem;

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       pending_tag:
-        description: Exact interrupted prod-YYYYMMDD-<commit-sha> tag recorded on production.
+        description: Exact interrupted prod-YYYYMMDD-<N or commit-sha> tag recorded on production.
         required: true
         type: string
       pending_commit:
@@ -40,7 +40,7 @@ jobs:
           set -Eeuo pipefail
           [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "Legacy reconciliation must be started from main." >&2; exit 1; }
           [[ "$CONFIRM" == "RECONCILE_LEGACY_PENDING" ]] || { echo "Confirmation must be RECONCILE_LEGACY_PENDING." >&2; exit 1; }
-          [[ "$PENDING_TAG" =~ ^prod-[0-9]{8}-[0-9a-f]{7,40}$ ]] || { echo "Invalid pending production tag." >&2; exit 1; }
+          [[ "$PENDING_TAG" =~ ^prod-[0-9]{8}-([0-9a-f]{7,40}|[1-9][0-9]*)$ ]] || { echo "Invalid pending production tag." >&2; exit 1; }
           [[ "$PENDING_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid pending production commit." >&2; exit 1; }
       - uses: actions/checkout@v4
         with:

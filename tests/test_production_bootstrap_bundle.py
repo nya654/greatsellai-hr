@@ -85,6 +85,20 @@ def test_valid_production_bootstrap_bundle_is_accepted(tmp_path: Path) -> None:
     validator.validate_bundle(bundle_dir=bundle, import_id="move-20260803")
 
 
+def test_bundle_accepts_daily_counter_release_tag(tmp_path: Path) -> None:
+    # The release tag format migrated to prod-YYYYMMDD-<N> (daily counter);
+    # the bootstrap validator must accept the counter form as well as the
+    # legacy commit-short-sha form.
+    validator = _load_validator()
+    bundle = _write_bundle(
+        tmp_path / "bundle",
+        source_release_tag="prod-20260803-7",
+        source_release_commit="0123456789abcdef0123456789abcdef01234567",
+    )
+
+    validator.validate_bundle(bundle_dir=bundle, import_id="move-20260803")
+
+
 def test_bundle_accepts_an_empty_uploads_archive(tmp_path: Path) -> None:
     validator = _load_validator()
     bundle = _write_bundle(tmp_path / "bundle")

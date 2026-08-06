@@ -167,10 +167,12 @@ jobs:
       needs.main-release-provenance.result == 'success' &&
       github.event_name == 'push' && github.ref == 'refs/heads/main'
     # This job accepts neither pull-request nor manual workflow input and only
-    # runs after verified merged-main provenance. Keep the large image build
-    # on the trusted domestic runner so the first push of large production
-    # layers does not depend on a slow cross-border hosted-runner transfer.
-    runs-on: [self-hosted, Linux, X64, greatsell-ci]
+    # runs after verified merged-main provenance. Production images build on
+    # the standard GitHub-hosted runner; the domestic mirrors in the build
+    # args keep base-image, apt, and package fetches fast. The first push of
+    # large layers to TCR crosses the border and can be slow, so the build
+    # steps retry once and the job has a generous timeout.
+    runs-on: ubuntu-latest
     timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4

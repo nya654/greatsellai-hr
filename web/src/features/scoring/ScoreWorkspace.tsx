@@ -364,9 +364,12 @@ export function ScoreWorkspace({
             </div>
             <div className="form-grid">
               <div className="field-stack span-full">
-                <label className="field-label" htmlFor="template-name">
-                  规则名称 <span className="score-field-badge is-human">人读</span>
-                </label>
+                <div className="score-field-label-row">
+                  <label className="field-label" htmlFor="template-name">
+                    规则名称
+                  </label>
+                  <span className="score-field-badge is-human">人读</span>
+                </div>
                 <input
                   className="field"
                   id="template-name"
@@ -378,9 +381,12 @@ export function ScoreWorkspace({
                 />
               </div>
               <div className="field-stack span-full">
-                <label className="field-label" htmlFor="template-description">
-                  评分说明（可选） <span className="score-field-badge is-human">人读</span>
-                </label>
+                <div className="score-field-label-row">
+                  <label className="field-label" htmlFor="template-description">
+                    评分说明（可选）
+                  </label>
+                  <span className="score-field-badge is-human">人读</span>
+                </div>
                 <textarea
                   className="textarea-field template-description-field"
                   id="template-description"
@@ -398,12 +404,15 @@ export function ScoreWorkspace({
                 <div className="score-template-dimension" key={dimension.id}>
                   <div className="score-template-dimension-header">
                     <div className="dimension-field-stack">
-                      <label
-                        className="field-label"
-                        htmlFor={`dimension-label-${dimension.id}`}
-                      >
-                        评分维度 <span className="score-field-badge is-ai">AI 输入</span>
-                      </label>
+                      <div className="score-field-label-row">
+                        <label
+                          className="field-label"
+                          htmlFor={`dimension-label-${dimension.id}`}
+                        >
+                          评分维度
+                        </label>
+                        <span className="score-field-badge is-ai">AI 输入</span>
+                      </div>
                       <input
                         className="field"
                         id={`dimension-label-${dimension.id}`}
@@ -417,12 +426,15 @@ export function ScoreWorkspace({
                       />
                     </div>
                     <div className="dimension-field-stack dimension-weight-field">
-                      <label
-                        className="field-label"
-                        htmlFor={`dimension-weight-${dimension.id}`}
-                      >
-                        权重（%） <span className="score-field-badge is-ai">AI 输入</span>
-                      </label>
+                      <div className="score-field-label-row">
+                        <label
+                          className="field-label"
+                          htmlFor={`dimension-weight-${dimension.id}`}
+                        >
+                          权重（%）
+                        </label>
+                        <span className="score-field-badge is-ai">AI 输入</span>
+                      </div>
                       <input
                         aria-describedby={`dimension-weight-hint-${dimension.id}`}
                         className="field"
@@ -461,12 +473,15 @@ export function ScoreWorkspace({
                     </button>
                   </div>
                   <div className="dimension-guidance-stack">
-                    <label
-                      className="field-label"
-                      htmlFor={`dimension-guidance-${dimension.id}`}
-                    >
-                      AI 评分说明（可选） <span className="score-field-badge is-ai">AI 输入</span>
-                    </label>
+                    <div className="score-field-label-row">
+                      <label
+                        className="field-label"
+                        htmlFor={`dimension-guidance-${dimension.id}`}
+                      >
+                        AI 评分说明（可选）
+                      </label>
+                      <span className="score-field-badge is-ai">AI 输入</span>
+                    </div>
                     <textarea
                       className="textarea-field dimension-guidance-field"
                       id={`dimension-guidance-${dimension.id}`}

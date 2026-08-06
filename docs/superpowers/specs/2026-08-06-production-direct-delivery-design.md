@@ -149,15 +149,42 @@ workflow_run 字段。改为按记录的 `image_delivery` 分叉：
 5. 用 staging 主机本地验证 `docker save <示例镜像> | gzip | ssh production docker load`
    可达，并把验证结果记录下来。
 
+## 六、版本号（日期 + 当日序号）
+
+用户反馈 git 提交 hash（如 `stg-20260806-397c3d6`）看不懂，需要可读版本号管理发布。
+拍板形式：**日期 + 当日序号**，hash 只作审计保留在发布记录里。
+
+- 新标签格式：`stg-YYYYMMDD-N` / `prod-YYYYMMDD-N`，`N` 为当天该类标签的第几个
+  （从 1 起）。校验正则 `^(stg|prod)-[0-9]{8}-[1-9][0-9]*$`。
+- `N` 的计算：`git tag --list "stg-YYYYMMDD-[0-9]*"`（只数同格式标签，不含历史
+  `<sha>` 后缀标签）计数 + 1。标签创建被 release lane 并发组串行化，无竞态。
+- 过渡期**同时接受新旧两种格式**（`^...-[0-9a-f]{7,40}$` 与 `^...-[1-9][0-9]*$`），
+  以便首个生产晋级仍可消费当前已部署的旧格式 `stg-20260806-397c3d6`。
+- 删除依赖"标签后缀=commit"的自我校验（`tag##*-` 检查）：commit 一律从
+  `git rev-parse refs/tags/$tag^{commit}` 解析，标签不可变 + 发布记录里的
+  `commit=<full sha>` 保留审计链。
+- 发布记录（`current-release.env` / `releases/*.env`）继续写 `tag` 与 `commit`，
+  展示时优先显示可读 tag（即版本号）。
+
 ## 改动清单
 
 - `.github/workflows/staging-release.yml`：新增 "Pre-load verified images to
-  production host" 步骤。
+  production host" 步骤；创建标签改为日期+序号格式。
 - `scripts/stream-images-to-production.sh`：新增，staging 主机侧 save|gzip|load +
   ID 回查校验。
 - `scripts/verify-staging-release.sh`：支持 direct 记录分叉。
 - `scripts/verify-preloaded-production-images.sh`：新增，生产机预加载镜像 ID 校验。
 - `.github/workflows/production-release.yml`：替换 TCR 拉取为预加载镜像校验，
-  更新 job outputs。
-- `docs/CI_CD.md`、`docs/STAGING_RELEASE.md`：更新为直传 + staging 中转模型，
-  说明新增信任面；`docs/TCR_RELEASE_SETUP.md` 保留为历史说明。
+  更新 job outputs；创建 `prod-*` 标签改为日期+序号格式，解析 staging 标签兼容
+  新旧两种格式。
+- 标签格式迁移（新旧格式兼容 + 移除 `tag##*-` 自我校验）：
+  - `.github/workflows/`：`production-deploy.yml`、`production-rollback.yml`、
+    `production-pending-finalize.yml`、`production-healthy-pending-finalize.yml`、
+    `production-legacy-reconcile.yml`。
+  - `scripts/`：`create-staging-tag.sh`、`create-production-tag.sh`、
+    `deploy-staging.sh`、`deploy-production.sh`、`verify-staging-release.sh`、
+    `remote-release-helper.sh`、`finalize-pending-release.sh`、
+    `finalize-healthy-pending-release.sh`、`reconcile-legacy-pending-release.sh`、
+    `restore-production-backup.sh`。
+- `docs/CI_CD.md`、`docs/STAGING_RELEASE.md`：更新为直传 + staging 中转模型 +
+  日期序号版本号，说明新增信任面；`docs/TCR_RELEASE_SETUP.md` 保留为历史说明。

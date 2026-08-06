@@ -45,7 +45,7 @@ _OPTIONAL_MANIFEST_KEYS = {
     "source_release_tag",
 }
 _RELEASE_COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
-_RELEASE_TAG_RE = re.compile(r"prod-[0-9]{8}-(?:[0-9a-f]{7,40}|[1-9][0-9]*)\Z")
+_RELEASE_TAG_RE = re.compile(r"prod-[0-9]{8}-[0-9a-f]{7,40}\Z")
 
 
 def _fail(code: str) -> BootstrapBundleValidationError:
@@ -92,7 +92,6 @@ def _parse_manifest(path: Path) -> dict[str, str]:
     if (
         "source_release_tag" in values
         and "source_release_commit" in values
-        and not re.fullmatch(r"[1-9][0-9]*", values["source_release_tag"].rsplit("-", maxsplit=1)[1])
         and not values["source_release_commit"].startswith(
             values["source_release_tag"].rsplit("-", maxsplit=1)[1]
         )

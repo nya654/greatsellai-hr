@@ -7,11 +7,10 @@ cd "$repo_root"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/create-staging-tag.sh [stg-YYYYMMDD-<N>]
+Usage: scripts/create-staging-tag.sh [stg-YYYYMMDD-<commit-short-sha>]
 
 Creates and pushes an annotated staging tag for the current, clean origin/main
-commit. Without an argument the next daily counter tag (stg-YYYYMMDD-<N>) is
-created. The command refuses to move or recreate an existing tag.
+commit. The command refuses to move or recreate an existing tag.
 EOF
 }
 
@@ -40,23 +39,10 @@ if [[ "$head_commit" != "$origin_main_commit" ]]; then
   exit 1
 fi
 
-next_tag_number() {
-  # Next daily counter tag (stg-YYYYMMDD-<N>). Count only same-day counter tags,
-  # never historical <sha>-suffixed tags, then bump past any gap.
-  local kind="$1"
-  local prefix="${kind}-$(date -u +%Y%m%d)"
-  local n
-  n="$(git tag --list "${prefix}-*" | awk -v re="^${prefix}-[1-9][0-9]*\$" '$0 ~ re { c++ } END { print c+0 }')"
-  n=$((n + 1))
-  while git rev-parse -q --verify "refs/tags/${prefix}-${n}" >/dev/null 2>&1; do
-    n=$((n + 1))
-  done
-  printf '%s-%s' "$prefix" "$n"
-}
-
-tag="${1:-$(next_tag_number stg)}"
-if [[ ! "$tag" =~ ^stg-[0-9]{8}-([0-9a-f]{7,40}|[1-9][0-9]*)$ ]]; then
-  echo "Invalid tag '$tag'. Expected stg-YYYYMMDD-<N> or stg-YYYYMMDD-<commit sha>." >&2
+short_commit="$(git rev-parse --short=7 HEAD)"
+tag="${1:-stg-$(date -u +%Y%m%d)-$short_commit}"
+if [[ ! "$tag" =~ ^stg-[0-9]{8}-[0-9a-f]{7,40}$ ]]; then
+  echo "Invalid tag '$tag'. Expected stg-YYYYMMDD-<lowercase commit sha>." >&2
   exit 1
 fi
 

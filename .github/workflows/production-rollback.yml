@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Previously deployed prod-YYYYMMDD-<N or commit-sha> tag to roll back to.
+        description: Previously deployed prod-YYYYMMDD-<commit-sha> tag to roll back to.
         required: true
         type: string
       allow_schema_ahead:
@@ -41,7 +41,7 @@ jobs:
           set -Eeuo pipefail
           [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "Manual production rollbacks must be started from main." >&2; exit 1; }
           [[ "$CONFIRM" == "ROLLBACK" ]] || { echo "Confirmation must be ROLLBACK." >&2; exit 1; }
-          [[ "$RELEASE_TAG" =~ ^prod-[0-9]{8}-([0-9a-f]{7,40}|[1-9][0-9]*)$ ]] || { echo "Invalid production tag." >&2; exit 1; }
+          [[ "$RELEASE_TAG" =~ ^prod-[0-9]{8}-[0-9a-f]{7,40}$ ]] || { echo "Invalid production tag." >&2; exit 1; }
           [[ "$ALLOW_SCHEMA_AHEAD" == "true" || "$ALLOW_SCHEMA_AHEAD" == "false" ]] || { echo "Invalid allow_schema_ahead value." >&2; exit 1; }
       - uses: actions/checkout@v4
         with:
@@ -51,6 +51,11 @@ jobs:
         run: |
           set -Eeuo pipefail
           git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          expected_short_sha="${RELEASE_TAG##*-}"
+          [[ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" == "$expected_short_sha"* ]] || {
+            echo "Production tag suffix does not match its target commit." >&2
+            exit 1
+          }
           git merge-base --is-ancestor "refs/tags/$RELEASE_TAG^{commit}" origin/main || {
             echo "Production tag is not reachable from origin/main." >&2
             exit 1

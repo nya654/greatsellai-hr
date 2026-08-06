@@ -70,7 +70,7 @@ while (($#)); do
   esac
 done
 
-[[ "$release_tag" =~ ^prod-[0-9]{8}-([0-9a-f]{7,40}|[1-9][0-9]*)$ ]] || die "Invalid production tag: $release_tag"
+[[ "$release_tag" =~ ^prod-[0-9]{8}-[0-9a-f]{7,40}$ ]] || die "Invalid production tag: $release_tag"
 [[ "$backup_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,180}$ ]] || die "Invalid backup ID."
 [[ "$confirmed" -eq 1 ]] || die "Pass --confirm-restore to acknowledge the destructive restore."
 [[ -n "$remote_host" ]] || die "Missing deployment target; pass --host or set RESUME_V3_DEPLOY_HOST."
@@ -85,6 +85,8 @@ done
 git fetch origin main --tags --prune
 release_commit="$(git rev-parse -q --verify "refs/tags/$release_tag^{commit}")" || \
   die "Unknown local tag: $release_tag"
+[[ "$release_commit" == "${release_tag##*-}"* ]] || \
+  die "Tag suffix does not match its target commit."
 git ls-remote --exit-code --tags origin "refs/tags/$release_tag" >/dev/null 2>&1 || \
   die "Tag '$release_tag' has not been pushed to GitHub."
 git merge-base --is-ancestor "$release_commit" origin/main || \

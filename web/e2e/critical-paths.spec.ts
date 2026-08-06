@@ -2663,6 +2663,148 @@ test.describe("招聘工作台关键路径", () => {
     await expect(dialog.getByText("候选人", { exact: true })).toHaveCount(0);
   });
 
+  test("招聘助手 @ 可引用工作集候选人：滚动分页、名字搜索、选中绑定范围", async ({ page }) => {
+    await registerAndVerify(page, "agent-at-refs");
+    const conversationId = "e2e-agent-at-refs";
+    const candidateScopeRequests: Array<Record<string, unknown>> = [];
+    const candidateReferenceRequests: Array<{
+      query: string | null;
+      cursor: string | null;
+      limit: string | null;
+    }> = [];
+    const referenceItems = (start: number, end: number) =>
+      Array.from({ length: end - start + 1 }, (_, offset) => {
+        const suffix = String(start + offset).padStart(2, "0");
+        return {
+          candidate_id: `candidate-${suffix}`,
+          resume_id: `resume-${suffix}`,
+          display_name: `候选人 ${suffix}`,
+        };
+      });
+
+    await page.route("**/v1/recruiting-agent/turns", async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          conversation_id: conversationId,
+          context_version: 2,
+          active_context: {
+            candidate_set_source: "candidate_filter",
+            candidate_count: 15,
+            active_job_version_id: null,
+            active_job_title: null,
+            active_talent_profile: null,
+            input_references: [
+              { reference_id: "filter-scope-at-refs", kind: "filter", label: "当前筛选" },
+            ],
+            expires_at: "2026-07-25T10:00:00Z",
+          },
+          message: "已保存当前初筛范围，共 15 位候选人。",
+          intent: "search_candidates",
+          job_version_id: null,
+          candidates: [],
+          actions: [],
+          tool_trace: [],
+          search_summary: null,
+          batch_id: null,
+        }),
+      });
+    });
+    // The @ menu scrolls through the conversation's frozen candidate set in
+    // server pages (the browser never holds the full list) and replaces the
+    // list with a server-side name search while typing.
+    await page.route(
+      `**/v1/recruiting-agent/conversations/${conversationId}/candidate-references**`,
+      async (route) => {
+        const url = new URL(route.request().url());
+        const query = url.searchParams.get("query");
+        const cursor = url.searchParams.get("cursor");
+        candidateReferenceRequests.push({
+          query,
+          cursor,
+          limit: url.searchParams.get("limit"),
+        });
+        let items: Array<{
+          candidate_id: string;
+          resume_id: string;
+          display_name: string;
+        }>;
+        let nextCursor: string | null;
+        if (query != null && query !== "") {
+          items = query.includes("02") ? referenceItems(2, 2) : [];
+          nextCursor = null;
+        } else if (cursor === "cursor-page-2") {
+          items = referenceItems(13, 15);
+          nextCursor = null;
+        } else {
+          items = referenceItems(1, 12);
+          nextCursor = "cursor-page-2";
+        }
+        await route.fulfill({ json: { items, next_cursor: nextCursor } });
+      },
+    );
+    await page.route("**/v1/recruiting-agent/conversations/candidate-scope", async (route) => {
+      candidateScopeRequests.push(route.request().postDataJSON() as Record<string, unknown>);
+      await route.fulfill({
+        json: {
+          conversation_id: conversationId,
+          context_version: 3,
+          active_context: {
+            candidate_set_source: "candidate",
+            candidate_count: 1,
+            active_job_version_id: null,
+            active_job_title: null,
+            active_talent_profile: null,
+            input_references: [
+              { reference_id: "candidate-scope-at-refs", kind: "candidate", label: "候选人" },
+            ],
+            expires_at: "2026-07-25T10:00:00Z",
+          },
+          chat_history: [],
+        },
+      });
+    });
+
+    await page.getByRole("button", { name: "招聘助手", exact: true }).click();
+    const dialog = recruitingAgentPage(page);
+    await dialog.getByLabel("向招聘助手提问").fill("把当前初筛结果交给我");
+    await dialog.getByRole("button", { name: "发送提问" }).click();
+    await expect(dialog.getByText("初筛结果 · 15 人")).toBeVisible();
+
+    const referenceMenu = dialog.getByRole("listbox", { name: "选择要引用的资料" });
+    await dialog.getByRole("button", { name: "添加引用" }).click();
+    await expect(referenceMenu.getByText("候选人（工作集）")).toBeVisible();
+    await expect(referenceMenu.getByRole("option", { name: /候选人 01/ })).toBeVisible();
+    await expect(referenceMenu.getByRole("option", { name: /候选人 12/ })).toBeVisible();
+    await expect(referenceMenu.getByRole("option", { name: /候选人 13/ })).toHaveCount(0);
+
+    // Scrolling the list near the bottom requests the next server page.
+    await referenceMenu.evaluate((element) => element.scrollTo(0, element.scrollHeight));
+    await expect(referenceMenu.getByRole("option", { name: /候选人 13/ })).toHaveCount(1);
+    await expect(referenceMenu.getByRole("option", { name: /候选人 15/ })).toHaveCount(1);
+    await expect.poll(() =>
+      candidateReferenceRequests.some((request) => request.cursor === "cursor-page-2"),
+    ).toBe(true);
+
+    // Typing a name searches server-side and narrows the working-set list.
+    await dialog.getByLabel("搜索要引用的资料").fill("候选人 02");
+    await expect.poll(() =>
+      candidateReferenceRequests.some((request) => request.query === "候选人 02"),
+    ).toBe(true);
+    await expect(referenceMenu.getByRole("option", { name: /候选人 02/ })).toBeVisible();
+    await expect(referenceMenu.getByRole("option", { name: /候选人 01/ })).toHaveCount(0);
+
+    // Selecting the searched candidate binds its candidate scope.
+    await referenceMenu.getByRole("option", { name: /候选人 02/ }).click();
+    await expect.poll(() => candidateScopeRequests.length).toBe(1);
+    expect(candidateScopeRequests[0]).toMatchObject({
+      candidate_id: "candidate-02",
+      conversation_id: conversationId,
+      context_version: 2,
+    });
+    await expect(referenceMenu).toHaveCount(0);
+  });
+
   test("招聘助手恢复安全工作范围，并在后续提问携带最新会话版本", async ({ page }) => {
     await registerAndVerify(page, "agent-context");
     const turnRequests: Array<Record<string, unknown>> = [];

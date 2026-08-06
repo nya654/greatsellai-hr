@@ -66,6 +66,7 @@ import type {
   ResumeSummary,
   ResumeSummaryManualCreate,
   ResumeUploadResponse,
+  RecruitingAgentCandidateReferencePage,
   RecruitingAgentCandidateScopeBindInput,
   RecruitingAgentContextBindInput,
   RecruitingAgentContextClearInput,
@@ -497,6 +498,19 @@ export function createApiClient(options: ApiClientOptions = {}) {
     getRecruitingAgentConversation(conversationId: string): Promise<RecruitingAgentConversation> {
       return request<RecruitingAgentConversation>(
         `/recruiting-agent/conversations/${resourcePath(conversationId)}`,
+      );
+    },
+
+    listRecruitingAgentCandidateReferences(
+      conversationId: string,
+      params: { query?: string; cursor?: string | null; limit?: number } = {},
+    ): Promise<RecruitingAgentCandidateReferencePage> {
+      const query = new URLSearchParams();
+      if (params.query?.trim()) query.set("query", params.query.trim());
+      if (params.cursor) query.set("cursor", params.cursor);
+      query.set("limit", String(params.limit ?? 50));
+      return request<RecruitingAgentCandidateReferencePage>(
+        `/recruiting-agent/conversations/${resourcePath(conversationId)}/candidate-references?${query.toString()}`,
       );
     },
 

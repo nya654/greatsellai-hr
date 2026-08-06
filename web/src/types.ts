@@ -651,6 +651,18 @@ export interface RecruitingAgentCandidate {
   verification_evidence: RecruitingAgentVerificationEvidence[];
 }
 
+/** One @-reference candidate read from the conversation's frozen scope. */
+export interface RecruitingAgentCandidateReference {
+  candidate_id: string;
+  resume_id: string;
+  display_name: string | null;
+}
+
+export interface RecruitingAgentCandidateReferencePage {
+  items: RecruitingAgentCandidateReference[];
+  next_cursor: string | null;
+}
+
 export interface RecruitingAgentVerificationEvidence {
   label: string;
   source: "structured_fact" | "resume_text";

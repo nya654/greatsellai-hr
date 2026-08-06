@@ -118,6 +118,77 @@ def _unique_optimized_template_name(
     raise ScoreServiceError("score_template_optimization_name_unavailable")
 
 
+def _run_template_optimization(
+    session: Session,
+    *,
+    existing_template: Mapping[str, object],
+    source_name: str,
+    business_ref_id: str,
+    settings: AppSettings,
+) -> tuple[ScoreTemplateCreate, list[str]]:
+    """Run the shared AI draft call and return a validated, uniquely named copy.
+
+    Both stored-template and editor-draft optimization send recruiter-authored
+    template metadata only—never a resume, candidate, score, or cross-workspace
+    data.  A proposal must always remain a copy: the returned name is made
+    workspace-unique so the client creates a separate template instead of ever
+    overwriting an active rule or its history.
+    """
+
+    compatibility_api_key, compatibility_model, compatibility_timeout_seconds = (
+        gateway_prompt_transport_arguments(settings)
+    )
+    try:
+        with ai_gateway_execution(
+            session,
+            settings=settings,
+            spec=AiExecutionSpec(
+                feature="score_template_optimize",
+                business_ref_type="score_template_optimization",
+                # Template IDs and versions are opaque server identifiers;
+                # do not put recruiter-authored template text into the ledger.
+                business_ref_id=business_ref_id,
+                prompt_revision="score_template_optimization.v1",
+                contract_version="score_template_optimization.v1",
+            ),
+        ):
+            provider_result = optimize_score_template(
+                api_key=compatibility_api_key,
+                model=compatibility_model,
+                timeout_seconds=compatibility_timeout_seconds,
+                existing_template=existing_template,
+            )
+    except AiGatewayError as exc:
+        raise ScoreServiceError(str(exc)) from exc
+    except DeepSeekProviderError as exc:
+        if (
+            str(exc)
+            == "deepseek_contract_template_optimization_source_has_no_safe_dimensions"
+        ):
+            raise ScoreServiceError(
+                "score_template_optimization_source_has_no_safe_dimensions"
+            ) from exc
+        raise
+
+    proposed_template = ScoreTemplateCreate.model_validate(
+        provider_result["proposed_template"]
+    )
+    # A proposal must always remain a copy.  Do not rely on model instruction
+    # compliance for that product and audit invariant.
+    proposed_template = proposed_template.model_copy(
+        update={
+            "name": _unique_optimized_template_name(
+                session,
+                source_name=source_name,
+            )
+        }
+    )
+    notes = provider_result.get("improvement_notes", [])
+    if not isinstance(notes, list):  # Defensive; provider validation owns this.
+        raise ScoreServiceError("score_template_optimization_notes_invalid")
+    return proposed_template, notes
+
+
 def optimize_existing_score_template(
     session: Session,
     *,
@@ -143,71 +214,90 @@ def optimize_existing_score_template(
         .order_by(ScoreTemplateDimension.sort_order)
     ).all()
     _require_valid_dimensions(dimensions)
-    compatibility_api_key, compatibility_model, compatibility_timeout_seconds = (
-        gateway_prompt_transport_arguments(settings)
+    proposed_template, notes = _run_template_optimization(
+        session,
+        existing_template={
+            "name": template.name,
+            "description": template.description,
+            "dimensions": [
+                {
+                    "label": dimension.label,
+                    "weight": dimension.weight,
+                    "guidance": dimension.guidance,
+                }
+                for dimension in dimensions
+            ],
+        },
+        source_name=template.name,
+        business_ref_id=f"{template.id}:v{template.version}",
+        settings=settings,
     )
-    try:
-        with ai_gateway_execution(
-            session,
-            settings=settings,
-            spec=AiExecutionSpec(
-                feature="score_template_optimize",
-                business_ref_type="score_template_optimization",
-                # Template IDs and versions are opaque server identifiers;
-                # do not put recruiter-authored template text into the ledger.
-                business_ref_id=f"{template.id}:v{template.version}",
-                prompt_revision="score_template_optimization.v1",
-                contract_version="score_template_optimization.v1",
-            ),
-        ):
-            provider_result = optimize_score_template(
-                api_key=compatibility_api_key,
-                model=compatibility_model,
-                timeout_seconds=compatibility_timeout_seconds,
-                existing_template={
-                    "name": template.name,
-                    "description": template.description,
-                    "dimensions": [
-                        {
-                            "label": dimension.label,
-                            "weight": dimension.weight,
-                            "guidance": dimension.guidance,
-                        }
-                        for dimension in dimensions
-                    ],
-                },
-            )
-    except AiGatewayError as exc:
-        raise ScoreServiceError(str(exc)) from exc
-    except DeepSeekProviderError as exc:
-        if (
-            str(exc)
-            == "deepseek_contract_template_optimization_source_has_no_safe_dimensions"
-        ):
-            raise ScoreServiceError(
-                "score_template_optimization_source_has_no_safe_dimensions"
-            ) from exc
-        raise
-
-    proposed_template = ScoreTemplateCreate.model_validate(
-        provider_result["proposed_template"]
-    )
-    # A proposal must always remain a copy.  Do not rely on model instruction
-    # compliance for that product and audit invariant.
-    proposed_template = proposed_template.model_copy(
-        update={
-            "name": _unique_optimized_template_name(
-                session,
-                source_name=template.name,
-            )
-        }
-    )
-    notes = provider_result.get("improvement_notes", [])
-    if not isinstance(notes, list):  # Defensive; provider validation owns this.
-        raise ScoreServiceError("score_template_optimization_notes_invalid")
     return ScoreTemplateOptimizationResponse(
         source_template_id=template.id,
         source_template_version=template.version,
+        proposed_template=proposed_template,
+        improvement_notes=notes,
+    )
+
+
+def _require_valid_template_draft(payload: ScoreTemplateCreate) -> None:
+    """Defensively re-check a draft before it reaches the model.
+
+    ``ScoreTemplateCreate`` already enforces bounded lengths, weight sum 100,
+    and unique labels at the API boundary.  This keeps the same invariant for
+    direct service callers, using the domain error codes the HTTP layer maps.
+    """
+
+    if not payload.dimensions:
+        raise ScoreServiceError("score_template_has_no_dimensions")
+    if sum(dimension.weight for dimension in payload.dimensions) != 100:
+        raise ScoreServiceError("score_template_weights_must_sum_to_100")
+    labels = [
+        " ".join(dimension.label.split()).casefold()
+        for dimension in payload.dimensions
+    ]
+    if len(labels) != len(set(labels)):
+        raise ScoreServiceError("score_template_dimension_keys_must_be_unique")
+
+
+def optimize_score_template_draft(
+    session: Session,
+    *,
+    payload: ScoreTemplateCreate,
+    settings: AppSettings,
+) -> ScoreTemplateOptimizationResponse:
+    """Ask AI for an editable improvement draft of the editor's current content.
+
+    Unlike :func:`optimize_existing_score_template`, the input is the
+    recruiter's in-progress draft (name, description, dimensions) rather than a
+    stored template, so unpersisted editor content can be improved directly.
+    The response therefore carries no source template identity, and the
+    proposal must still pass the ordinary ``ScoreTemplateCreate`` validation
+    before the client can explicitly create a separate template.
+    """
+
+    if not ai_gateway_credentials_configured(settings):
+        raise ScoreServiceError("deepseek_api_key_not_configured")
+    _require_valid_template_draft(payload)
+    proposed_template, notes = _run_template_optimization(
+        session,
+        existing_template={
+            "name": payload.name,
+            "description": payload.description,
+            "dimensions": [
+                {
+                    "label": dimension.label,
+                    "weight": dimension.weight,
+                    "guidance": dimension.guidance,
+                }
+                for dimension in payload.dimensions
+            ],
+        },
+        source_name=payload.name,
+        business_ref_id=f"draft:{uuid4().hex}",
+        settings=settings,
+    )
+    return ScoreTemplateOptimizationResponse(
         proposed_template=proposed_template,
         improvement_notes=notes,
     )
@@ -891,6 +981,8 @@ __all__ = [
     "get_resume_score",
     "list_resume_scores",
     "list_score_templates",
+    "optimize_existing_score_template",
+    "optimize_score_template_draft",
     "override_score_dimension",
     "run_resume_score",
 ]

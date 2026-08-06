@@ -1563,12 +1563,15 @@ export interface ScoreTemplateCreate {
 }
 
 /**
- * A read-only AI proposal derived from an existing template. Applying it
- * always creates a separate template; the source remains unchanged.
+ * A read-only AI proposal derived from an existing template or the editor's
+ * current draft. Applying it always creates a separate template; the source
+ * remains unchanged. `source_template_id` / `source_template_version` are only
+ * populated when the proposal came from a stored template — a draft-based
+ * optimization leaves both null.
  */
 export interface ScoreTemplateOptimization {
-  source_template_id: string;
-  source_template_version: number;
+  source_template_id: string | null;
+  source_template_version: number | null;
   proposed_template: ScoreTemplateCreate;
   improvement_notes: string[];
 }

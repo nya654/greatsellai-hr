@@ -850,6 +850,15 @@ export function createApiClient(options: ApiClientOptions = {}) {
       );
     },
 
+    optimizeScoreTemplateDraft(
+      input: ScoreTemplateCreate,
+    ): Promise<ScoreTemplateOptimization> {
+      return request<ScoreTemplateOptimization>("/score-templates/optimize-draft", {
+        method: "POST",
+        body: input,
+      });
+    },
+
     enqueueAllResumeScores(templateId: string): Promise<ResumeScoreBatch> {
       return request<ResumeScoreBatch>(
         `/score-templates/${resourcePath(templateId)}/score-all`,

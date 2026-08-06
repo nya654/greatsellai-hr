@@ -1403,6 +1403,43 @@ class CandidateDataRetentionPolicy(OrganizationScoped, Base):
     )
 
 
+class WorkspaceAiImportSettings(OrganizationScoped, Base):
+    """One AI import-processing preference row per workspace.
+
+    Controls whether imported resumes auto-run AI summary / scoring and for
+    which ingestion sources. Rows are created lazily with all-auto defaults,
+    matching the "默认全开" product decision.
+    """
+
+    __tablename__ = "workspace_ai_import_settings"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            name="uq_workspace_ai_import_settings_organization",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    auto_summary_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    auto_score_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    default_score_template_id: Mapped[str | None] = mapped_column(
+        ForeignKey("score_templates.id"),
+        nullable=True,
+    )
+    trigger_manual_upload: Mapped[bool] = mapped_column(Boolean, default=True)
+    trigger_mailbox_import: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("user_accounts.id"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+
 class CandidateDataRetentionCleanupRun(OrganizationScoped, Base):
     """Privacy-safe counts for one retention evaluation or enqueue run."""
 

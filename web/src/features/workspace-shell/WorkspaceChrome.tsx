@@ -204,14 +204,14 @@ export function Topbar({
       <div className="topbar-actions">
         {trialLabel && <span className={`topbar-trial${trial?.plan_status === "expired" ? " is-expired" : ""}`}>{trialLabel}</span>}
         <BackofficeButton
-          ariaLabel="招聘 Agent"
+          ariaLabel="招聘助手"
           className="backoffice-agent-button"
           icon={<Icon name="spark" size={16} />}
           id="recruiting-agent-trigger"
           onClick={onOpenAgent}
           tone="primary"
         >
-          <span className="topbar-action-label">招聘 Agent</span>
+          <span className="topbar-action-label">招聘助手</span>
         </BackofficeButton>
         <BackofficeButton
           aria-label="上传简历"

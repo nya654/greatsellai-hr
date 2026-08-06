@@ -1,16 +1,21 @@
 name: Relay bootstrap
 
-# Install (or rotate) the staging-host relay key on the production host,
+# Install (or rotate) the release-runner relay key on the production host,
 # restricted to the exact operations the silent-preload relay performs.
 # Manual-only, runs from main in the production Environment. Idempotent:
 # re-running with the same key is a no-op. Use for the initial relay setup
 # and for future relay key rotation.
+#
+# The matching PRIVATE key is held by the automatic staging-release job and
+# must be placed in the `staging` environment as PROD_RELAY_SSH_PRIVATE_KEY
+# (with PROD_RELAY_SSH_KNOWN_HOSTS and the PROD_RELAY_HOST variable), never in
+# this workflow, repository secrets, or on any host.
 
 on:
   workflow_dispatch:
     inputs:
       relay_public_key:
-        description: 'Staging relay SSH public key (ssh-ed25519 AAAA... comment). Must be a public key, never a private key.'
+        description: 'Release-runner relay SSH public key (ssh-ed25519 AAAA... comment). Must be a public key, never a private key. The matching private key goes into the staging environment secret PROD_RELAY_SSH_PRIVATE_KEY.'
         required: true
         type: string
 
@@ -19,7 +24,7 @@ permissions:
 
 jobs:
   install:
-    name: Install staging relay key on the production host
+    name: Install release-runner relay key on the production host
     runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted", "Linux", "X64", "greatsell-ci"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     environment:
@@ -133,9 +138,9 @@ jobs:
               fi
               sudo chmod 600 "$f" 2>/dev/null || true
               sudo chown ubuntu:ubuntu "$f" 2>/dev/null || true
-              if sudo grep -qF "staging-relay->production" "$f"; then
+              if sudo grep -qF "release-relay->production" "$f"; then
                 echo "OK: relay key present in $f"
-                sudo grep -F "staging-relay->production" "$f" | sed 's/\(ssh-[a-z0-9]*\) [^ ]*/\1 <redacted>/'
+                sudo grep -F "release-relay->production" "$f" | sed 's/\(ssh-[a-z0-9]*\) [^ ]*/\1 <redacted>/'
               else
                 echo "FAIL: relay key NOT present in $f"
               fi
@@ -146,7 +151,7 @@ jobs:
                   chmod 700 "$(dirname "$f")"
                   grep -qF "$authorized_line" "$f" 2>/dev/null || printf '%s\n' "$authorized_line" >> "$f"
                   chmod 600 "$f"
-                  if grep -qF "staging-relay->production" "$f"; then echo "OK: relay key present in $f"; else echo "FAIL: relay key NOT present in $f"; fi
+                  if grep -qF "release-relay->production" "$f"; then echo "OK: relay key present in $f"; else echo "FAIL: relay key NOT present in $f"; fi
                   ;;
                 *)
                   echo "SKIP (no sudo): cannot write $f"

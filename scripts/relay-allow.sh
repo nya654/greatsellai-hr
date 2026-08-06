@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Authorized-command whitelist for the staging-relay SSH key on the production
-# host.
+# Authorized-command whitelist for the release-runner relay key on the
+# production host.
 #
 # Installed as /home/ubuntu/.relay-allow.sh on the production host and
 # referenced by `command="/home/ubuntu/.relay-allow.sh"` in that host's
-# authorized_keys (see .github/workflows/relay-bootstrap.yml). The staging
-# host's silent-preload relay (scripts/stream-images-to-production.sh) may only:
-#   - check reachability                (ssh production true)
+# authorized_keys (see .github/workflows/relay-bootstrap.yml). The release
+# runner's silent-preload relay (scripts/stream-images-to-production.sh) may
+# only:
+#   - check reachability                (ssh <prod> true)
 #   - prepare the relay dir             (sudo -n mkdir -p /var/lib/greatsellai-relay)
 #   - stream a docker-save tar into it  (sudo -n tee /var/lib/greatsellai-relay/<file> >/dev/null)
 #   - load an image from that tar       (docker load -i /var/lib/greatsellai-relay/<file>)

@@ -6,13 +6,15 @@
 commit 的 API/Caddy 镜像，校验 `org.opencontainers.image.revision` label 与 image ID 后经 SSH
 流式传输到 staging 主机（`docker save | gzip | ssh docker load`），全程不过境、不碰中国 TCR。
 
-生产镜像来源是**静默拉 + 人工发**：staging 部署并公网 smoke 通过后，发布 Runner 触发 staging
-主机把已验证镜像经 `docker save | gzip | ssh production docker load` 预加载到生产机（只
-`docker load`，不发布、不触碰 compose/迁移/服务）；负责人手动运行 **Production promotion**
-（`PROMOTE` + production Environment 审批）时才发布。镜像内容 ID 跨 `docker save/load` 保留，
-因此生产机上镜像 ID 必须等于 staging 完成记录里的 `api_image_id` / `caddy_image_id`，对不上即
-失败关闭。生产机地址与 SSH key 不进仓库：staging 主机通过 `~/.ssh/config` 的 `production`
-别名连生产，生产防火墙只放行 staging 主机 IP。历史 TCR 方案（仓库级变量、Secrets、排障说明）
+生产镜像来源是**静默拉 + 人工发**：staging 部署并公网 smoke 通过后，发布 Runner 直接把已验证
+镜像经白名单 relay key 预加载到生产机（`docker save | gzip | ssh "sudo -n tee …/x.tar.gz"` 再
+`docker load -i`，只 `docker load`，不发布、不触碰 compose/迁移/服务）；负责人手动运行
+**Production promotion**（`PROMOTE` + production Environment 审批）时才发布。镜像内容 ID 跨
+`docker save/load` 保留，因此生产机上镜像 ID 必须等于 staging 完成记录里的 `api_image_id` /
+`caddy_image_id`，对不上即失败关闭。生产机地址与 SSH key 不进仓库：relay 私钥以
+`PROD_RELAY_SSH_PRIVATE_KEY` 放在 `staging` Environment，由自动 staging-release job 在发布
+Runner 上使用（白名单限定，见下方信任面），生产防火墙需放行 GitHub-hosted 发布 Runner 出站
+IP 段到 22 端口。历史 TCR 方案（仓库级变量、Secrets、排障说明）
 见 [TCR 发布镜像配置](TCR_RELEASE_SETUP.md)，仅作参考。本节优先于本文中任何历史的
 archive/镜像传输描述。
 
@@ -72,8 +74,8 @@ staging 验证后自动预加载镜像到生产机（不发布），负责人手
   不可变 `stg-YYYYMMDD-N` 标签（日期 + 当日序号，过渡期兼容历史 `<commit>` 后缀格式），在
   美国发布 Runner 上构建该 commit 的 API/Caddy 镜像、经 SSH 直接流式传输到 staging 主机
   （不经中国 TCR），部署隔离 staging 并跑公网 smoke。smoke 通过后把已验证镜像静默预加载到
-  生产机（staging 主机中转，只 `docker load` 不发布），然后删除 staging 上旧的 app 镜像，
-  只保留新 SHA 一套。`main` 在预检期间前进时会安全跳过旧候选。
+  生产机（发布 Runner 直连，白名单 relay key，只 `docker load -i` 不发布），然后删除 staging
+  上旧的 app 镜像，只保留新 SHA 一套。`main` 在预检期间前进时会安全跳过旧候选。
 - **Production promotion**：只能从 `main` 手动运行并输入 `PROMOTE`。它先验证当前 main 对应的
   唯一 `stg-*` tag、source archive SHA-256、staging release record（direct 记录核对 API/Caddy
   image ID 与 revision），再校验生产机已预加载的 `greatsellai-hr-api:<sha>` /
@@ -135,6 +137,12 @@ staging 验证后自动预加载镜像到生产机（不发布），负责人手
 受保护的 `main` 与 `prod-*` 标签，拒绝其他分支；这会阻止从临时分支篡改工作流后申请生产密钥。
 服务器上用于部署的 SSH 公钥需要具备非交互式 Docker 权限；生产 `.env.production`
 必须仍由服务器本地维护。
+
+同时把静默拉 relay 配置放在 `staging` Environment（自动 staging-release job 只能读取它）：
+- secret `PROD_RELAY_SSH_PRIVATE_KEY`：白名单限定的 relay 私钥（见下方信任面）；
+- secret `PROD_RELAY_SSH_KNOWN_HOSTS`：经可信渠道核验过的生产机 host key；
+- variable `PROD_RELAY_HOST`：`ubuntu@<生产主机地址>`。
+这些值绝不进入仓库、repo secrets 或任何主机；公钥只通过 **Relay bootstrap** 装到生产机。
 
 同时在 GitHub 分支和标签规则中配置：
 
@@ -205,14 +213,17 @@ staging。
   连接 staging。生产只接受已完成 staging 候选的人工 `PROMOTE`。
 - 静默拉只 `docker load` 预加载镜像，不触碰 compose、迁移或运行服务；发布只在
   `production` Environment 内发生。
-- **新增信任面**：staging 主机因中转获得连接生产的能力（`~/.ssh/config` 的 `production` 别名
-  持有生产 SSH key，key 不进仓库、不进 GitHub secrets）。生产机 `authorized_keys` 用
-  `command=` 把该 key 限制为白名单包装脚本 `/home/ubuntu/.relay-allow.sh`（仓库
-  `scripts/relay-allow.sh`），只放行 `true` / `docker load` / greatsellai-hr 镜像的
-  `image inspect`，并禁止端口转发 / agent / X11；安装与轮换走 **Relay bootstrap** 工作流
-  （手动、`production` Environment）。生产防火墙只放行 staging 主机 IP 的 22 端口。拿到该
-  key 的最坏情况是覆盖预加载镜像（DoS），不能部署出恶意镜像——发布由 `production`
-  Environment 的 `PROMOTE` + 审批 + 镜像 ID fail-closed 校验兜底。
+- **新增信任面**：自动 staging-release job 持有白名单限定的 relay 私钥
+  （`staging` Environment 的 `PROD_RELAY_SSH_PRIVATE_KEY`，配合 `PROD_RELAY_SSH_KNOWN_HOSTS`
+  与 `PROD_RELAY_HOST`），在发布 Runner 上直连生产预加载；私钥不进仓库、不进 repo secrets、
+  不落在任何主机上。生产机 `authorized_keys` 用 `command=` 把该公钥限制为白名单包装脚本
+  `/home/ubuntu/.relay-allow.sh`（仓库 `scripts/relay-allow.sh`），只放行静默拉所需操作
+  （`true` / `mkdir -p` / `tee *.tar.gz` / `docker load -i` / `rm -f` / greatsellai-hr 镜像的
+  `image inspect`），并禁止端口转发 / agent / X11；安装与轮换走 **Relay bootstrap** 工作流
+  （手动、`production` Environment、只装公钥不碰私钥）。生产防火墙需放行 GitHub-hosted 发布
+  Runner 出站 IP 段（[GitHub Actions ranges](https://api.github.com/meta)）到 22 端口，
+  不再只放行 staging IP。拿到该 key 的最坏情况是覆盖预加载镜像（DoS），不能部署出恶意镜像——
+  发布由 `production` Environment 的 `PROMOTE` + 审批 + 镜像 ID fail-closed 校验兜底。
 - 工作流只调用受审阅的 production 脚本（包括预检、发布、回滚和 bootstrap import/restore），并始终显式传入 GitHub Environment 中的目标主机和
   路径，因此不会误用脚本中的历史默认服务器地址。
 - 不要把部署密钥、主机指纹、环境文件、候选人 PDF、数据库或任何 API 密钥加入 Git。

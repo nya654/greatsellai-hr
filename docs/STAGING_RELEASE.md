@@ -106,11 +106,13 @@ staging 主机因中转获得连接生产的能力，这是新增信任面，务
    ```
 
    并把生产机 host key 加入 `~/.ssh/known_hosts`。地址与 key 不进仓库、不进 GitHub secrets。
-2. 生产机 `authorized_keys` 加入该公钥，用 `command=` 限制为只允许 `docker load`，并禁止
-   port-forwarding / agent / X11（如
-   `command="sudo docker load",no-port-forwarding,no-agent-forwarding,no-X11-forwarding`）。
-   拿到该 key 的最坏情况是覆盖预加载镜像（DoS），不能部署出恶意镜像——发布由
-   `production` Environment 的 `PROMOTE` + 审批 + 镜像 ID fail-closed 校验兜底。
+2. 生产机 `authorized_keys` 加入该公钥，用 `command=` 强制走白名单包装脚本
+   `/home/ubuntu/.relay-allow.sh`（仓库里的 `scripts/relay-allow.sh`），只放行三种命令：
+   `true`（可达性探测）、`docker load`（流式预加载）、以及仅针对 greatsellai-hr 镜像的
+   `docker image inspect --format '{{.Id}}'`（ID 回查），并禁止 port-forwarding / agent / X11。
+   安装与轮换由 **Relay bootstrap** 工作流完成（手动、`production` Environment、只装公钥不碰
+   密钥）。拿到该 key 的最坏情况是覆盖预加载镜像（DoS），不能开 shell、读文件或部署出恶意
+   镜像——发布由 `production` Environment 的 `PROMOTE` + 审批 + 镜像 ID fail-closed 校验兜底。
 3. 生产防火墙只放行 staging 主机 IP → 生产机 22 端口；GitHub Runner 的临时 IP 不对外开放。
 4. staging 主机安装 `pv`（静默拉限速用）：`apt-get install -y pv`。
 5. 用 staging 主机本地验证 `docker save <示例镜像> | gzip | ssh production docker load`

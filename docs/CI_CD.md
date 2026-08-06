@@ -207,10 +207,12 @@ staging。
   `production` Environment 内发生。
 - **新增信任面**：staging 主机因中转获得连接生产的能力（`~/.ssh/config` 的 `production` 别名
   持有生产 SSH key，key 不进仓库、不进 GitHub secrets）。生产机 `authorized_keys` 用
-  `command=` 把该 key 限制为只允许 `docker load`，并禁止端口转发 / agent / X11；生产防火墙
-  只放行 staging 主机 IP 的 22 端口。拿到该 key 的最坏情况是覆盖预加载镜像（DoS），不能部署
-  出恶意镜像——发布由 `production` Environment 的 `PROMOTE` + 审批 + 镜像 ID fail-closed
-  校验兜底。
+  `command=` 把该 key 限制为白名单包装脚本 `/home/ubuntu/.relay-allow.sh`（仓库
+  `scripts/relay-allow.sh`），只放行 `true` / `docker load` / greatsellai-hr 镜像的
+  `image inspect`，并禁止端口转发 / agent / X11；安装与轮换走 **Relay bootstrap** 工作流
+  （手动、`production` Environment）。生产防火墙只放行 staging 主机 IP 的 22 端口。拿到该
+  key 的最坏情况是覆盖预加载镜像（DoS），不能部署出恶意镜像——发布由 `production`
+  Environment 的 `PROMOTE` + 审批 + 镜像 ID fail-closed 校验兜底。
 - 工作流只调用受审阅的 production 脚本（包括预检、发布、回滚和 bootstrap import/restore），并始终显式传入 GitHub Environment 中的目标主机和
   路径，因此不会误用脚本中的历史默认服务器地址。
 - 不要把部署密钥、主机指纹、环境文件、候选人 PDF、数据库或任何 API 密钥加入 Git。

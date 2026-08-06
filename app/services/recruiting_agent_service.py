@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -12,7 +13,7 @@ from typing import Any, Literal, TypedDict
 from uuid import uuid4
 
 from langgraph.graph import END, START, StateGraph
-from sqlalchemy import select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -38,6 +39,8 @@ from app.schemas import (
     RecruitingAgentActiveContext,
     RecruitingAgentAction,
     RecruitingAgentCandidate,
+    RecruitingAgentCandidateReference,
+    RecruitingAgentCandidateReferencePage,
     RecruitingAgentCandidateScopeRequest,
     RecruitingAgentContextBindRequest,
     RecruitingAgentContextClearRequest,
@@ -1562,6 +1565,124 @@ def get_recruiting_agent_conversation(
         require_context_version=False,
     )
     return _conversation_response(session, conversation=conversation)
+
+
+def _encode_candidate_reference_cursor(*, ordinal: int, item_id: str) -> str:
+    """Opaque positional cursor for one candidate-set membership row."""
+
+    raw = f"{ordinal}:{item_id}".encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def _decode_candidate_reference_cursor(value: str) -> tuple[int, str] | None:
+    try:
+        ordinal_text, _, item_id = base64.urlsafe_b64decode(
+            value.encode("ascii")
+        ).decode("utf-8").partition(":")
+        if not item_id:
+            return None
+        return int(ordinal_text), item_id
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+def list_recruiting_agent_candidate_references(
+    session: Session,
+    *,
+    conversation_id: str,
+    actor_user_id: str,
+    query: str | None = None,
+    cursor: str | None = None,
+    limit: int = 50,
+) -> RecruitingAgentCandidateReferencePage:
+    """Suggest @-reference candidates from the conversation's frozen scope.
+
+    Read-only and PII-safe: the projection resolves opaque resume references
+    to candidate identities at read time and never writes candidate
+    identifiers into the conversation or its ``active_context``.  Every read
+    re-checks resume visibility (``is_active`` and ``extraction_status``)
+    through ``_candidate_set_resume_ids``, so deleted, archived, or
+    not-yet-ready resumes cannot surface here.
+    """
+
+    conversation = _conversation_or_create(
+        session,
+        conversation_id=conversation_id,
+        context_version=None,
+        actor_user_id=actor_user_id,
+        require_context_version=False,
+    )
+    candidate_set = _active_candidate_set(session, conversation=conversation)
+    if candidate_set is None:
+        return RecruitingAgentCandidateReferencePage(items=[], next_cursor=None)
+    visible_resume_ids = _candidate_set_resume_ids(
+        session,
+        candidate_set=candidate_set,
+    )
+    if not visible_resume_ids:
+        return RecruitingAgentCandidateReferencePage(items=[], next_cursor=None)
+
+    page_size = max(1, min(int(limit), 100))
+    statement = (
+        select(
+            RecruitingAgentCandidateSetItem.ordinal,
+            RecruitingAgentCandidateSetItem.id,
+            RecruitingAgentCandidateSetItem.resume_id,
+            Resume.candidate_id,
+            Candidate.display_name,
+        )
+        .join(Resume, Resume.id == RecruitingAgentCandidateSetItem.resume_id)
+        .join(Candidate, Candidate.id == Resume.candidate_id)
+        .where(
+            RecruitingAgentCandidateSetItem.candidate_set_id == candidate_set.id,
+            RecruitingAgentCandidateSetItem.resume_id.in_(visible_resume_ids),
+        )
+    )
+    normalized_query = (query or "").strip()
+    if normalized_query:
+        statement = statement.where(
+            func.lower(func.coalesce(Candidate.display_name, "")).contains(
+                normalized_query.lower()
+            )
+        )
+    if cursor:
+        cursor_position = _decode_candidate_reference_cursor(cursor)
+        if cursor_position is not None:
+            statement = statement.where(
+                tuple_(
+                    RecruitingAgentCandidateSetItem.ordinal,
+                    RecruitingAgentCandidateSetItem.id,
+                )
+                > tuple_(cursor_position[0], cursor_position[1])
+            )
+    rows = session.execute(
+        statement.order_by(
+            RecruitingAgentCandidateSetItem.ordinal.asc(),
+            RecruitingAgentCandidateSetItem.id.asc(),
+        ).limit(page_size + 1)
+    ).all()
+
+    has_more = len(rows) > page_size
+    rows = rows[:page_size]
+    items = [
+        RecruitingAgentCandidateReference(
+            candidate_id=row.candidate_id,
+            resume_id=row.resume_id,
+            display_name=row.display_name,
+        )
+        for row in rows
+    ]
+    next_cursor = None
+    if has_more and rows:
+        last = rows[-1]
+        next_cursor = _encode_candidate_reference_cursor(
+            ordinal=last.ordinal,
+            item_id=last.id,
+        )
+    return RecruitingAgentCandidateReferencePage(
+        items=items,
+        next_cursor=next_cursor,
+    )
 
 
 def delete_recruiting_agent_conversation(

@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -12,6 +13,7 @@ import type {
   JobVersion,
   RecruitingAgentAction,
   RecruitingAgentCandidate,
+  RecruitingAgentCandidateReference,
   RecruitingAgentConversationTurn,
   RecruitingAgentFilterScopeRequest,
   RecruitingAgentSearchSummary,
@@ -163,6 +165,17 @@ function agentContextSourceLabel(
   if (source === "candidate") return "已引用候选人";
   if (source === "talent_search_run") return "人才画像找人结果";
   return "尚未设置候选范围";
+}
+
+function candidateReferenceAsOption(
+  reference: RecruitingAgentCandidateReference,
+): AgentReference {
+  return {
+    referenceId: `candidate:${reference.candidate_id}`,
+    kind: "candidate",
+    label: reference.display_name || "候选人",
+    description: "来自当前工作集",
+  };
 }
 
 /**
@@ -706,6 +719,12 @@ export function RecruitingAgentPage({
   const autoBoundScopeRequestIdRef = useRef<number | null>(null);
   const completedScopeRequestIdRef = useRef<number | null>(null);
   const [messages, setMessages] = useState<AgentChatMessage[]>(initialAgentMessages);
+  const [candidateReferences, setCandidateReferences] = useState<AgentReference[]>([]);
+  const [referencesLoading, setReferencesLoading] = useState(false);
+  const [referencesCursor, setReferencesCursor] = useState<string | null>(null);
+  const referencesCursorRef = useRef<string | null>(null);
+  const referencesQueryRef = useRef("");
+  const referencesRequestRef = useRef(0);
   const isBindingScope = bindingScopeRequestId !== null;
   const interactionPending = loading || isRestoring || isBindingScope;
 
@@ -1117,6 +1136,84 @@ export function RecruitingAgentPage({
     jobs,
     messages,
     recentTalentProfiles,
+  ]);
+
+  const hasCandidateScope = useMemo(
+    () => conversation?.active_context.candidate_set_source != null,
+    [conversation?.active_context.candidate_set_source],
+  );
+
+  const fetchCandidateReferences = useCallback(async ({
+    cursor,
+    query,
+  }: {
+    cursor?: string | null;
+    query?: string;
+  }) => {
+    const conversationId = conversation?.conversation_id;
+    if (!conversationId || !hasCandidateScope) return;
+    const nextQuery = query ?? referencesQueryRef.current;
+    const nextCursor = cursor ?? referencesCursorRef.current;
+    const requestSequence = ++referencesRequestRef.current;
+    setReferencesLoading(true);
+    try {
+      const page = await api.listRecruitingAgentCandidateReferences(
+        conversationId,
+        { query: nextQuery, cursor: nextCursor, limit: 50 },
+      );
+      if (requestSequence !== referencesRequestRef.current) return;
+      referencesQueryRef.current = nextQuery;
+      referencesCursorRef.current = page.next_cursor;
+      setReferencesCursor(page.next_cursor);
+      setCandidateReferences((current) => {
+        if (nextCursor) return [...current, ...page.items.map(candidateReferenceAsOption)];
+        return page.items.map(candidateReferenceAsOption);
+      });
+    } catch {
+      if (requestSequence !== referencesRequestRef.current) return;
+      referencesCursorRef.current = null;
+      setReferencesCursor(null);
+      setCandidateReferences((current) => (nextCursor ? current : []));
+    } finally {
+      if (requestSequence === referencesRequestRef.current) setReferencesLoading(false);
+    }
+  }, [conversation?.conversation_id, hasCandidateScope]);
+
+  const handleOpenCandidateReferences = useCallback(() => {
+    referencesQueryRef.current = "";
+    referencesCursorRef.current = null;
+    void fetchCandidateReferences({ query: "", cursor: null });
+  }, [fetchCandidateReferences]);
+
+  const handleSearchCandidateReferences = useCallback((query: string) => {
+    void fetchCandidateReferences({ query, cursor: null });
+  }, [fetchCandidateReferences]);
+
+  const handleLoadMoreCandidateReferences = useCallback(() => {
+    if (referencesLoading || !referencesCursorRef.current) return;
+    void fetchCandidateReferences({});
+  }, [fetchCandidateReferences, referencesLoading]);
+
+  const candidateScopeKey = useMemo(() => {
+    const reference = conversation?.active_context.input_references?.find(
+      (item) => item.kind === "candidate" || item.kind === "filter",
+    );
+    return reference?.reference_id ?? null;
+  }, [conversation?.active_context.input_references]);
+
+  useEffect(() => {
+    referencesQueryRef.current = "";
+    referencesCursorRef.current = null;
+    setReferencesCursor(null);
+    setCandidateReferences([]);
+    if (!active || !conversation || !hasCandidateScope) return;
+    void fetchCandidateReferences({ query: "", cursor: null });
+  }, [
+    active,
+    candidateScopeKey,
+    conversation?.conversation_id,
+    fetchCandidateReferences,
+    hasCandidateScope,
   ]);
 
   const applyInputReference = async (reference: AgentReference) => {
@@ -1632,14 +1729,20 @@ export function RecruitingAgentPage({
       </div>
       <AgentComposer
         availableReferences={availableInputReferences}
+        candidateReferences={candidateReferences}
         disabled={interactionPending}
         generating={isGenerating}
+        hasWorkingSet={hasCandidateScope}
         inputRef={composerInputRef}
         onChange={setInput}
+        onLoadMoreReferences={handleLoadMoreCandidateReferences}
+        onOpenReferences={handleOpenCandidateReferences}
         onRemoveReference={(referenceId) => void removeInputReference(referenceId)}
+        onSearchReferences={handleSearchCandidateReferences}
         onSelectReference={(reference) => void applyInputReference(reference)}
         onSubmit={(message) => void send(message)}
         references={activeInputReferences}
+        referencesLoading={referencesLoading}
         value={input}
       />
       {referenceError && <p className="agent-reference-status" role="status">{referenceError}</p>}

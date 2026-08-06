@@ -191,6 +191,7 @@ from app.schemas import (
     ResumeScholarshipResponse,
     ResumeSkillResponse,
     ResumeUploadResponse,
+    RecruitingAgentCandidateReferencePage,
     RecruitingAgentContextBindRequest,
     RecruitingAgentConversationResponse,
     RecruitingAgentRequest,
@@ -380,6 +381,7 @@ from app.services.recruiting_agent_service import (
     clear_recruiting_agent_context,
     delete_recruiting_agent_conversation,
     get_recruiting_agent_conversation,
+    list_recruiting_agent_candidate_references,
     run_recruiting_agent_turn,
     start_recruiting_agent_scoped_profile_search,
 )
@@ -4372,6 +4374,37 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                 session,
                 conversation_id=conversation_id,
                 actor_user_id=principal.user.id,
+            )
+        except RecruitingAgentConversationNotFoundError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="agent_conversation_not_found",
+            ) from exc
+
+    @app.get(
+        "/v1/recruiting-agent/conversations/{conversation_id}/candidate-references",
+        response_model=RecruitingAgentCandidateReferencePage,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def list_recruiting_agent_candidate_references_route(
+        conversation_id: str,
+        query: str | None = Query(default=None, max_length=120),
+        cursor: str | None = Query(default=None, max_length=256),
+        limit: int = Query(default=50, ge=1, le=100),
+        principal: AuthPrincipal = Depends(require_single_admin),
+        session: Session = Depends(get_session),
+    ) -> RecruitingAgentCandidateReferencePage:
+        """List @-reference candidates inside the conversation's working scope."""
+
+        try:
+            return list_recruiting_agent_candidate_references(
+                session,
+                conversation_id=conversation_id,
+                actor_user_id=principal.user.id,
+                query=query,
+                cursor=cursor,
+                limit=limit,
             )
         except RecruitingAgentConversationNotFoundError as exc:
             session.rollback()

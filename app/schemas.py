@@ -1636,6 +1636,25 @@ class RecruitingAgentInputReference(ApiModel):
     label: Literal["候选人", "关联 JD", "当前筛选", "人才画像"]
 
 
+class RecruitingAgentCandidateReference(ApiModel):
+    """One @-reference candidate inside the conversation's frozen scope.
+
+    This read-only projection exists only so the composer can suggest
+    candidates from an already-set working scope.  It mirrors the
+    ``candidate:<candidate_id>`` reference shape and never writes candidate
+    identifiers into the conversation or its ``active_context``.
+    """
+
+    candidate_id: str
+    resume_id: str
+    display_name: str | None
+
+
+class RecruitingAgentCandidateReferencePage(ApiModel):
+    items: list[RecruitingAgentCandidateReference] = Field(default_factory=list)
+    next_cursor: str | None = None
+
+
 class RecruitingAgentActiveContext(ApiModel):
     """Safe, recruiter-visible status for the current work-session scope."""
 

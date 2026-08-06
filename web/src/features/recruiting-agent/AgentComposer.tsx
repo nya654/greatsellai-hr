@@ -10,6 +10,7 @@ import {
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type RefObject,
+  type UIEvent as ReactUIEvent,
 } from "react";
 import type SemiAIChatInputInstance from "@douyinfe/semi-ui-19/lib/es/aiChatInput";
 import type {
@@ -53,6 +54,12 @@ interface AgentComposerProps {
   value: string;
   references: AgentReference[];
   availableReferences: AgentReference[];
+  /** Server-fetched candidates from the active working scope (paged). */
+  candidateReferences: AgentReference[];
+  /** True while a candidate page is loading from the server. */
+  referencesLoading: boolean;
+  /** True when the conversation has an active working scope. */
+  hasWorkingSet: boolean;
   disabled: boolean;
   generating: boolean;
   inputRef: RefObject<AgentComposerHandle | null>;
@@ -60,6 +67,12 @@ interface AgentComposerProps {
   onRemoveReference: (referenceId: string) => void;
   onSelectReference: (reference: AgentReference) => void;
   onSubmit: (message: string) => void;
+  /** Reset and load the first candidate page when the @ menu opens. */
+  onOpenReferences: () => void;
+  /** Append the next candidate page (called near the list bottom). */
+  onLoadMoreReferences: () => void;
+  /** Debounced server-side name search over the working scope. */
+  onSearchReferences: (query: string) => void;
 }
 
 function referenceMatchesQuery(reference: AgentReference, query: string): boolean {
@@ -102,6 +115,9 @@ export function AgentComposer({
   value,
   references,
   availableReferences,
+  candidateReferences,
+  referencesLoading,
+  hasWorkingSet,
   disabled,
   generating,
   inputRef,
@@ -109,6 +125,9 @@ export function AgentComposer({
   onRemoveReference,
   onSelectReference,
   onSubmit,
+  onOpenReferences,
+  onLoadMoreReferences,
+  onSearchReferences,
 }: AgentComposerProps) {
   const menuId = useId();
   const aiInputRef = useRef<SemiAIChatInputInstance | null>(null);
@@ -126,13 +145,46 @@ export function AgentComposer({
     () => new Set(references.map((reference) => reference.referenceId)),
     [references],
   );
-  const matches = useMemo(
+  const localMatches = useMemo(
     () => availableReferences.filter((reference) => (
       !selectedIds.has(reference.referenceId) && referenceMatchesQuery(reference, query)
     )),
     [availableReferences, query, selectedIds],
   );
-  const activeOptionId = matches[activeIndex]
+  const candidateOptions = useMemo(() => {
+    const options: AgentReference[] = [];
+    const seen = new Set<string>();
+    // Turn candidates stay local-first so a name already shown in this chat
+    // still resolves without a server round-trip.
+    localMatches.forEach((reference) => {
+      if (reference.kind !== "candidate" || seen.has(reference.referenceId)) return;
+      seen.add(reference.referenceId);
+      options.push(reference);
+    });
+    if (hasWorkingSet) {
+      candidateReferences.forEach((reference) => {
+        if (selectedIds.has(reference.referenceId)) return;
+        if (seen.has(reference.referenceId)) return;
+        if (!referenceMatchesQuery(reference, query)) return;
+        seen.add(reference.referenceId);
+        options.push(reference);
+      });
+    }
+    return options;
+  }, [candidateReferences, hasWorkingSet, localMatches, query, selectedIds]);
+  const jobOptions = useMemo(
+    () => localMatches.filter((reference) => reference.kind === "job"),
+    [localMatches],
+  );
+  const profileOptions = useMemo(
+    () => localMatches.filter((reference) => reference.kind === "talent_profile"),
+    [localMatches],
+  );
+  const options = useMemo(
+    () => [...jobOptions, ...profileOptions, ...candidateOptions],
+    [candidateOptions, jobOptions, profileOptions],
+  );
+  const activeOptionId = options[activeIndex]
     ? `${menuId}-option-${activeIndex}`
     : undefined;
   const inputReferences = useMemo<Reference[]>(() => references.map((reference) => ({
@@ -204,6 +256,7 @@ export function AgentComposer({
     positionMenu();
     setMenuOpen(true);
     setActiveIndex(0);
+    onOpenReferences();
   };
 
   useEffect(() => {
@@ -236,8 +289,24 @@ export function AgentComposer({
   }, [menuOpen]);
 
   useEffect(() => {
-    if (activeIndex >= matches.length) setActiveIndex(Math.max(0, matches.length - 1));
-  }, [activeIndex, matches.length]);
+    if (activeIndex >= options.length) setActiveIndex(Math.max(0, options.length - 1));
+  }, [activeIndex, options.length]);
+
+  // Debounce working-scope name search so each keystroke becomes one
+  // server query that replaces the paged candidate list.
+  useEffect(() => {
+    if (!hasWorkingSet || !menuOpen) return undefined;
+    const handle = window.setTimeout(() => onSearchReferences(query), 300);
+    return () => window.clearTimeout(handle);
+  }, [hasWorkingSet, menuOpen, onSearchReferences, query]);
+
+  const handleMenuListScroll = (event: ReactUIEvent<HTMLDivElement>) => {
+    if (!hasWorkingSet || referencesLoading) return;
+    const element = event.currentTarget;
+    if (element.scrollHeight - element.scrollTop - element.clientHeight < 32) {
+      onLoadMoreReferences();
+    }
+  };
 
   const selectReference = (reference: AgentReference) => {
     onSelectReference(reference);
@@ -250,24 +319,47 @@ export function AgentComposer({
       closeMenu(true);
       return;
     }
-    if (event.key === "ArrowDown" && matches.length) {
+    if (event.key === "ArrowDown" && options.length) {
       event.preventDefault();
-      setActiveIndex((current) => (current + 1) % matches.length);
+      setActiveIndex((current) => (current + 1) % options.length);
       return;
     }
-    if (event.key === "ArrowUp" && matches.length) {
+    if (event.key === "ArrowUp" && options.length) {
       event.preventDefault();
-      setActiveIndex((current) => (current - 1 + matches.length) % matches.length);
+      setActiveIndex((current) => (current - 1 + options.length) % options.length);
       return;
     }
     if (event.key === "Enter" && !event.nativeEvent.isComposing) {
-      const active = matches[activeIndex];
+      const active = options[activeIndex];
       if (active) {
         event.preventDefault();
         selectReference(active);
       }
     }
   };
+
+  const renderOption = (reference: AgentReference, index: number) => (
+    <button
+      aria-selected={index === activeIndex}
+      className={index === activeIndex ? "is-active" : undefined}
+      id={`${menuId}-option-${index}`}
+      key={reference.referenceId}
+      onMouseEnter={() => setActiveIndex(index)}
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={() => selectReference(reference)}
+      role="option"
+      type="button"
+    >
+      <Icon name={referenceIcon(reference)} size={16} />
+      <span>
+        <strong>{reference.label}</strong>
+        {reference.description && <small>{reference.description}</small>}
+      </span>
+      <em>{referenceKindLabel[reference.kind]}</em>
+    </button>
+  );
+
+  const candidateSectionTitle = hasWorkingSet ? "候选人（工作集）" : "候选人";
 
   const handleInputKeyDownCapture = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (inputLocked) {
@@ -419,28 +511,35 @@ export function AgentComposer({
             aria-label="选择要引用的资料"
             className="agent-reference-menu-list"
             id={`${menuId}-list`}
+            onScroll={handleMenuListScroll}
             role="listbox"
           >
-            {matches.length ? matches.map((reference, index) => (
-              <button
-                aria-selected={index === activeIndex}
-                className={index === activeIndex ? "is-active" : undefined}
-                id={`${menuId}-option-${index}`}
-                key={reference.referenceId}
-                onMouseEnter={() => setActiveIndex(index)}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => selectReference(reference)}
-                role="option"
-                type="button"
-              >
-                <Icon name={referenceIcon(reference)} size={16} />
-                <span>
-                  <strong>{reference.label}</strong>
-                  {reference.description && <small>{reference.description}</small>}
-                </span>
-                <em>{referenceKindLabel[reference.kind]}</em>
-              </button>
-            )) : (
+            {jobOptions.length > 0 && (
+              <>
+                <h4 className="agent-reference-menu-section-title">关联 JD</h4>
+                {jobOptions.map((reference, index) => renderOption(reference, index))}
+              </>
+            )}
+            {profileOptions.length > 0 && (
+              <>
+                <h4 className="agent-reference-menu-section-title">人才画像</h4>
+                {profileOptions.map((reference, index) => (
+                  renderOption(reference, jobOptions.length + index)
+                ))}
+              </>
+            )}
+            {candidateOptions.length > 0 && (
+              <>
+                <h4 className="agent-reference-menu-section-title">{candidateSectionTitle}</h4>
+                {candidateOptions.map((reference, index) => (
+                  renderOption(reference, jobOptions.length + profileOptions.length + index)
+                ))}
+              </>
+            )}
+            {hasWorkingSet && referencesLoading && (
+              <p className="agent-reference-menu-loading" role="status">正在加载候选人…</p>
+            )}
+            {options.length === 0 && !(hasWorkingSet && referencesLoading) && (
               <p className="agent-reference-menu-empty">当前没有可引用的内容。</p>
             )}
           </div>

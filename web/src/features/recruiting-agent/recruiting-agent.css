@@ -2004,6 +2004,23 @@
   padding: 0.25rem;
 }
 
+.backoffice-ui-root .agent-reference-menu-section-title {
+  padding: 0.5rem 0.5rem 0.25rem;
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.backoffice-ui-root .agent-reference-menu-loading {
+  padding: 0.75rem 0.5rem;
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.625rem;
+  text-align: center;
+}
+
 .backoffice-ui-root .agent-reference-menu-list > button {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;

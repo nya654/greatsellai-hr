@@ -42,6 +42,15 @@ def ai_import_settings_response(session: Session) -> AiImportSettingsResponse:
     )
 
 
+def should_auto_process_source(session: Session, *, source: str) -> bool:
+    settings = ai_import_settings_response(session)
+    if not settings.auto_summary_enabled and not settings.auto_score_enabled:
+        return False
+    if source == "mailbox_attachment":
+        return settings.trigger_mailbox_import
+    return settings.trigger_manual_upload
+
+
 def update_ai_import_settings(
     session: Session,
     *,

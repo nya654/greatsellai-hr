@@ -356,10 +356,16 @@ export function ScoreWorkspace({
                 ))}
               </div>
             </section>
+            <div className="score-field-legend" role="note">
+              <span className="score-field-badge is-ai">AI 输入</span>
+              <span>评分时模型会逐字读取这些字段作为评分依据。</span>
+              <span className="score-field-badge is-human">人读</span>
+              <span>仅用于模板与评分记录的展示和说明，不影响 AI 评分。</span>
+            </div>
             <div className="form-grid">
               <div className="field-stack span-full">
                 <label className="field-label" htmlFor="template-name">
-                  模板名称
+                  模板名称 <span className="score-field-badge is-human">人读</span>
                 </label>
                 <input
                   className="field"
@@ -373,7 +379,7 @@ export function ScoreWorkspace({
               </div>
               <div className="field-stack span-full">
                 <label className="field-label" htmlFor="template-description">
-                  评分说明（可选）
+                  评分说明（可选） <span className="score-field-badge is-human">人读</span>
                 </label>
                 <textarea
                   className="textarea-field template-description-field"
@@ -396,7 +402,7 @@ export function ScoreWorkspace({
                         className="field-label"
                         htmlFor={`dimension-label-${dimension.id}`}
                       >
-                        评分维度
+                        评分维度 <span className="score-field-badge is-ai">AI 输入</span>
                       </label>
                       <input
                         className="field"
@@ -415,7 +421,7 @@ export function ScoreWorkspace({
                         className="field-label"
                         htmlFor={`dimension-weight-${dimension.id}`}
                       >
-                        权重（%）
+                        权重（%） <span className="score-field-badge is-ai">AI 输入</span>
                       </label>
                       <input
                         aria-describedby={`dimension-weight-hint-${dimension.id}`}
@@ -459,7 +465,7 @@ export function ScoreWorkspace({
                       className="field-label"
                       htmlFor={`dimension-guidance-${dimension.id}`}
                     >
-                      AI 评分说明（可选）
+                      AI 评分说明（可选） <span className="score-field-badge is-ai">AI 输入</span>
                     </label>
                     <textarea
                       className="textarea-field dimension-guidance-field"

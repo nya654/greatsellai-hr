@@ -1440,6 +1440,38 @@ class WorkspaceAiImportSettings(OrganizationScoped, Base):
     )
 
 
+class UserFilterDisplayPreference(OrganizationScoped, Base):
+    """Per-user filter result column preference.
+
+    A row exists only after the user has saved an explicit selection. Absence
+    means "fall back to auto-derived columns" in the results pane.
+
+    Uniqueness is per ``(user_id, organization_id)`` rather than per user: a
+    single user may belong to several workspaces and keep different column
+    selections in each.
+    """
+
+    __tablename__ = "user_filter_display_preferences"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "organization_id",
+            name="uq_user_filter_display_preferences_user_org",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id"),
+    )
+    display_field_keys: Mapped[list[str]] = mapped_column(JSON)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+
 class CandidateDataRetentionCleanupRun(OrganizationScoped, Base):
     """Privacy-safe counts for one retention evaluation or enqueue run."""
 

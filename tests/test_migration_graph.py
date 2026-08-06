@@ -31,6 +31,7 @@ from app.models import (
     ResumeSourceTag,
     RuntimeWorkerHeartbeat,
     TalentSearchRun,
+    UserFilterDisplayPreference,
     WorkspaceAiImportSettings,
     WorkspaceBackgroundLane,
     WorkspaceFeedbackImageAttachment,
@@ -42,7 +43,7 @@ from app.models import (
 def test_alembic_history_has_one_canonical_head() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert script.get_heads() == ["20260806_0059"]
+    assert script.get_heads() == ["20260806_0060"]
 
 
 def test_migration_revision_identifiers_are_unique() -> None:
@@ -239,4 +240,13 @@ def test_workspace_ai_import_settings_ddl_identifiers_fit_postgresql() -> None:
     dialect = postgresql.dialect()
     CreateTable(WorkspaceAiImportSettings.__table__).compile(dialect=dialect)
     for index in WorkspaceAiImportSettings.__table__.indexes:
+        CreateIndex(index).compile(dialect=dialect)
+
+
+def test_user_filter_display_preferences_ddl_identifiers_fit_postgresql() -> None:
+    """Per-user filter preferences must remain portable to production PostgreSQL."""
+
+    dialect = postgresql.dialect()
+    CreateTable(UserFilterDisplayPreference.__table__).compile(dialect=dialect)
+    for index in UserFilterDisplayPreference.__table__.indexes:
         CreateIndex(index).compile(dialect=dialect)

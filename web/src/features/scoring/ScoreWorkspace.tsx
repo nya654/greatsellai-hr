@@ -71,8 +71,7 @@ export function ScoreWorkspace({
   const [loadedOptimizationSource, setLoadedOptimizationSource] = useState<string | null>(
     null,
   );
-
-  const selectedTemplate = templates.find((template) => template.template_id === templateId);
+  const [loadedTemplateSource, setLoadedTemplateSource] = useState<string | null>(null);
 
   const loadTemplates = useCallback(async () => {
     setLoadingTemplates(true);
@@ -95,6 +94,24 @@ export function ScoreWorkspace({
     (total, item) => total + Number(item.weight || 0),
     0,
   );
+  const draftValidationError = (): string | null => {
+    if (!templateName.trim()) {
+      return "请填写评分模板名称。";
+    }
+    if (totalWeight !== 100) {
+      return `评分权重当前为 ${totalWeight}，必须恰好为 100。`;
+    }
+    if (dimensions.some((item) => !item.label.trim())) {
+      return "请为每个评分维度填写名称。";
+    }
+    const normalizedLabels = dimensions.map((item) =>
+      item.label.trim().replace(/\s+/g, " ").toLowerCase(),
+    );
+    if (new Set(normalizedLabels).size !== normalizedLabels.length) {
+      return "同一评分模板内不能使用重复的维度名称。";
+    }
+    return null;
+  };
   const updateDimension = (
     id: string,
     patch: Partial<TemplateDraftDimension>,
@@ -106,29 +123,18 @@ export function ScoreWorkspace({
   };
   const applyPreset = (preset: ScoreTemplatePreset) => {
     setLoadedOptimizationSource(null);
+    setLoadedTemplateSource(null);
+    setOptimization(null);
+    setOptimizationError(null);
     setSelectedPresetId(preset.id);
     setTemplateName(preset.name);
     setTemplateDescription(preset.description);
     setDimensions(createTemplateDraftDimensions(preset));
   };
   const saveTemplate = async () => {
-    if (!templateName.trim()) {
-      notify("error", "请填写评分模板名称。");
-      return;
-    }
-    if (totalWeight !== 100) {
-      notify("error", `评分权重当前为 ${totalWeight}，必须恰好为 100。`);
-      return;
-    }
-    if (dimensions.some((item) => !item.label.trim())) {
-      notify("error", "请为每个评分维度填写名称。");
-      return;
-    }
-    const normalizedLabels = dimensions.map((item) =>
-      item.label.trim().replace(/\s+/g, " ").toLowerCase(),
-    );
-    if (new Set(normalizedLabels).size !== normalizedLabels.length) {
-      notify("error", "同一评分模板内不能使用重复的维度名称。");
+    const validationError = draftValidationError();
+    if (validationError) {
+      notify("error", validationError);
       return;
     }
     setSavingTemplate(true);
@@ -141,6 +147,7 @@ export function ScoreWorkspace({
       setTemplates((current) => [created, ...current]);
       setTemplateId(created.template_id);
       setLoadedOptimizationSource(null);
+      setLoadedTemplateSource(null);
       onTemplateCreated(created);
       notify("success", `评分模板“${created.name}”已创建。`);
     } catch (error) {
@@ -153,24 +160,37 @@ export function ScoreWorkspace({
     setTemplateId(nextTemplateId);
     setOptimization(null);
     setOptimizationError(null);
+    const template = templates.find((item) => item.template_id === nextTemplateId);
+    if (!template) return;
+    setSelectedPresetId(null);
+    setTemplateName(template.name);
+    setTemplateDescription(template.description ?? "");
+    setDimensions(
+      template.dimensions.map((dimension) => ({
+        id: createTemplateDraftDimensionId(),
+        label: dimension.label,
+        weight: dimension.weight,
+        guidance: dimension.guidance ?? null,
+      })),
+    );
+    setLoadedOptimizationSource(null);
+    setLoadedTemplateSource(template.name);
   };
-  const optimizeSelectedTemplate = async () => {
-    if (!selectedTemplate) {
-      setOptimizationError("请先选择一套评分模板，再生成优化建议。");
+  const optimizeDraft = async () => {
+    const validationError = draftValidationError();
+    if (validationError) {
+      setOptimizationError(validationError);
       return;
     }
     setOptimizingTemplate(true);
     setOptimization(null);
     setOptimizationError(null);
     try {
-      const proposal = await api.optimizeScoreTemplate(selectedTemplate.template_id);
-      if (
-        proposal.source_template_id !== selectedTemplate.template_id ||
-        proposal.source_template_version !== selectedTemplate.version
-      ) {
-        setOptimizationError("返回的优化建议与当前模板版本不一致，请重新生成建议。");
-        return;
-      }
+      const proposal = await api.optimizeScoreTemplateDraft({
+        name: templateName.trim(),
+        description: templateDescription.trim() || undefined,
+        dimensions: dimensions.map(({ id: _id, ...item }) => item),
+      });
       setOptimization(proposal);
     } catch (error) {
       setOptimizationError(formatError(error));
@@ -190,7 +210,8 @@ export function ScoreWorkspace({
         id: createTemplateDraftDimensionId(),
       })),
     );
-    setLoadedOptimizationSource(selectedTemplate?.name ?? "原评分模板");
+    setLoadedTemplateSource(null);
+    setLoadedOptimizationSource(templateName.trim() || "当前规则");
     setOptimization(null);
     setOptimizationError(null);
     notify(
@@ -208,6 +229,7 @@ export function ScoreWorkspace({
       setTemplateId(created.template_id);
       setOptimization(null);
       setLoadedOptimizationSource(null);
+      setLoadedTemplateSource(null);
       onTemplateCreated(created);
       notify("success", `已创建优化后的评分模板“${created.name}”。原模板保持不变。`);
     } catch (error) {
@@ -306,6 +328,12 @@ export function ScoreWorkspace({
               <p className="score-template-draft-notice" role="status">
                 <Icon name="spark" size={16} />
                 已载入 AI 对“{loadedOptimizationSource}”的优化建议。你可以继续修改；创建后会生成新模板，不会修改原模板。
+              </p>
+            )}
+            {loadedTemplateSource && (
+              <p className="score-template-draft-notice" role="status">
+                <Icon name="layers" size={16} />
+                已载入“{loadedTemplateSource}”，可直接修改；创建后会生成新版本，原模板不变。
               </p>
             )}
             <section aria-labelledby="score-preset-heading" className="score-template-preset-section">
@@ -480,6 +508,44 @@ export function ScoreWorkspace({
               <strong>{totalWeight} / 100%</strong>
             </div>
           </section>
+          {(optimizingTemplate || optimizationError || optimization) && (
+            <section className="panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>AI 优化建议</h2>
+                  <p>基于当前编辑器内容生成的改进草案，确认前不会创建或修改任何评分规则。</p>
+                </div>
+              </div>
+              {optimizingTemplate && (
+                <p className="score-template-optimization-status" role="status">
+                  <i className="spinner" />
+                  正在分析“{templateName.trim() || "当前规则"}”的评分维度与说明…
+                </p>
+              )}
+              {optimizationError && (
+                <p className="library-error score-template-optimization-error" role="alert">
+                  {optimizationError}
+                </p>
+              )}
+              {optimization && (
+                <TemplateOptimizationPreview
+                  applying={applyingOptimization}
+                  onApply={() => void applyOptimization()}
+                  onDiscard={() => {
+                    setOptimization(null);
+                    setOptimizationError(null);
+                  }}
+                  onLoadIntoDraft={loadOptimizationIntoDraft}
+                  optimization={optimization}
+                  sourceTemplate={{
+                    name: templateName.trim() || "当前评分规则",
+                    description: templateDescription.trim() || undefined,
+                    dimensions: dimensions.map(({ id: _id, ...item }) => item),
+                  }}
+                />
+              )}
+            </section>
+          )}
           <section className="panel">
             <div className="panel-heading">
               <div>
@@ -504,59 +570,15 @@ export function ScoreWorkspace({
                 value={templateId}
               />
             </div>
-            <section
-              aria-busy={optimizingTemplate || applyingOptimization}
-              aria-labelledby="score-template-optimization-heading"
-              className="score-template-optimization"
-            >
-              <div className="score-template-optimization-heading">
-                <div>
-                  <h3 id="score-template-optimization-heading">AI 帮我优化</h3>
-                  <p>基于所选模板提出可审阅的维度、权重和评分说明建议。确认前不会修改现有模板。</p>
-                </div>
-                <BackofficeButton
-                  disabled={!selectedTemplate || optimizingTemplate || applyingOptimization}
-                  icon={<Icon name="spark" size={16} />}
-                  loading={optimizingTemplate}
-                  onClick={() => void optimizeSelectedTemplate()}
-                >
-                  {optimizingTemplate ? "正在生成建议…" : "AI 帮我优化"}
-                </BackofficeButton>
-              </div>
-              <p className="score-template-optimization-selection">
-                <span>当前待优化模板</span>
-                <strong>
-                  {selectedTemplate
-                    ? `${selectedTemplate.name} · v${selectedTemplate.version}`
-                    : "尚未选择模板"}
-                </strong>
-              </p>
-              {optimizingTemplate && (
-                <p className="score-template-optimization-status" role="status">
-                  <i className="spinner" />
-                  正在分析“{selectedTemplate?.name}”的评分维度与说明…
-                </p>
-              )}
-              {optimizationError && (
-                <p className="library-error score-template-optimization-error" role="alert">
-                  {optimizationError}
-                </p>
-              )}
-              {optimization && selectedTemplate && (
-                <TemplateOptimizationPreview
-                  applying={applyingOptimization}
-                  onApply={() => void applyOptimization()}
-                  onDiscard={() => {
-                    setOptimization(null);
-                    setOptimizationError(null);
-                  }}
-                  onLoadIntoDraft={loadOptimizationIntoDraft}
-                  optimization={optimization}
-                  sourceTemplate={selectedTemplate}
-                />
-              )}
-            </section>
             <div className="review-actions">
+              <BackofficeButton
+                disabled={optimizingTemplate || applyingOptimization}
+                icon={<Icon name="spark" size={15} />}
+                loading={optimizingTemplate}
+                onClick={() => void optimizeDraft()}
+              >
+                {optimizingTemplate ? "正在生成建议…" : "AI 帮我优化"}
+              </BackofficeButton>
               <BackofficeButton
                 disabled={!templateId || startingScoreBatch || scoreBatchIsRunning}
                 icon={<Icon name="layers" size={16} />}
@@ -632,7 +654,7 @@ function TemplateOptimizationPreview({
   onDiscard: () => void;
   onLoadIntoDraft: () => void;
   optimization: ScoreTemplateOptimization;
-  sourceTemplate: ScoreTemplate;
+  sourceTemplate: TemplateComparison;
 }) {
   const proposedTemplate = optimization.proposed_template;
 
@@ -644,15 +666,15 @@ function TemplateOptimizationPreview({
       <div className="score-template-optimization-preview-heading">
         <div>
           <h4 id="score-template-optimization-preview-heading">优化建议对比</h4>
-          <p>请逐项检查 AI 的建议。当前模板只用于对照，不会被这次操作修改。</p>
+          <p>请逐项检查 AI 的建议。当前内容只用于对照，不会被这次操作修改。</p>
         </div>
         <span className="status-pill is-progress">待确认</span>
       </div>
-      <div aria-label="当前模板与优化建议对比" className="score-template-optimization-comparison">
+      <div aria-label="当前内容与优化建议对比" className="score-template-optimization-comparison">
         <TemplateSnapshot
           template={sourceTemplate}
-          title="当前模板"
-          version={optimization.source_template_version}
+          title="当前内容"
+          version={optimization.source_template_version ?? undefined}
         />
         <TemplateSnapshot isProposed template={proposedTemplate} title="AI 建议" />
       </div>
@@ -669,7 +691,7 @@ function TemplateOptimizationPreview({
         )}
       </div>
       <div className="score-template-optimization-confirmation">
-        <p>确认后会将 AI 建议创建为一套新模板，当前模板“{sourceTemplate.name}”保持不变。</p>
+        <p>确认后会将 AI 建议创建为一套新评分规则，当前编辑器内容不会被改写。</p>
         <div className="review-actions">
           <BackofficeButton
             disabled={applying}

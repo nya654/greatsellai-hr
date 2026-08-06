@@ -124,6 +124,130 @@ def test_optimize_template_chooses_a_unique_copy_name(ai_client, monkeypatch) ->
     assert response.json()["proposed_template"]["name"] == "后端工程师初筛（AI 优化 2）"
 
 
+def test_optimize_draft_returns_a_non_persisted_proposal_with_null_source(
+    ai_client,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.score_service.optimize_score_template",
+        _fake_template_optimizer,
+    )
+
+    response = ai_client.post(
+        "/v1/score-templates/optimize-draft",
+        json=_template_payload(),
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["source_template_id"] is None
+    assert payload["source_template_version"] is None
+    assert payload["proposed_template"]["name"] == "后端工程师初筛（AI 优化）"
+    assert [item["weight"] for item in payload["proposed_template"]["dimensions"]] == [55, 45]
+    assert payload["improvement_notes"] == [
+        "将宽泛的技能描述改为只基于可验证事实的评分要求。",
+        "补充信息不足时需要人工复核的说明。",
+    ]
+
+    # A draft optimization never persists a rule by itself.
+    templates = ai_client.get("/v1/score-templates")
+    assert templates.status_code == 200, templates.text
+    assert templates.json() == []
+
+    database = ai_client.app.state.database
+    with database.session_factory() as session:
+        run = session.scalar(
+            select(AiRun).where(AiRun.feature == "score_template_optimize")
+        )
+    assert run is not None
+    assert run.status == "succeeded"
+    assert run.contract_version == "score_template_optimization.v1"
+    assert run.prompt_revision == "score_template_optimization.v1"
+    # The draft has no stored source, so the ledger uses an opaque draft id and
+    # never recruiter-authored template text.
+    assert run.business_ref_id.startswith("draft:")
+
+    # The reviewed proposal can use the ordinary creation API to become a rule.
+    accepted = ai_client.post("/v1/score-templates", json=payload["proposed_template"])
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["name"] == "后端工程师初筛（AI 优化）"
+
+
+def test_optimize_draft_chooses_a_unique_copy_name(ai_client, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.score_service.optimize_score_template",
+        _fake_template_optimizer,
+    )
+    existing_copy = ai_client.post(
+        "/v1/score-templates",
+        json=_template_payload("后端工程师初筛（AI 优化）"),
+    )
+    assert existing_copy.status_code == 200, existing_copy.text
+
+    response = ai_client.post(
+        "/v1/score-templates/optimize-draft",
+        json=_template_payload(),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["proposed_template"]["name"] == "后端工程师初筛（AI 优化 2）"
+
+
+def test_optimize_draft_rejects_invalid_weights_without_ai_call(
+    ai_client,
+    monkeypatch,
+) -> None:
+    def unexpected_model_call(**kwargs: object) -> dict[str, object]:
+        raise AssertionError("an invalid draft must not reach the model")
+
+    monkeypatch.setattr(
+        "app.services.score_service.optimize_score_template",
+        unexpected_model_call,
+    )
+    invalid_draft = _template_payload()
+    invalid_draft["dimensions"][0]["weight"] = 30  # now sums to 70
+
+    response = ai_client.post(
+        "/v1/score-templates/optimize-draft",
+        json=invalid_draft,
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_optimize_draft_rejects_an_all_unsafe_source_before_model_call(
+    ai_client,
+    monkeypatch,
+) -> None:
+    unsafe_draft = _template_payload()
+    unsafe_draft["dimensions"] = [
+        {
+            "label": "Age requirement",
+            "weight": 50,
+            "guidance": "Only consider age.",
+        },
+        {
+            "label": "Gender preference",
+            "weight": 50,
+            "guidance": "Only consider gender.",
+        },
+    ]
+
+    def unexpected_model_call(**kwargs: object) -> dict[str, object]:
+        raise AssertionError("an unsafe-only draft must not reach the model")
+
+    monkeypatch.setattr(
+        "app.services.deepseek_provider.call_strict_function",
+        unexpected_model_call,
+    )
+    response = ai_client.post(
+        "/v1/score-templates/optimize-draft",
+        json=unsafe_draft,
+    )
+    assert response.status_code == 422, response.text
+    assert (
+        response.json()["detail"]
+        == "score_template_optimization_source_has_no_safe_dimensions"
+    )
+
+
 def test_optimize_template_rejects_unknown_source_without_ai_call(ai_client) -> None:
     response = ai_client.post("/v1/score-templates/missing-template/optimize")
     assert response.status_code == 404

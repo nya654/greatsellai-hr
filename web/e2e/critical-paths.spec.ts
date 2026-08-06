@@ -996,10 +996,10 @@ test.describe("招聘工作台关键路径", () => {
     await expect(page.getByLabel("评分维度", { exact: true })).toHaveCount(3);
     await expect(page.getByLabel("权重（%）", { exact: true })).toHaveCount(3);
     await expect(page.getByLabel("AI 评分说明（可选）", { exact: true })).toHaveCount(3);
-    await expect(page.getByRole("heading", { name: "AI 帮我优化", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "AI 帮我优化", exact: true })).toBeVisible();
 
     let optimizationRequestCount = 0;
-    await page.route("**/v1/score-templates/*/optimize", async (route) => {
+    await page.route("**/v1/score-templates/optimize-draft", async (route) => {
       optimizationRequestCount += 1;
       if (optimizationRequestCount === 1) {
         await route.fulfill({
@@ -1009,11 +1009,10 @@ test.describe("招聘工作台关键路径", () => {
         });
         return;
       }
-      const templateId = new URL(route.request().url()).pathname.split("/").at(-2);
       await route.fulfill({
         body: JSON.stringify({
-          source_template_id: templateId,
-          source_template_version: 1,
+          source_template_id: null,
+          source_template_version: null,
           proposed_template: {
             name: "E2E 优化后的评分规则",
             description: "测试 AI 建议可在创建前审阅和调整。",

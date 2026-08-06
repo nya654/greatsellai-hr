@@ -364,9 +364,12 @@ export function ScoreWorkspace({
             </div>
             <div className="form-grid">
               <div className="field-stack span-full">
-                <label className="field-label" htmlFor="template-name">
-                  模板名称 <span className="score-field-badge is-human">人读</span>
-                </label>
+                <div className="score-field-label-row">
+                  <label className="field-label" htmlFor="template-name">
+                    模板名称
+                  </label>
+                  <span className="score-field-badge is-human">人读</span>
+                </div>
                 <input
                   className="field"
                   id="template-name"
@@ -378,9 +381,12 @@ export function ScoreWorkspace({
                 />
               </div>
               <div className="field-stack span-full">
-                <label className="field-label" htmlFor="template-description">
-                  评分说明（可选） <span className="score-field-badge is-human">人读</span>
-                </label>
+                <div className="score-field-label-row">
+                  <label className="field-label" htmlFor="template-description">
+                    评分说明（可选）
+                  </label>
+                  <span className="score-field-badge is-human">人读</span>
+                </div>
                 <textarea
                   className="textarea-field template-description-field"
                   id="template-description"
@@ -398,12 +404,15 @@ export function ScoreWorkspace({
                 <div className="score-template-dimension" key={dimension.id}>
                   <div className="score-template-dimension-header">
                     <div className="dimension-field-stack">
-                      <label
-                        className="field-label"
-                        htmlFor={`dimension-label-${dimension.id}`}
-                      >
-                        评分维度 <span className="score-field-badge is-ai">AI 输入</span>
-                      </label>
+                      <div className="score-field-label-row">
+                        <label
+                          className="field-label"
+                          htmlFor={`dimension-label-${dimension.id}`}
+                        >
+                          评分维度
+                        </label>
+                        <span className="score-field-badge is-ai">AI 输入</span>
+                      </div>
                       <input
                         className="field"
                         id={`dimension-label-${dimension.id}`}
@@ -417,12 +426,15 @@ export function ScoreWorkspace({
                       />
                     </div>
                     <div className="dimension-field-stack dimension-weight-field">
-                      <label
-                        className="field-label"
-                        htmlFor={`dimension-weight-${dimension.id}`}
-                      >
-                        权重（%） <span className="score-field-badge is-ai">AI 输入</span>
-                      </label>
+                      <div className="score-field-label-row">
+                        <label
+                          className="field-label"
+                          htmlFor={`dimension-weight-${dimension.id}`}
+                        >
+                          权重（%）
+                        </label>
+                        <span className="score-field-badge is-ai">AI 输入</span>
+                      </div>
                       <input
                         aria-describedby={`dimension-weight-hint-${dimension.id}`}
                         className="field"
@@ -461,12 +473,15 @@ export function ScoreWorkspace({
                     </button>
                   </div>
                   <div className="dimension-guidance-stack">
-                    <label
-                      className="field-label"
-                      htmlFor={`dimension-guidance-${dimension.id}`}
-                    >
-                      AI 评分说明（可选） <span className="score-field-badge is-ai">AI 输入</span>
-                    </label>
+                    <div className="score-field-label-row">
+                      <label
+                        className="field-label"
+                        htmlFor={`dimension-guidance-${dimension.id}`}
+                      >
+                        AI 评分说明（可选）
+                      </label>
+                      <span className="score-field-badge is-ai">AI 输入</span>
+                    </div>
                     <textarea
                       className="textarea-field dimension-guidance-field"
                       id={`dimension-guidance-${dimension.id}`}
@@ -519,13 +534,13 @@ export function ScoreWorkspace({
               <div className="panel-heading">
                 <div>
                   <h2>AI 优化建议</h2>
-                  <p>基于当前编辑器内容生成的改进草案，确认前不会创建或修改任何评分规则。</p>
+                  <p>基于当前编辑器内容生成的改进草案，确认前不会创建或修改任何评分模板。</p>
                 </div>
               </div>
               {optimizingTemplate && (
                 <p className="score-template-optimization-status" role="status">
                   <i className="spinner" />
-                  正在分析“{templateName.trim() || "当前规则"}”的评分维度与说明…
+                  正在分析“{templateName.trim() || "当前模板"}”的评分维度与说明…
                 </p>
               )}
               {optimizationError && (
@@ -544,7 +559,7 @@ export function ScoreWorkspace({
                   onLoadIntoDraft={loadOptimizationIntoDraft}
                   optimization={optimization}
                   sourceTemplate={{
-                    name: templateName.trim() || "当前评分规则",
+                    name: templateName.trim() || "当前评分模板",
                     description: templateDescription.trim() || undefined,
                     dimensions: dimensions.map(({ id: _id, ...item }) => item),
                   }}
@@ -697,7 +712,7 @@ function TemplateOptimizationPreview({
         )}
       </div>
       <div className="score-template-optimization-confirmation">
-        <p>确认后会将 AI 建议创建为一套新评分规则，当前编辑器内容不会被改写。</p>
+        <p>确认后会将 AI 建议创建为一套新评分模板，当前编辑器内容不会被改写。</p>
         <div className="review-actions">
           <BackofficeButton
             disabled={applying}

@@ -1,0 +1,81 @@
+name: Relay bootstrap
+
+# Install (or rotate) the staging-host relay key on the production host,
+# restricted to the exact operations the silent-preload relay performs.
+# Manual-only, runs from main in the production Environment. Idempotent:
+# re-running with the same key is a no-op. Use for the initial relay setup
+# and for future relay key rotation.
+
+on:
+  workflow_dispatch:
+    inputs:
+      relay_public_key:
+        description: 'Staging relay SSH public key (ssh-ed25519 AAAA... comment). Must be a public key, never a private key.'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    name: Install staging relay key on the production host
+    runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted", "Linux", "X64", "greatsell-ci"]') || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    environment:
+      name: production
+    steps:
+      - name: Validate relay public key input
+        env:
+          RELAY_PUBLIC_KEY: ${{ inputs.relay_public_key }}
+        run: |
+          set -Eeuo pipefail
+          grep -Eq '^[[:space:]]*(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256)[[:space:]]+AAAA[0-9A-Za-z+/]+={0,2}([[:space:]].*)?$' <<<"$RELAY_PUBLIC_KEY" || {
+            echo "Input must be a single-line SSH public key (ssh-ed25519/ssh-rsa/ecdsa-sha2), never a private key." >&2
+            exit 1
+          }
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+      - name: Configure production SSH
+        env:
+          PROD_DEPLOY_HOST: ${{ vars.PROD_DEPLOY_HOST }}
+          PROD_SSH_KNOWN_HOSTS: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
+          PROD_SSH_PRIVATE_KEY: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
+        run: |
+          set -Eeuo pipefail
+          : "${PROD_DEPLOY_HOST:?Missing production variable PROD_DEPLOY_HOST}"
+          : "${PROD_SSH_PRIVATE_KEY:?Missing production secret PROD_SSH_PRIVATE_KEY}"
+          : "${PROD_SSH_KNOWN_HOSTS:?Missing production secret PROD_SSH_KNOWN_HOSTS}"
+          install -d -m 700 "$HOME/.ssh"
+          umask 077
+          printf '%s\n' "$PROD_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/greatsell-production-relay-bootstrap"
+          chmod 600 "$RUNNER_TEMP/greatsell-production-relay-bootstrap"
+          printf '%s\n' "$PROD_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          ssh-keygen -F "${PROD_DEPLOY_HOST#*@}" -f "$HOME/.ssh/known_hosts" >/dev/null
+      - name: Install the relay whitelist wrapper and key on the production host
+        env:
+          PROD_DEPLOY_HOST: ${{ vars.PROD_DEPLOY_HOST }}
+          RELAY_PUBLIC_KEY: ${{ inputs.relay_public_key }}
+        run: |
+          set -Eeuo pipefail
+          # Force-command the reviewed whitelist wrapper (scripts/relay-allow.sh)
+          # so this key can only check reachability, docker load, and inspect a
+          # greatsellai-hr content ID — never open a shell or publish anything.
+          authorized_line="command=\"/home/ubuntu/.relay-allow.sh\",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty $RELAY_PUBLIC_KEY"
+          scp -i "$RUNNER_TEMP/greatsell-production-relay-bootstrap" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            scripts/relay-allow.sh "$PROD_DEPLOY_HOST:/home/ubuntu/.relay-allow.sh"
+          ssh -i "$RUNNER_TEMP/greatsell-production-relay-bootstrap" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes "$PROD_DEPLOY_HOST" \
+            "bash -s" -- "$authorized_line" <<'REMOTE'
+          set -Eeuo pipefail
+          authorized_line="$1"
+          chown ubuntu:ubuntu /home/ubuntu/.relay-allow.sh
+          chmod 755 /home/ubuntu/.relay-allow.sh
+          umask 077
+          grep -qF "$authorized_line" ~/.ssh/authorized_keys 2>/dev/null || printf '%s\n' "$authorized_line" >> ~/.ssh/authorized_keys
+          echo "Installed relay authorized_keys line:"
+          grep -F "$authorized_line" ~/.ssh/authorized_keys
+          REMOTE

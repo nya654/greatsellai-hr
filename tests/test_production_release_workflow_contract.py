@@ -204,12 +204,47 @@ def test_public_repository_routes_all_release_orchestration_to_hosted_runners() 
         ".github/workflows/production-legacy-reconcile.yml",
         ".github/workflows/production-bootstrap-import.yml",
         ".github/workflows/production-bootstrap-restore.yml",
+        ".github/workflows/relay-bootstrap.yml",
     )
 
     for workflow_path in workflow_paths:
         workflow = (ROOT / workflow_path).read_text(encoding="utf-8")
         assert "runs-on: [self-hosted, Linux, X64, greatsell-ci]" not in workflow
         assert runner_selector in workflow
+
+
+def test_relay_bootstrap_is_a_manual_production_environment_installer() -> None:
+    relay = (ROOT / ".github" / "workflows" / "relay-bootstrap.yml").read_text(
+        encoding="utf-8"
+    )
+    allow = (ROOT / "scripts" / "relay-allow.sh").read_text(encoding="utf-8")
+
+    # Manual-only, from the production Environment, never on push/PR; it is an
+    # authorized_keys installer, not a release path.
+    assert "workflow_dispatch" in relay
+    assert "pull_request" not in relay
+    assert "environment:\n      name: production" in relay
+    assert "PROMOTE" not in relay
+
+    # Installs the reviewed whitelist wrapper via forced `command=`, never a
+    # raw `docker load` line, and disables forwarding / pty / agent.
+    assert "scripts/relay-allow.sh" in relay
+    assert "/home/ubuntu/.relay-allow.sh" in relay
+    assert "authorized_keys" in relay
+    assert "command=\"/home/ubuntu/.relay-allow.sh\"" in relay or 'command=\\"/home/ubuntu/.relay-allow.sh\\"' in relay
+    assert "no-port-forwarding" in relay
+    assert "no-agent-forwarding" in relay
+    assert "no-X11-forwarding" in relay
+    assert "no-pty" in relay
+
+    # The whitelist wrapper only permits reachability, docker load, and the
+    # content-ID inspection of greatsellai-hr images; everything else is denied.
+    assert "SSH_ORIGINAL_COMMAND" in allow
+    assert "docker load" in allow
+    assert "docker image inspect --format" in allow
+    assert "greatsellai-hr-api" in allow
+    assert "greatsellai-hr-caddy" in allow
+    assert "not allowed" in allow
 
 
 def test_cross_host_production_edge_never_claims_the_legacy_staging_gateway() -> None:

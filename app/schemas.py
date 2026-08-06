@@ -1554,6 +1554,14 @@ class AiImportSettingsResponse(ApiModel):
     trigger_mailbox_import: bool
 
 
+class DisplayFieldPreferencesUpdate(ApiModel):
+    display_field_keys: list[str]
+
+
+class DisplayFieldPreferencesResponse(ApiModel):
+    display_field_keys: list[str]
+
+
 class CandidateDataExportCreate(ApiModel):
     candidate_ids: list[str] = Field(min_length=1, max_length=1000)
     include_originals: bool = False

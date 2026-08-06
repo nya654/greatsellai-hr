@@ -211,13 +211,19 @@ jobs:
           }
           if [[ "${#existing_tags[@]}" -eq 1 ]]; then
             tag="${existing_tags[0]}"
-            [[ "$tag" =~ ^stg-[0-9]{8}-[0-9a-f]{7,40}$ ]] || {
+            [[ "$tag" =~ ^stg-[0-9]{8}-([0-9a-f]{7,40}|[1-9][0-9]*)$ ]] || {
               echo "Existing staging tag has an invalid format." >&2
               exit 1
             }
             echo "Reusing immutable staging tag $tag for a retry."
           else
-            tag="stg-$(date -u +%Y%m%d)-$(git rev-parse --short=7 HEAD)"
+            daily_prefix="stg-$(date -u +%Y%m%d)"
+            n="$(git tag --list "${daily_prefix}-*" | awk -v re="^${daily_prefix}-[1-9][0-9]*\$" '$0 ~ re { c++ } END { print c+0 }')"
+            n=$((n + 1))
+            while git rev-parse -q --verify "refs/tags/${daily_prefix}-${n}" >/dev/null 2>&1; do
+              n=$((n + 1))
+            done
+            tag="${daily_prefix}-${n}"
             scripts/create-staging-tag.sh "$tag"
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -289,6 +295,22 @@ jobs:
             --public-url "$STAGING_PUBLIC_URL" \
             --delivery direct \
             --ssh-key "$RUNNER_TEMP/greatsell-staging-deploy"
+      - name: Pre-load verified images to production host
+        # Silent pull: stream the smoke-tested images to the production host
+        # via the staging host relay without publishing. This never touches
+        # compose, migrations, or running services; publishing stays a manual
+        # Production promotion. If the prod relay is not yet configured this
+        # step fails the run but leaves the staging deployment and record intact.
+        if: steps.ready.outputs.stage == 'true'
+        env:
+          STAGING_DEPLOY_HOST: ${{ vars.STAGING_DEPLOY_HOST }}
+          RELEASE_SHA: ${{ env.RELEASE_SHA }}
+        run: |
+          set -Eeuo pipefail
+          cat scripts/stream-images-to-production.sh \
+            | ssh -i "$RUNNER_TEMP/greatsell-staging-deploy" \
+              -o StrictHostKeyChecking=yes "$STAGING_DEPLOY_HOST" \
+              "bash -s $RELEASE_SHA"
       - name: Remove superseded staging images
         if: steps.ready.outputs.stage == 'true'
         env:

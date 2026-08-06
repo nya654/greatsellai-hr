@@ -14,7 +14,14 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Group push CI by the commit SHA rather than by ref. Keying on the ref let
+  # an old main-push run queued behind a wedged runner block every later main
+  # CI, and GitHub cannot cancel that run while its job waits on a removed
+  # runner. Each main commit now gets an independent run that can start and
+  # finish regardless of prior runs, which also matches the release model:
+  # staging verifies the exact commit's successful push CI. Pull requests keep
+  # the PR-number key so a newer push cancels the previous PR CI.
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:

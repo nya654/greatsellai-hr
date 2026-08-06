@@ -1538,6 +1538,22 @@ class CandidateDataRetentionHoldUpdate(ApiModel):
     retention_hold: bool
 
 
+class AiImportSettingsUpdate(ApiModel):
+    auto_summary_enabled: bool
+    auto_score_enabled: bool
+    default_score_template_id: str | None = None
+    trigger_manual_upload: bool
+    trigger_mailbox_import: bool
+
+
+class AiImportSettingsResponse(ApiModel):
+    auto_summary_enabled: bool
+    auto_score_enabled: bool
+    default_score_template_id: str | None
+    trigger_manual_upload: bool
+    trigger_mailbox_import: bool
+
+
 class CandidateDataExportCreate(ApiModel):
     candidate_ids: list[str] = Field(min_length=1, max_length=1000)
     include_originals: bool = False

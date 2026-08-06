@@ -71,6 +71,8 @@ from app.schemas import (
     AiRunUsageSummaryResponse,
     AiUsageAggregateResponse,
     AiUsageTrendBucketResponse,
+    AiImportSettingsResponse,
+    AiImportSettingsUpdate,
     EmailVerificationComplete,
     EmailVerificationResendResult,
     OrganizationInvitationAccept,
@@ -550,6 +552,10 @@ from app.services.source_tag_service import (
     source_tag_filter_options,
     update_mailbox_source_tag_rule,
     update_source_tag,
+)
+from app.services.workspace_ai_import_settings_service import (
+    ai_import_settings_response,
+    update_ai_import_settings,
 )
 
 
@@ -5767,6 +5773,43 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         session: Session = Depends(get_session),
     ) -> CandidateDataRetentionCleanupRunHistoryResponse:
         return list_retention_cleanup_runs(session, limit=limit)
+
+    @app.get(
+        "/v1/settings/ai-import",
+        response_model=AiImportSettingsResponse,
+        dependencies=[Depends(require_organization_admin)],
+    )
+    def get_ai_import_settings(
+        session: Session = Depends(get_session),
+    ) -> AiImportSettingsResponse:
+        response = ai_import_settings_response(session)
+        _commit_or_raise(session)
+        return response
+
+    @app.put(
+        "/v1/settings/ai-import",
+        response_model=AiImportSettingsResponse,
+        dependencies=[Depends(require_organization_admin)],
+    )
+    def put_ai_import_settings(
+        payload: AiImportSettingsUpdate,
+        principal: AuthPrincipal = Depends(require_organization_admin),
+        session: Session = Depends(get_session),
+    ) -> AiImportSettingsResponse:
+        try:
+            response = update_ai_import_settings(
+                session,
+                request=payload,
+                actor_user_id=principal.user.id,
+            )
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        _commit_or_raise(session)
+        return response
 
     @app.get(
         "/v1/candidate-data/audit-events",

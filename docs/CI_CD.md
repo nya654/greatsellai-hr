@@ -5,16 +5,10 @@
 `main` CI 不再构建或推送发布镜像。staging 的镜像由 GitHub-hosted 发布 Runner 直接构建该
 commit 的 API/Caddy 镜像，校验 `org.opencontainers.image.revision` label 与 image ID 后经 SSH
 流式传输到 staging 主机（`docker save | gzip | ssh docker load`），全程不过境、不碰中国 TCR。
-
-生产镜像来源是**静默拉 + 人工发**：staging 部署并公网 smoke 通过后，发布 Runner 触发 staging
-主机把已验证镜像经 `docker save | gzip | ssh production docker load` 预加载到生产机（只
-`docker load`，不发布、不触碰 compose/迁移/服务）；负责人手动运行 **Production promotion**
-（`PROMOTE` + production Environment 审批）时才发布。镜像内容 ID 跨 `docker save/load` 保留，
-因此生产机上镜像 ID 必须等于 staging 完成记录里的 `api_image_id` / `caddy_image_id`，对不上即
-失败关闭。生产机地址与 SSH key 不进仓库：staging 主机通过 `~/.ssh/config` 的 `production`
-别名连生产，生产防火墙只放行 staging 主机 IP。历史 TCR 方案（仓库级变量、Secrets、排障说明）
-见 [TCR 发布镜像配置](TCR_RELEASE_SETUP.md)，仅作参考。本节优先于本文中任何历史的
-archive/镜像传输描述。
+生产晋级链当前暂停：`main` CI 不再向腾讯云 TCR 推送镜像，且 staging 的 direct 记录缺 TCR
+字段会让 `verify-staging-release.sh` fail-closed，因此生产工作流不会误发。将来重新接入生产
+镜像方案时再恢复镜像来源。TCR 的仓库级变量、Secrets 和排障说明仍见
+[TCR 发布镜像配置](TCR_RELEASE_SETUP.md)。本节优先于本文中任何历史的 archive/镜像传输描述。
 
 ## Runner 路由与镜像交接
 
@@ -50,16 +44,15 @@ repo-level 自托管 Runner 解绑，或将其迁入只允许受保护 `main` �
 变量；不要把这些值加入 Runner 配置、仓库变量或源码。
 
 本仓库的自动化分为两层：每个 PR 的完整持续集成（CI）和成功 `main` 的自动预发布（staging）。
-合并 `main` **不会**自动连接生产环境。生产晋级链（production promotion）采用"静默拉 + 人工发"：
-staging 验证后自动预加载镜像到生产机（不发布），负责人手动 `PROMOTE` 才发布。
+合并 `main` **不会**自动连接生产环境。生产晋级链（production promotion）当前暂停，因为
+`main` CI 已停止向 TCR 推送镜像，且 staging 的 direct 记录会使生产晋级校验 fail-closed。
 
 `main` CI 在合并后只做 `main-release-provenance` 校验。**Staging release** 在发布 Runner 上
 构建该 commit 的 API/Caddy 镜像，直接流式传输到隔离 staging，校验 revision label 与 image ID
 后部署并跑公网 smoke；它通过后记录 source archive SHA-256、API/Caddy image ID、
-`image_delivery=direct` 与健康检查，并把已验证镜像静默预加载到生产机。**Production promotion**
-只接受当前 `main` 的已完成 `stg-*` 候选：校验 staging 完成记录与生产机已预加载镜像的 ID
-（== 记录中的 `api_image_id` / `caddy_image_id`）、revision、`linux/amd64` 平台后才创建
-`prod-*` 并部署。详细操作见 [预发布与生产晋级](STAGING_RELEASE.md)。
+`image_delivery=direct` 与健康检查。**Production promotion** 仍只接受当前 `main` 的已完成
+`stg-*` 候选，但它依赖的 TCR 镜像与 staging attestation 目前都不可得，因此会失败关闭而不会
+误发；将来重新接入生产镜像来源后再恢复。详细操作见 [预发布与生产晋级](STAGING_RELEASE.md)。
 
 ## 已提供的工作流
 
@@ -69,18 +62,15 @@ staging 验证后自动预加载镜像到生产机（不发布），负责人手
   不再构建或推送镜像。
 - **Staging release**：监听本仓库 `main` 上成功的 CI `push` 运行。它只接受当前 main，先用
   该提交的 `deploy/compose.staging.yml` 与服务器既有 `.env.staging` 做只读预检，再创建或复用
-  不可变 `stg-YYYYMMDD-N` 标签（日期 + 当日序号，过渡期兼容历史 `<commit>` 后缀格式），在
-  美国发布 Runner 上构建该 commit 的 API/Caddy 镜像、经 SSH 直接流式传输到 staging 主机
-  （不经中国 TCR），部署隔离 staging 并跑公网 smoke。smoke 通过后把已验证镜像静默预加载到
-  生产机（staging 主机中转，只 `docker load` 不发布），然后删除 staging 上旧的 app 镜像，
-  只保留新 SHA 一套。`main` 在预检期间前进时会安全跳过旧候选。
+  不可变 `stg-YYYYMMDD-<commit>` 标签，在美国发布 Runner 上构建该 commit 的 API/Caddy 镜像、
+  经 SSH 直接流式传输到 staging 主机（不经中国 TCR），部署隔离 staging 并跑公网 smoke。
+  部署成功后立即删除 staging 上旧的 app 镜像，只保留新 SHA 一套。`main` 在预检期间前进时会
+  安全跳过旧候选。
 - **Production promotion**：只能从 `main` 手动运行并输入 `PROMOTE`。它先验证当前 main 对应的
-  唯一 `stg-*` tag、source archive SHA-256、staging release record（direct 记录核对 API/Caddy
-  image ID 与 revision），再校验生产机已预加载的 `greatsellai-hr-api:<sha>` /
-  `greatsellai-hr-caddy:<sha>` 镜像 ID 分别等于 staging 记录里的 `api_image_id` /
-  `caddy_image_id`、revision 一致且平台为 `linux/amd64`；全部一致才创建不可变
-  `prod-YYYYMMDD-N` 标签并以 `--prebuilt-images` 部署。镜像缺失或对不上就失败关闭，绝不在
-  生产机重建镜像；可重跑 staging release（复用不可变 `stg-*` 标签）重新触发静默拉。
+  唯一 `stg-*` tag、source archive SHA-256、staging release record 与 API/Caddy image ID。
+  **当前暂停**：它依赖从 `main` CI 归档的 TCR metadata artifact 与 staging attestation 的 TCR
+  字段，两者现在都不可得，因此会在校验阶段失败关闭，不会误发生产。将来重新接入生产镜像来源
+  后再恢复该流程。
 - **Production deploy**：只用于手动重部署已有 `prod-*` 标签，必须输入 `DEPLOY`；不再
   监听任意标签推送，避免受保护流程外的标签绕过预检。它同样要求服务器已保有经 staging
   验证的预构建镜像；镜像缺失时快速失败，绝不在生产机重建一个“看起来相同”的镜像。迁移到新的生产
@@ -148,11 +138,8 @@ staging 验证后自动预加载镜像到生产机（不发布），负责人手
 2. `main` 的来源证明（`main-release-provenance`）变绿，随后 **Staging release** 自动完成 staging
    预检、不可变 `stg-*` 标签、隔离部署和公网 smoke；只有 staging 的完成记录、source checksum 与
    API/Caddy image ID 均一致时，候选才可晋级。
-3. 负责人从 `main` 手动运行 **Production promotion** 并输入 `PROMOTE`。工作流先校验 staging
-   完成记录（direct 记录核对 API/Caddy image ID 与 revision），再核对生产机已预加载镜像 ID 与
-   记录一致、平台为 `linux/amd64`，全部一致才创建 `prod-YYYYMMDD-N` 并执行生产备份、迁移、
-   启动和健康验证。生产机未预加载时步骤会失败关闭，重跑一次 staging release 触发静默拉后再
-   晋级。
+3. （当前暂停）负责人从 `main` 手动运行 **Production promotion** 并输入 `PROMOTE`。恢复生产镜像
+   来源后，工作流只部署刚才验过的同一镜像，创建 `prod-*` 后执行生产备份、迁移、启动和健康验证。
 4. 若已创建生产标签的部署因 GitHub runner 中断而未完成，可在 **Production deploy** 中输入同一个
    已创建的标签与确认词 `DEPLOY` 重试；不会创建第二个版本。
 5. 如需回滚，在 **Production rollback** 中指定一个已发布的 `prod-*` 标签，并输入
@@ -203,16 +190,6 @@ staging。
 - CI 不读取生产 Environment 的 SSH 密钥或变量。
 - 自动 staging 只接受本仓库的成功 `main` 推送 CI；PR CI、手动 CI、取消或失败的 CI 都不能
   连接 staging。生产只接受已完成 staging 候选的人工 `PROMOTE`。
-- 静默拉只 `docker load` 预加载镜像，不触碰 compose、迁移或运行服务；发布只在
-  `production` Environment 内发生。
-- **新增信任面**：staging 主机因中转获得连接生产的能力（`~/.ssh/config` 的 `production` 别名
-  持有生产 SSH key，key 不进仓库、不进 GitHub secrets）。生产机 `authorized_keys` 用
-  `command=` 把该 key 限制为白名单包装脚本 `/home/ubuntu/.relay-allow.sh`（仓库
-  `scripts/relay-allow.sh`），只放行 `true` / `docker load` / greatsellai-hr 镜像的
-  `image inspect`，并禁止端口转发 / agent / X11；安装与轮换走 **Relay bootstrap** 工作流
-  （手动、`production` Environment）。生产防火墙只放行 staging 主机 IP 的 22 端口。拿到该
-  key 的最坏情况是覆盖预加载镜像（DoS），不能部署出恶意镜像——发布由 `production`
-  Environment 的 `PROMOTE` + 审批 + 镜像 ID fail-closed 校验兜底。
 - 工作流只调用受审阅的 production 脚本（包括预检、发布、回滚和 bootstrap import/restore），并始终显式传入 GitHub Environment 中的目标主机和
   路径，因此不会误用脚本中的历史默认服务器地址。
 - 不要把部署密钥、主机指纹、环境文件、候选人 PDF、数据库或任何 API 密钥加入 Git。

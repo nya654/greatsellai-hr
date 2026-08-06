@@ -49,7 +49,7 @@ require_safe_bootstrap_import_id() {
 }
 
 require_release_reference() {
-  [[ "$1" =~ ^prod-[0-9]{8}-([0-9a-f]{7,40}|[1-9][0-9]*)$ ]] || die "Invalid production tag."
+  [[ "$1" =~ ^prod-[0-9]{8}-[0-9a-f]{7,40}$ ]] || die "Invalid production tag."
   [[ "$2" =~ ^[0-9a-f]{40}$ ]] || die "Invalid production commit."
 }
 

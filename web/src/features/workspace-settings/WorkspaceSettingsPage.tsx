@@ -1,11 +1,50 @@
-import type { KeyboardEvent } from "react";
+import { lazy, Suspense } from "react";
 import { Icon, type IconName } from "../../icons";
+import SemiNavigation from "@douyinfe/semi-ui-19/lib/es/navigation";
 import { CandidateDataLifecyclePage } from "../candidate-data/CandidateDataLifecyclePage";
 import { MailboxPage } from "../mailbox/MailboxPage";
+import { AiImportSettingsPanel } from "./AiImportSettingsPanel";
+import { DisplayFieldsSettingsPanel } from "./DisplayFieldsSettingsPanel";
 import type { WorkspaceSettingsSection } from "../workspace-shell/workspace-navigation-types";
-import "./workspace-settings.css";
+
+const SemiLayout = lazy(() => import("@douyinfe/semi-ui-19/lib/es/layout"));
+const SemiSider = lazy(() => import("@douyinfe/semi-ui-19/lib/es/layout/Sider"));
+const SemiTag = lazy(() => import("@douyinfe/semi-ui-19/lib/es/tag"));
+const SemiTitle = lazy(() => import("@douyinfe/semi-ui-19/lib/es/typography/title"));
+const SemiParagraph = lazy(() => import("@douyinfe/semi-ui-19/lib/es/typography/paragraph"));
 
 export type { WorkspaceSettingsSection } from "../workspace-shell/workspace-navigation-types";
+
+interface SettingsNavItem {
+  key: WorkspaceSettingsSection;
+  label: string;
+  icon: IconName;
+}
+
+/**
+ * The visible settings sections for the current session. Workspace-scoped
+ * sections gate on permission; the per-user 筛选显示字段 preference is always
+ * available. The installed Semi Navigation (2.101.1) has no `groupTitle` item
+ * type, so the groups are a flat list rather than the plan's grouped sidebar.
+ */
+function settingsNavItems(
+  canManageMailbox: boolean,
+  canManageCandidateData: boolean,
+  canManageAiImport: boolean,
+): SettingsNavItem[] {
+  const items: SettingsNavItem[] = [];
+  if (canManageMailbox) {
+    items.push({ key: "mailbox", label: "收件邮箱", icon: "inbox" });
+  }
+  if (canManageCandidateData) {
+    items.push({ key: "data", label: "候选人数据与保留", icon: "gear" });
+  }
+  if (canManageAiImport) {
+    items.push({ key: "ai-import", label: "AI 导入处理", icon: "spark" });
+  }
+  items.push({ key: "display-fields", label: "筛选显示字段", icon: "layers" });
+  return items;
+}
 
 export function WorkspaceSettingsPage({
   activeSection,
@@ -28,136 +67,80 @@ export function WorkspaceSettingsPage({
   onSelectSection: (section: WorkspaceSettingsSection) => void;
   role: "admin" | "recruiter" | null;
 }) {
-  const sections: Array<{
-    id: WorkspaceSettingsSection;
-    label: string;
-    description: string;
-    scope: string;
-    guardrail: string;
-    icon: IconName;
-  }> = [];
-
-  if (canManageMailbox) {
-    sections.push({
-      id: "mailbox",
-      label: "收件邮箱",
-      description: "管理收件通道、同步和附件入库保留。",
-      scope: "收件通道",
-      guardrail: "OAuth 授权、同步队列和附件保留",
-      icon: "inbox",
-    });
-  }
-  if (canManageCandidateData) {
-    sections.push({
-      id: "data",
-      label: "候选人数据与保留",
-      description: "管理资料保留、导出、删除和访问记录。",
-      scope: "数据治理",
-      guardrail: "留存、导出、删除恢复和访问审计",
-      icon: "gear",
-    });
-  }
-
-  const currentSection = sections.some((section) => section.id === activeSection)
+  const items = settingsNavItems(
+    canManageMailbox,
+    canManageCandidateData,
+    role === "admin",
+  );
+  const currentSection = items.some((item) => item.key === activeSection)
     ? activeSection
-    : sections[0]?.id;
-  if (!currentSection) return null;
-  const currentSectionMeta = sections.find((section) => section.id === currentSection)!;
-
-  const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
-    const lastIndex = sections.length - 1;
-    let nextIndex: number | null = null;
-    if (event.key === "ArrowRight") nextIndex = index === lastIndex ? 0 : index + 1;
-    if (event.key === "ArrowLeft") nextIndex = index === 0 ? lastIndex : index - 1;
-    if (event.key === "Home") nextIndex = 0;
-    if (event.key === "End") nextIndex = lastIndex;
-    if (nextIndex === null) return;
-
-    event.preventDefault();
-    const nextSection = sections[nextIndex];
-    if (!nextSection) return;
-    document.getElementById(`settings-tab-${nextSection.id}`)?.focus();
-  };
+    : items[0].key;
 
   return (
     <div className="page-frame settings-page">
-      <header className="page-heading settings-heading">
-        <div className="settings-heading-main">
-          <span aria-hidden="true" className="settings-heading-icon"><Icon name="gear" size={19} /></span>
-          <div>
-            <h1>设置</h1>
-            <p>管理当前工作区的收件通道、候选人资料留存和访问规则。</p>
-          </div>
-        </div>
-        <div aria-label="当前设置权限" className="settings-heading-meta">
-          {role && <span className="status-pill">{role === "admin" ? "管理员" : "招聘成员"}</span>}
-          <span className="settings-heading-scope">变更仅作用于当前工作区</span>
-        </div>
-      </header>
-      <div className="settings-layout">
-        <nav aria-label="设置分类" className="settings-navigation">
-          <p className="settings-navigation-label">工作区设置</p>
-          <div className="settings-navigation-intro">
-            <div>
-              <h2>选择管理内容</h2>
-              <p>先进入当前要处理的任务，其他记录和规则不会干扰操作。</p>
-            </div>
-            <span className="settings-navigation-current">{currentSectionMeta.scope}</span>
-          </div>
-          <div aria-orientation="horizontal" className="settings-navigation-list" role="tablist">
-            {sections.map((section, index) => {
-              const selected = section.id === currentSection;
-              return (
-                <button
-                  aria-controls={`settings-panel-${section.id}`}
-                  aria-describedby={`settings-tab-description-${section.id}`}
-                  aria-label={section.label}
-                  aria-selected={selected}
-                  className={`settings-navigation-item${selected ? " is-active" : ""}`}
-                  id={`settings-tab-${section.id}`}
-                  key={section.id}
-                  onKeyDown={(event) => handleTabKeyDown(event, index)}
-                  onClick={() => onSelectSection(section.id)}
-                  role="tab"
-                  type="button"
-                >
-                  <span aria-hidden="true" className="settings-navigation-icon"><Icon name={section.icon} size={18} /></span>
-                  <span className="settings-navigation-copy">
-                    <strong>{section.label}</strong>
-                    <small id={`settings-tab-description-${section.id}`}>{section.description}</small>
-                  </span>
-                  <span aria-hidden="true" className="settings-navigation-scope">{selected ? "当前" : section.scope}</span>
-                </button>
-              );
-            })}
-          </div>
-          <p className="settings-navigation-guardrail">{currentSectionMeta.guardrail}</p>
-        </nav>
-        <section
-          aria-labelledby={`settings-tab-${currentSection}`}
-          className="settings-content"
-          id={`settings-panel-${currentSection}`}
-          role="tabpanel"
-          tabIndex={-1}
-        >
-          {currentSection === "mailbox" ? (
-            <MailboxPage
-              embedded
-              humanizeError={formatError}
-              notify={notify}
-              onImported={onImported}
-              role={role}
-            />
-          ) : (
-            <CandidateDataLifecyclePage
-              embedded
-              formatError={formatError}
-              notify={notify}
-              onOpenLibrary={onOpenLibrary}
-            />
+      <div style={{ padding: "28px 32px 0" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <SemiTitle heading={4}>设置</SemiTitle>
+          {role && (
+            <SemiTag color={role === "admin" ? "blue" : "grey"} size="small">
+              {role === "admin" ? "管理员" : "招聘成员"}
+            </SemiTag>
           )}
-        </section>
+        </div>
+        <SemiParagraph type="tertiary">
+          管理当前工作区的收件通道、候选人资料留存和访问规则。
+        </SemiParagraph>
       </div>
+      <Suspense fallback={<p>加载设置…</p>}>
+        <SemiLayout className="settings-layout" style={{ marginTop: 24 }}>
+          <SemiSider
+            aria-label="设置分类"
+            style={{ flexShrink: 0, width: 260 }}
+          >
+            <SemiNavigation
+              onSelect={(data) =>
+                onSelectSection(data.itemKey as WorkspaceSettingsSection)
+              }
+              selectedKeys={[currentSection]}
+              style={{ height: "100%" }}
+            >
+              {items.map((item) => (
+                <SemiNavigation.Item
+                  icon={<Icon name={item.icon} size={16} />}
+                  itemKey={item.key}
+                  key={item.key}
+                  text={item.label}
+                />
+              ))}
+            </SemiNavigation>
+          </SemiSider>
+          <div style={{ flex: 1, minWidth: 0, padding: "0 32px 32px" }}>
+            {currentSection === "mailbox" && (
+              <MailboxPage
+                embedded
+                humanizeError={formatError}
+                notify={notify}
+                onImported={onImported}
+                role={role}
+              />
+            )}
+            {currentSection === "data" && (
+              <CandidateDataLifecyclePage
+                embedded
+                formatError={formatError}
+                notify={notify}
+                onOpenLibrary={onOpenLibrary}
+              />
+            )}
+            {currentSection === "ai-import" && (
+              <AiImportSettingsPanel formatError={formatError} notify={notify} />
+            )}
+            {currentSection === "display-fields" && (
+              <DisplayFieldsSettingsPanel formatError={formatError} notify={notify} />
+            )}
+          </div>
+        </SemiLayout>
+      </Suspense>
     </div>
   );
 }

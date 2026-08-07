@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { api } from "../../api";
 import type {
   CandidateDataAuditEvent,
@@ -11,9 +11,23 @@ import type {
   CandidateDataRetentionPreview,
 } from "../../types";
 import { Icon } from "../../icons";
+import { BackofficeButton } from "../../backoffice/ui/BackofficeButton";
+import { BackofficeInput } from "../../backoffice/ui/BackofficeInput";
 import { TableSkeleton } from "../../backoffice/ui/TableSkeleton";
+import { StatusPillTag } from "../../backoffice/ui/StatusPillTag";
 import { formatLibraryDate } from "../../backoffice/utils/formatters";
-import "./candidate-data.css";
+
+const SemiTabs = lazy(() => import("@douyinfe/semi-ui-19/lib/es/tabs"));
+const SemiTabPane = lazy(() => import("@douyinfe/semi-ui-19/lib/es/tabs/TabPane"));
+const SemiRadioGroup = lazy(() => import("@douyinfe/semi-ui-19/lib/es/radio/radioGroup"));
+const SemiRadio = lazy(() => import("@douyinfe/semi-ui-19/lib/es/radio"));
+const SemiTable = lazy(() => import("@douyinfe/semi-ui-19/lib/es/table"));
+const SemiList = lazy(() => import("@douyinfe/semi-ui-19/lib/es/list"));
+const SemiListItem = lazy(() => import("@douyinfe/semi-ui-19/lib/es/list/item"));
+const SemiEmpty = lazy(() => import("@douyinfe/semi-ui-19/lib/es/empty"));
+const SemiTitle = lazy(() => import("@douyinfe/semi-ui-19/lib/es/typography/title"));
+const SemiParagraph = lazy(() => import("@douyinfe/semi-ui-19/lib/es/typography/paragraph"));
+const SemiBanner = lazy(() => import("@douyinfe/semi-ui-19/lib/es/banner"));
 
 type ToastKind = "success" | "error";
 type CandidateDataEmbeddedSection = "retention" | "activity";
@@ -36,7 +50,6 @@ const candidateDataDeletionReasonOptions: Array<{
   { value: "duplicate", label: "重复资料" },
   { value: "other", label: "其他原因" },
 ];
-
 
 function candidateDataDeletionReasonLabel(reason: CandidateDataDeletionReason): string {
   return candidateDataDeletionReasonOptions.find((option) => option.value === reason)?.label
@@ -91,6 +104,10 @@ function candidateDataAuditActionLabel(event: CandidateDataAuditEvent): string {
   return labels[event.action] ?? event.action;
 }
 
+const mainColumnStyle = { display: "grid", gap: "var(--space-md)", minWidth: 0 };
+const sideColumnStyle = { display: "grid", gap: "var(--space-md)", minWidth: 0 };
+const fullLayoutStyle = { gap: "var(--space-xl)", alignItems: "start" };
+
 export function CandidateDataLifecyclePage({
   formatError,
   notify,
@@ -121,7 +138,6 @@ export function CandidateDataLifecyclePage({
   const [cancellingExportId, setCancellingExportId] = useState<string | null>(null);
   const [downloadingExportId, setDownloadingExportId] = useState<string | null>(null);
   const [embeddedSection, setEmbeddedSection] = useState<CandidateDataEmbeddedSection>("retention");
-  const embeddedTabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   const load = useCallback(async (showLoading = true) => {
     if (showLoading) setLoading(true);
@@ -284,273 +300,429 @@ export function CandidateDataLifecyclePage({
     }
   };
 
-  const handleEmbeddedTabKeyDown = (
-    event: KeyboardEvent<HTMLButtonElement>,
-    currentIndex: number,
-  ) => {
-    let nextIndex = currentIndex;
-
-    switch (event.key) {
-      case "ArrowRight":
-      case "ArrowDown":
-        nextIndex = (currentIndex + 1) % candidateDataEmbeddedSections.length;
-        break;
-      case "ArrowLeft":
-      case "ArrowUp":
-        nextIndex = (currentIndex - 1 + candidateDataEmbeddedSections.length)
-          % candidateDataEmbeddedSections.length;
-        break;
-      case "Home":
-        nextIndex = 0;
-        break;
-      case "End":
-        nextIndex = candidateDataEmbeddedSections.length - 1;
-        break;
-      default:
-        return;
-    }
-
-    event.preventDefault();
-    setEmbeddedSection(candidateDataEmbeddedSections[nextIndex].id);
-    embeddedTabRefs.current[nextIndex]?.focus();
-  };
-
   if (loading && !policy) {
     return <div className={pageClassName}><TableSkeleton /></div>;
   }
+
+  const retentionSection = (
+    <section className="panel">
+      <div className="panel-heading">
+        <div>
+          <SemiTitle heading={3} style={{ margin: 0 }}>候选人资料保留策略</SemiTitle>
+          <SemiParagraph type="tertiary" style={{ margin: "4px 0 0" }}>自动清理只处理到期且未被保留标记的候选人，先进入可恢复删除流程。</SemiParagraph>
+        </div>
+        <StatusPillTag className={retentionMode === "automatic" ? "is-warning" : ""}>
+          {retentionMode === "automatic" ? "自动保留" : "手动保留"}
+        </StatusPillTag>
+      </div>
+      <fieldset disabled={savingPolicy || previewing} style={{ display: "grid", gap: "var(--space-md)", padding: 0, margin: 0, border: 0 }}>
+        <SemiRadioGroup
+          aria-label="候选人资料保留方式"
+          disabled={savingPolicy || previewing}
+          name="candidate-data-retention-mode"
+          onChange={(event) => {
+            const next = event.target.value as CandidateDataRetentionMode;
+            if (next === "manual") setPreview(null);
+            setRetentionMode(next);
+          }}
+          value={retentionMode}
+        >
+          <SemiRadio value="manual">
+            <strong>手动保留</strong>
+            <small style={{ display: "block", color: "var(--ink-muted)", fontWeight: 400, fontSize: "0.8125rem" }}>不会按期限自动删除候选人资料。</small>
+          </SemiRadio>
+          <SemiRadio value="automatic">
+            <strong>自动保留</strong>
+            <small style={{ display: "block", color: "var(--ink-muted)", fontWeight: 400, fontSize: "0.8125rem" }}>到期候选人进入可恢复删除流程，恢复期结束后才清理。</small>
+          </SemiRadio>
+        </SemiRadioGroup>
+        {retentionMode === "automatic" && (
+          <label className="field-stack" htmlFor="candidate-data-retention-days" style={{ maxWidth: "15rem" }}>
+            <span className="field-label">资料保留天数</span>
+            <BackofficeInput
+              disabled={savingPolicy || previewing}
+              id="candidate-data-retention-days"
+              inputMode="numeric"
+              max="3650"
+              min="30"
+              onChange={(value) => {
+                setRetentionDays(value);
+                setPreview(null);
+              }}
+              type="number"
+              value={retentionDays}
+            />
+            <span className="field-help">可设置 30 至 3650 天。保存前必须先预览本次影响范围。</span>
+          </label>
+        )}
+      </fieldset>
+      {retentionMode === "automatic" && preview && (
+        <SemiBanner
+          type="info"
+          title={previewMatchesPolicy ? "当前预览可用于保存" : "预览已过期，请重新计算"}
+          description={
+            <>
+              <span>计算于 {formatLibraryDate(preview.calculated_at)}，不会删除任何数据。</span>
+              <span style={{ display: "block", marginTop: 4 }}>
+                <strong>{preview.eligible_candidate_count}</strong> 位候选人可能到期 · 关联{" "}
+                <strong>{preview.eligible_resume_count}</strong> 份简历 ·{" "}
+                <strong>{preview.held_candidate_count}</strong> 位被保留标记跳过
+              </span>
+            </>
+          }
+          style={{ marginTop: "var(--space-md)" }}
+        />
+      )}
+      <div className="review-actions" style={{ justifyContent: "flex-end", marginTop: "var(--space-md)" }}>
+        {retentionMode === "automatic" && (
+          <BackofficeButton
+            disabled={!validRetentionDays || previewing}
+            icon={<Icon name="search" size={16} />}
+            loading={previewing}
+            onClick={() => void previewRetention()}
+          >
+            {previewing ? "正在预览" : "预览清理范围"}
+          </BackofficeButton>
+        )}
+        <BackofficeButton
+          disabled={savingPolicy || (retentionMode === "automatic" && !previewMatchesPolicy)}
+          icon={<Icon name="check" size={16} />}
+          loading={savingPolicy}
+          onClick={() => void saveRetentionPolicy()}
+          tone="primary"
+        >
+          {savingPolicy ? "正在保存" : "保存保留策略"}
+        </BackofficeButton>
+        <BackofficeButton
+          disabled={cleaning || policy?.mode !== "automatic"}
+          loading={cleaning}
+          onClick={() => void runRetentionCleanup()}
+          tone="danger"
+        >
+          {cleaning ? "正在执行" : "立即执行到期清理"}
+        </BackofficeButton>
+      </div>
+    </section>
+  );
+
+  const recoverySection = (
+    <section className="panel">
+      <div className="panel-heading">
+        <div>
+          <SemiTitle heading={3} style={{ margin: 0 }}>可恢复删除</SemiTitle>
+          <SemiParagraph type="tertiary" style={{ margin: "4px 0 0" }}>此处仅显示删除批次与数量，不重新展示已删除候选人的姓名或原文件名。</SemiParagraph>
+        </div>
+        <StatusPillTag className="">{deletions.length} 条记录</StatusPillTag>
+      </div>
+      {deletions.length ? (
+        <SemiTable
+          columns={[
+            {
+              title: "范围",
+              dataIndex: "trigger_type",
+              render: (_, record) => (record as CandidateDataDeletionBatch).trigger_type === "manual_resume" ? "单份简历" : "候选人资料",
+            },
+            {
+              title: "原因",
+              dataIndex: "reason",
+              render: (_, record) => candidateDataDeletionReasonLabel((record as CandidateDataDeletionBatch).reason),
+            },
+            {
+              title: "影响",
+              dataIndex: "deletion_batch_id",
+              render: (_, record) => {
+                const item = record as CandidateDataDeletionBatch;
+                return `${item.affected_candidate_count} 位候选人 · ${item.affected_resume_count} 份简历`;
+              },
+            },
+            {
+              title: "恢复截止",
+              dataIndex: "recovery_deadline_at",
+              render: (_, record) => formatLibraryDate((record as CandidateDataDeletionBatch).recovery_deadline_at),
+            },
+            {
+              title: "状态",
+              dataIndex: "status",
+              render: (_, record) => {
+                const item = record as CandidateDataDeletionBatch;
+                return (
+                  <StatusPillTag className={item.restorable ? "is-warning" : ""}>
+                    {item.restorable ? "可恢复" : item.status === "restored" ? "已恢复" : "已进入清理"}
+                  </StatusPillTag>
+                );
+              },
+            },
+            {
+              title: "",
+              dataIndex: "deletion_batch_id",
+              render: (_, record) => {
+                const item = record as CandidateDataDeletionBatch;
+                return item.restorable ? (
+                  <BackofficeButton
+                    disabled={restoringBatchId === item.deletion_batch_id}
+                    loading={restoringBatchId === item.deletion_batch_id}
+                    onClick={() => void restoreDeletion(item)}
+                  >
+                    {restoringBatchId === item.deletion_batch_id ? "正在恢复" : "恢复"}
+                  </BackofficeButton>
+                ) : null;
+              },
+            },
+          ]}
+          dataSource={deletions}
+          pagination={false}
+          rowKey="deletion_batch_id"
+          size="small"
+        />
+      ) : (
+        <SemiEmpty title="没有可恢复删除记录" description="从候选人抽屉删除资料后，恢复期限内的批次会显示在这里。" />
+      )}
+    </section>
+  );
+
+  const exportSection = (
+    <section className="panel">
+      <div className="panel-heading">
+        <div>
+          <SemiTitle heading={3} style={{ margin: 0 }}>资料导出</SemiTitle>
+          <SemiParagraph type="tertiary" style={{ margin: "4px 0 0" }}>导出文件仅在到期前可下载。候选人资料被删除后，相关导出会立即撤销。</SemiParagraph>
+        </div>
+        <StatusPillTag className="">{exports.length} 项任务</StatusPillTag>
+      </div>
+      {exports.length ? (
+        <SemiTable
+          columns={[
+            {
+              title: "内容",
+              dataIndex: "item_count",
+              render: (_, record) => {
+                const item = record as CandidateDataExport;
+                return `${item.item_count} 位候选人${item.include_originals ? " · 含原文件" : " · 不含原文件"}`;
+              },
+            },
+            {
+              title: "创建时间",
+              dataIndex: "requested_at",
+              render: (_, record) => formatLibraryDate((record as CandidateDataExport).requested_at),
+            },
+            {
+              title: "有效期",
+              dataIndex: "expires_at",
+              render: (_, record) => {
+                const expiresAt = (record as CandidateDataExport).expires_at;
+                return expiresAt ? formatLibraryDate(expiresAt) : "—";
+              },
+            },
+            {
+              title: "状态",
+              dataIndex: "status",
+              render: (_, record) => {
+                const item = record as CandidateDataExport;
+                return (
+                  <>
+                    <StatusPillTag className={candidateDataExportStatusClass(item.status)}>
+                      {candidateDataExportStatusLabel(item.status)}
+                    </StatusPillTag>
+                    {item.error_code && (
+                      <small style={{ display: "block", marginTop: 3, color: "var(--ink-muted)", fontSize: "0.6875rem" }}>{item.error_code}</small>
+                    )}
+                  </>
+                );
+              },
+            },
+            {
+              title: "",
+              dataIndex: "export_id",
+              render: (_, record) => {
+                const item = record as CandidateDataExport;
+                return (
+                  <div style={{ display: "flex", gap: 8, whiteSpace: "nowrap" }}>
+                    {item.status === "completed" && (
+                      <BackofficeButton
+                        disabled={downloadingExportId === item.export_id}
+                        icon={downloadingExportId === item.export_id ? undefined : <Icon name="download" size={15} />}
+                        loading={downloadingExportId === item.export_id}
+                        onClick={() => void downloadExport(item)}
+                      >
+                        {downloadingExportId === item.export_id ? "正在准备" : "下载"}
+                      </BackofficeButton>
+                    )}
+                    {["queued", "running", "retryable_failed"].includes(item.status) && (
+                      <BackofficeButton
+                        disabled={cancellingExportId === item.export_id}
+                        loading={cancellingExportId === item.export_id}
+                        onClick={() => void cancelExport(item)}
+                      >
+                        {cancellingExportId === item.export_id ? "正在取消" : "取消"}
+                      </BackofficeButton>
+                    )}
+                  </div>
+                );
+              },
+            },
+          ]}
+          dataSource={exports}
+          pagination={false}
+          rowKey="export_id"
+          size="small"
+        />
+      ) : (
+        <SemiEmpty title="还没有资料导出" description="在候选人抽屉中创建导出后，可在这里查看进度并下载。" />
+      )}
+    </section>
+  );
+
+  const auditSection = (
+    <section className="panel">
+      <div className="panel-heading">
+        <div>
+          <SemiTitle heading={3} style={{ margin: 0 }}>访问与操作审计</SemiTitle>
+          <SemiParagraph type="tertiary" style={{ margin: "4px 0 0" }}>查看、下载原文件与导出文件均会记录在此。</SemiParagraph>
+        </div>
+      </div>
+      {auditEvents.length ? (
+        <SemiList
+          dataSource={auditEvents}
+          renderItem={(item) => {
+            const event = item as CandidateDataAuditEvent;
+            return (
+              <SemiListItem
+                key={event.event_id}
+                main={
+                  <div style={{ display: "grid", gap: 3 }}>
+                    <strong style={{ fontSize: "0.8125rem" }}>{candidateDataAuditActionLabel(event)}</strong>
+                    <span style={{ color: "var(--ink-muted)", fontSize: "0.75rem" }}>{formatLibraryDate(event.created_at)}</span>
+                    {event.reason_code && (
+                      <small style={{ color: "var(--ink-muted)", fontSize: "0.75rem" }}>
+                        {candidateDataDeletionReasonLabel(event.reason_code as CandidateDataDeletionReason)}
+                      </small>
+                    )}
+                  </div>
+                }
+              />
+            );
+          }}
+        />
+      ) : (
+        <SemiEmpty title="暂无审计记录" description="后续的原文件访问、导出和删除操作会显示在这里。" />
+      )}
+    </section>
+  );
+
+  const cleanupSection = (
+    <section className="panel">
+      <div className="panel-heading">
+        <div>
+          <SemiTitle heading={3} style={{ margin: 0 }}>到期清理记录</SemiTitle>
+          <SemiParagraph type="tertiary" style={{ margin: "4px 0 0" }}>系统只将符合策略的数据加入可恢复删除流程。</SemiParagraph>
+        </div>
+      </div>
+      {runs.length ? (
+        <SemiList
+          dataSource={runs}
+          renderItem={(item) => {
+            const run = item as CandidateDataRetentionCleanupRun;
+            return (
+              <SemiListItem
+                key={run.run_id}
+                main={
+                  <div style={{ display: "grid", gap: 3 }}>
+                    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
+                      <strong style={{ fontSize: "0.8125rem" }}>{candidateDataRetentionRunStatusLabel(run.status)}</strong>
+                      <span style={{ color: "var(--ink-muted)", fontSize: "0.75rem" }}>{formatLibraryDate(run.finished_at ?? run.started_at)}</span>
+                    </div>
+                    <small style={{ color: "var(--ink-muted)", fontSize: "0.75rem" }}>
+                      扫描 {run.scanned_count}，加入删除 {run.queued_count}
+                      {run.skipped_hold_count ? `，保留跳过 ${run.skipped_hold_count}` : ""}
+                      {run.failed_count ? `，异常 ${run.failed_count}` : ""}
+                    </small>
+                  </div>
+                }
+              />
+            );
+          }}
+        />
+      ) : (
+        <SemiEmpty title="尚未执行到期清理" description="启用自动保留后，可先预览再手动执行首次清理。" />
+      )}
+    </section>
+  );
+
+  const activityLayout = (
+    <div className="candidate-data-layout" style={fullLayoutStyle}>
+      <div style={mainColumnStyle}>
+        {recoverySection}
+        {exportSection}
+      </div>
+      <aside style={sideColumnStyle}>
+        {auditSection}
+        {cleanupSection}
+      </aside>
+    </div>
+  );
+
+  const standaloneLayout = (
+    <div className="candidate-data-layout" style={fullLayoutStyle}>
+      <div style={mainColumnStyle}>
+        {retentionSection}
+        {recoverySection}
+        {exportSection}
+      </div>
+      <aside style={sideColumnStyle}>
+        {auditSection}
+        {cleanupSection}
+      </aside>
+    </div>
+  );
 
   return (
     <div className={pageClassName}>
       <header className="page-heading">
         <div>
-          {embedded ? <h2>候选人数据与保留</h2> : <h1>数据保留与恢复</h1>}
-          <p>
+          <SemiTitle heading={embedded ? 2 : 1} style={{ margin: 0 }}>
+            {embedded ? "候选人数据与保留" : "数据保留与恢复"}
+          </SemiTitle>
+          <SemiParagraph type="tertiary" style={{ margin: "6px 0 0" }}>
             {embedded
               ? "先设置候选人资料的保留策略；可在“操作与记录”中处理可恢复删除、导出和审计记录。"
               : "在工作区内管理候选人资料的保留期限、可恢复删除、导出文件和原文件访问记录。所有清理操作都会先进入恢复期，不会立即永久清除数据。"}
-          </p>
+          </SemiParagraph>
         </div>
-        <div className="candidate-data-page-actions">
-          <button className="button" disabled={refreshing} onClick={() => void load(false)} type="button">
-            {refreshing ? <><i className="spinner" />正在刷新</> : <><Icon name="refresh" size={16} />刷新记录</>}
-          </button>
-          <button className="button button-ghost" onClick={onOpenLibrary} type="button">返回简历库</button>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "flex-end" }}>
+          <BackofficeButton
+            disabled={refreshing}
+            icon={<Icon name="refresh" size={16} />}
+            loading={refreshing}
+            onClick={() => void load(false)}
+          >
+            {refreshing ? "正在刷新" : "刷新记录"}
+          </BackofficeButton>
+          <BackofficeButton onClick={onOpenLibrary}>返回简历库</BackofficeButton>
         </div>
       </header>
 
-      {error && <p className="library-error" role="status">{error}</p>}
+      {error && <SemiBanner type="danger" title={error} style={{ marginBottom: "var(--space-md)" }} />}
 
-      {embedded && (
-        <nav aria-label="候选人数据管理" className="candidate-data-task-navigation">
-          <div aria-orientation="horizontal" className="candidate-data-task-navigation-list" role="tablist">
-            {candidateDataEmbeddedSections.map((section, index) => {
-              const selected = section.id === embeddedSection;
-              return (
-                <button
-                  aria-controls="candidate-data-task-content"
-                  aria-selected={selected}
-                  className={`candidate-data-task-navigation-item${selected ? " is-active" : ""}`}
-                  id={`candidate-data-tab-${section.id}`}
-                  key={section.id}
-                  onClick={() => setEmbeddedSection(section.id)}
-                  onKeyDown={(event) => handleEmbeddedTabKeyDown(event, index)}
-                  ref={(element) => { embeddedTabRefs.current[index] = element; }}
-                  role="tab"
-                  tabIndex={selected ? 0 : -1}
-                  type="button"
-                >
-                  <Icon name={section.icon} size={16} />
-                  <span>{section.label}</span>
-                </button>
-              );
-            })}
-          </div>
-        </nav>
-      )}
-
-      <div
-        aria-labelledby={embedded ? `candidate-data-tab-${embeddedSection}` : undefined}
-        className={`candidate-data-layout${embedded ? ` is-${embeddedSection}-view` : ""}`}
-        id={embedded ? "candidate-data-task-content" : undefined}
-        role={embedded ? "tabpanel" : undefined}
-        tabIndex={embedded ? -1 : undefined}
-      >
-        <div className="candidate-data-main-column">
-          <section className="panel candidate-data-retention-panel" hidden={embedded && embeddedSection !== "retention"}>
-            <div className="panel-heading">
-              <div>
-                <h2>候选人资料保留策略</h2>
-                <p>自动清理只处理到期且未被保留标记的候选人，先进入可恢复删除流程。</p>
-              </div>
-              <span className={`status-pill${retentionMode === "automatic" ? " is-warning" : ""}`}>{retentionMode === "automatic" ? "自动保留" : "手动保留"}</span>
-            </div>
-            <fieldset className="candidate-data-retention-form" disabled={savingPolicy || previewing}>
-              <div className="candidate-data-retention-options" role="radiogroup" aria-label="候选人资料保留方式">
-                <label className="choice-row candidate-data-retention-option">
-                  <input checked={retentionMode === "manual"} name="candidate-data-retention-mode" onChange={() => { setRetentionMode("manual"); setPreview(null); }} type="radio" />
-                  <span><strong>手动保留</strong><small>不会按期限自动删除候选人资料。</small></span>
-                </label>
-                <label className="choice-row candidate-data-retention-option">
-                  <input checked={retentionMode === "automatic"} name="candidate-data-retention-mode" onChange={() => setRetentionMode("automatic")} type="radio" />
-                  <span><strong>自动保留</strong><small>到期候选人进入可恢复删除流程，恢复期结束后才清理。</small></span>
-                </label>
-              </div>
-              {retentionMode === "automatic" && (
-                <label className="field-stack candidate-data-retention-days" htmlFor="candidate-data-retention-days">
-                  <span className="field-label">资料保留天数</span>
-                  <input className="field" id="candidate-data-retention-days" inputMode="numeric" max="3650" min="30" onChange={(event) => { setRetentionDays(event.target.value); setPreview(null); }} type="number" value={retentionDays} />
-                  <span className="field-help">可设置 30 至 3650 天。保存前必须先预览本次影响范围。</span>
-                </label>
-              )}
-            </fieldset>
-            {retentionMode === "automatic" && preview && (
-              <section className="candidate-data-retention-preview" aria-live="polite">
-                <div>
-                  <strong>{previewMatchesPolicy ? "当前预览可用于保存" : "预览已过期，请重新计算"}</strong>
-                  <p>计算于 {formatLibraryDate(preview.calculated_at)}，不会删除任何数据。</p>
-                </div>
-                <div className="candidate-data-retention-preview-stats">
-                  <span><strong>{preview.eligible_candidate_count}</strong> 位候选人可能到期</span>
-                  <span>关联 <strong>{preview.eligible_resume_count}</strong> 份简历</span>
-                  <span><strong>{preview.held_candidate_count}</strong> 位被保留标记跳过</span>
-                </div>
-              </section>
-            )}
-            <div className="review-actions candidate-data-retention-actions">
-              {retentionMode === "automatic" && (
-                <button className="button" disabled={!validRetentionDays || previewing} onClick={() => void previewRetention()} type="button">
-                  {previewing ? <><i className="spinner" />正在预览</> : <><Icon name="search" size={16} />预览清理范围</>}
-                </button>
-              )}
-              <button className="button button-primary" disabled={savingPolicy || (retentionMode === "automatic" && !previewMatchesPolicy)} onClick={() => void saveRetentionPolicy()} type="button">
-                {savingPolicy ? <><i className="spinner" />正在保存</> : <><Icon name="check" size={16} />保存保留策略</>}
-              </button>
-              <button className="button button-danger-ghost" disabled={cleaning || policy?.mode !== "automatic"} onClick={() => void runRetentionCleanup()} type="button">
-                {cleaning ? <><i className="spinner" />正在执行</> : "立即执行到期清理"}
-              </button>
-            </div>
-          </section>
-
-          <section className="panel candidate-data-recovery-panel" hidden={embedded && embeddedSection !== "activity"}>
-            <div className="panel-heading">
-              <div>
-                <h2>可恢复删除</h2>
-                <p>此处仅显示删除批次与数量，不重新展示已删除候选人的姓名或原文件名。</p>
-              </div>
-              <span className="status-pill">{deletions.length} 条记录</span>
-            </div>
-            {deletions.length ? (
-              <div className="table-scroll">
-                <table className="candidate-table candidate-data-table">
-                  <thead><tr><th scope="col">范围</th><th scope="col">原因</th><th scope="col">影响</th><th scope="col">恢复截止</th><th scope="col">状态</th><th scope="col" aria-label="恢复操作" /></tr></thead>
-                  <tbody>
-                    {deletions.map((item) => (
-                      <tr key={item.deletion_batch_id}>
-                        <td>{item.trigger_type === "manual_resume" ? "单份简历" : "候选人资料"}</td>
-                        <td>{candidateDataDeletionReasonLabel(item.reason)}</td>
-                        <td>{item.affected_candidate_count} 位候选人 · {item.affected_resume_count} 份简历</td>
-                        <td>{formatLibraryDate(item.recovery_deadline_at)}</td>
-                        <td><span className={`status-pill${item.restorable ? " is-warning" : ""}`}>{item.restorable ? "可恢复" : item.status === "restored" ? "已恢复" : "已进入清理"}</span></td>
-                        <td>
-                          {item.restorable && (
-                            <button className="button button-ghost candidate-data-inline-action" disabled={restoringBatchId === item.deletion_batch_id} onClick={() => void restoreDeletion(item)} type="button">
-                              {restoringBatchId === item.deletion_batch_id ? <><i className="spinner" />正在恢复</> : "恢复"}
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : <CandidateDataEmptyState title="没有可恢复删除记录" description="从候选人抽屉删除资料后，恢复期限内的批次会显示在这里。" />}
-          </section>
-
-          <section className="panel candidate-data-export-panel" hidden={embedded && embeddedSection !== "activity"}>
-            <div className="panel-heading">
-              <div>
-                <h2>资料导出</h2>
-                <p>导出文件仅在到期前可下载。候选人资料被删除后，相关导出会立即撤销。</p>
-              </div>
-              <span className="status-pill">{exports.length} 项任务</span>
-            </div>
-            {exports.length ? (
-              <div className="table-scroll">
-                <table className="candidate-table candidate-data-table">
-                  <thead><tr><th scope="col">内容</th><th scope="col">创建时间</th><th scope="col">有效期</th><th scope="col">状态</th><th scope="col" aria-label="导出操作" /></tr></thead>
-                  <tbody>
-                    {exports.map((item) => (
-                      <tr key={item.export_id}>
-                        <td>{item.item_count} 位候选人{item.include_originals ? " · 含原文件" : " · 不含原文件"}</td>
-                        <td>{formatLibraryDate(item.requested_at)}</td>
-                        <td>{item.expires_at ? formatLibraryDate(item.expires_at) : "—"}</td>
-                        <td><span className={`status-pill ${candidateDataExportStatusClass(item.status)}`}>{candidateDataExportStatusLabel(item.status)}</span>{item.error_code && <small className="candidate-data-error-code">{item.error_code}</small>}</td>
-                        <td className="candidate-data-export-actions">
-                          {item.status === "completed" && <button className="button button-ghost candidate-data-inline-action" disabled={downloadingExportId === item.export_id} onClick={() => void downloadExport(item)} type="button">{downloadingExportId === item.export_id ? <><i className="spinner" />正在准备</> : <><Icon name="download" size={15} />下载</>}</button>}
-                          {["queued", "running", "retryable_failed"].includes(item.status) && <button className="button button-ghost candidate-data-inline-action" disabled={cancellingExportId === item.export_id} onClick={() => void cancelExport(item)} type="button">{cancellingExportId === item.export_id ? <><i className="spinner" />正在取消</> : "取消"}</button>}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : <CandidateDataEmptyState title="还没有资料导出" description="在候选人抽屉中创建导出后，可在这里查看进度并下载。" />}
-          </section>
-        </div>
-
-        <aside className="candidate-data-side-column" hidden={embedded && embeddedSection !== "activity"}>
-          <section className="panel candidate-data-audit-panel">
-            <div className="panel-heading">
-              <div>
-                <h2>访问与操作审计</h2>
-                <p>查看、下载原文件与导出文件均会记录在此。</p>
-              </div>
-            </div>
-            {auditEvents.length ? (
-              <ol className="candidate-data-audit-list">
-                {auditEvents.map((event) => (
-                  <li key={event.event_id}>
-                    <strong>{candidateDataAuditActionLabel(event)}</strong>
-                    <span>{formatLibraryDate(event.created_at)}</span>
-                    {event.reason_code && <small>{candidateDataDeletionReasonLabel(event.reason_code as CandidateDataDeletionReason)}</small>}
-                  </li>
-                ))}
-              </ol>
-            ) : <CandidateDataEmptyState title="暂无审计记录" description="后续的原文件访问、导出和删除操作会显示在这里。" />}
-          </section>
-
-          <section className="panel candidate-data-cleanup-history">
-            <div className="panel-heading">
-              <div><h2>到期清理记录</h2><p>系统只将符合策略的数据加入可恢复删除流程。</p></div>
-            </div>
-            {runs.length ? (
-              <ol className="candidate-data-cleanup-list">
-                {runs.map((run) => (
-                  <li key={run.run_id}>
-                    <div><strong>{candidateDataRetentionRunStatusLabel(run.status)}</strong><span>{formatLibraryDate(run.finished_at ?? run.started_at)}</span></div>
-                    <small>扫描 {run.scanned_count}，加入删除 {run.queued_count}{run.skipped_hold_count ? `，保留跳过 ${run.skipped_hold_count}` : ""}{run.failed_count ? `，异常 ${run.failed_count}` : ""}</small>
-                  </li>
-                ))}
-              </ol>
-            ) : <CandidateDataEmptyState title="尚未执行到期清理" description="启用自动保留后，可先预览再手动执行首次清理。" />}
-          </section>
-        </aside>
-      </div>
-    </div>
-  );
-}
-
-function CandidateDataEmptyState({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="candidate-data-empty">
-      <strong>{title}</strong>
-      <span>{description}</span>
+      <Suspense fallback={<p>加载数据管理…</p>}>
+        {embedded ? (
+          <SemiTabs
+            activeKey={embeddedSection}
+            onChange={(key) => setEmbeddedSection(key as CandidateDataEmbeddedSection)}
+            type="button"
+          >
+            {candidateDataEmbeddedSections.map((section) => (
+              <SemiTabPane
+                icon={<Icon name={section.icon} size={16} />}
+                itemKey={section.id}
+                key={section.id}
+                tab={section.label}
+              >
+                {section.id === "retention" ? retentionSection : activityLayout}
+              </SemiTabPane>
+            ))}
+          </SemiTabs>
+        ) : standaloneLayout}
+      </Suspense>
     </div>
   );
 }

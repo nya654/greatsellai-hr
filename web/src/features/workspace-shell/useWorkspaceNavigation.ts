@@ -28,6 +28,8 @@ function settingsSectionFromHash(
 
   if (value === "settings/mailbox" || value === "inbox") return "mailbox";
   if (value === "settings/data" || value === "data") return "data";
+  if (value === "settings/ai-import" || value === "ai-import") return "ai-import";
+  if (value === "settings/display-fields" || value === "display-fields") return "display-fields";
   return null;
 }
 
@@ -50,6 +52,7 @@ function sameRouteParams(
 interface UseWorkspaceNavigationOptions {
   canManageCandidateData: boolean;
   canManageMailbox: boolean;
+  canManageAiImport: boolean;
   hasSession: boolean;
 }
 
@@ -61,6 +64,7 @@ interface UseWorkspaceNavigationOptions {
 export function useWorkspaceNavigation({
   canManageCandidateData,
   canManageMailbox,
+  canManageAiImport,
   hasSession,
 }: UseWorkspaceNavigationOptions) {
   const [view, setView] = useState<WorkspaceView>(() =>
@@ -86,7 +90,7 @@ export function useWorkspaceNavigation({
         : {};
     },
   );
-  const canManageSettings = canManageMailbox || canManageCandidateData;
+  const canManageSettings = hasSession;
 
   const updateHash = useCallback(
     (nextHash: string, replace = false) => {
@@ -184,22 +188,22 @@ export function useWorkspaceNavigation({
     if (!hasSession || view !== "settings") return;
     const sectionAllowed =
       (settingsSection === "mailbox" && canManageMailbox) ||
-      (settingsSection === "data" && canManageCandidateData);
+      (settingsSection === "data" && canManageCandidateData) ||
+      (settingsSection === "ai-import" && canManageAiImport) ||
+      settingsSection === "display-fields";
     if (sectionAllowed) return;
 
     const fallbackSection = canManageMailbox
       ? "mailbox"
       : canManageCandidateData
         ? "data"
-        : null;
-    if (!fallbackSection) {
-      setView("library");
-      updateSettingsHash(null, true);
-      return;
-    }
+        : canManageAiImport
+          ? "ai-import"
+          : "display-fields";
     setSettingsSection(fallbackSection);
     updateSettingsHash(fallbackSection, true);
   }, [
+    canManageAiImport,
     canManageCandidateData,
     canManageMailbox,
     hasSession,

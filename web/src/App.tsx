@@ -533,6 +533,7 @@ function WorkspaceApp({ authRoute }: { authRoute: AuthRoute | null }) {
     settingsSection,
     view,
   } = useWorkspaceNavigation({
+    canManageAiImport: authSession?.role === "admin",
     canManageCandidateData,
     canManageMailbox,
     hasSession: Boolean(authSession),

@@ -18,6 +18,7 @@ import {
   sortInstitutionClassifications,
   type FilterDraft,
 } from "./filter-model";
+import { displayFieldLabel, DISPLAY_FIELD_LABELS } from "./display-field-options";
 import { hasActiveGraduationFilter } from "./filter-search-model";
 import type {
   CandidateSearchDisplayFieldKey,
@@ -63,22 +64,22 @@ function activeResultDisplayColumns(draft: FilterDraft): ResultDisplayColumn[] {
   };
 
   if (draft.minEmploymentOrInternshipMonths > 0) {
-    add("employment_or_internship_months", "工作年限");
+    add("employment_or_internship_months", displayFieldLabel("employment_or_internship_months"));
   }
   if (draft.gender !== "any") {
-    add("gender", "性别");
+    add("gender", displayFieldLabel("gender"));
   }
   if (draft.minAge > 0 || draft.maxAge > 0) {
-    add("age", "年龄");
+    add("age", displayFieldLabel("age"));
   }
   if (draft.minAcademicScorePercent > 0 || draft.maxRankPercent > 0) {
-    add("academic_performance", "学业表现");
+    add("academic_performance", displayFieldLabel("academic_performance"));
   }
   if (hasActiveGraduationFilter(draft)) {
-    add("graduation", "毕业时间");
+    add("graduation", displayFieldLabel("graduation"));
   }
   if (draft.keywords.length) {
-    add("keywords", "关键词命中");
+    add("keywords", displayFieldLabel("keywords"));
   }
 
   return columns;
@@ -464,7 +465,42 @@ export function ResultsPane({
   scoreTemplateId: string | null;
   scoreTemplates: ScoreTemplate[];
 }) {
-  const displayColumns = activeResultDisplayColumns(appliedDraft);
+  const [savedDisplayFieldKeys, setSavedDisplayFieldKeys] = useState<
+    CandidateSearchDisplayFieldKey[] | null
+  >(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getDisplayFieldPreferences()
+      .then((preferences) => {
+        if (cancelled) return;
+        setSavedDisplayFieldKeys(
+          preferences.display_field_keys.filter(
+            (key): key is CandidateSearchDisplayFieldKey =>
+              key in DISPLAY_FIELD_LABELS,
+          ),
+        );
+      })
+      .catch(() => {
+        // A failed preference load is non-fatal: fall back to auto-derived columns.
+        if (!cancelled) setSavedDisplayFieldKeys([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const savedDisplayColumns: ResultDisplayColumn[] = savedDisplayFieldKeys
+    ? savedDisplayFieldKeys.map((key) => ({
+        key,
+        label: displayFieldLabel(key),
+      }))
+    : [];
+  const displayColumns =
+    savedDisplayColumns.length > 0
+      ? savedDisplayColumns
+      : activeResultDisplayColumns(appliedDraft);
   const hasAppliedDisplayColumns = displayColumns.length > 0;
   const appliedFilters = appliedFilterLabels(appliedDraft);
   const hasAppliedFilterCriteria = appliedFilters.length > 0;

@@ -1,11 +1,22 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { api } from "../../api";
 import { Icon } from "../../icons";
+import { MailboxStatusTag as StatusTag } from "./components/MailboxStatusTag";
 import { BackofficeButton } from "../../backoffice/ui/BackofficeButton";
 import { BackofficeInput } from "../../backoffice/ui/BackofficeInput";
 import { BackofficeSelect } from "../../backoffice/ui/BackofficeSelect";
 import { TableSkeleton } from "../../backoffice/ui/TableSkeleton";
 import { formatFileSize, formatLibraryDate } from "../../backoffice/utils/formatters";
+
+const SemiTitle = lazy(() => import("@douyinfe/semi-ui-19/lib/es/typography/title"));
+const SemiParagraph = lazy(() => import("@douyinfe/semi-ui-19/lib/es/typography/paragraph"));
+const SemiTag = lazy(() => import("@douyinfe/semi-ui-19/lib/es/tag"));
+const SemiSwitch = lazy(() => import("@douyinfe/semi-ui-19/lib/es/switch"));
+const SemiDescriptions = lazy(() => import("@douyinfe/semi-ui-19/lib/es/descriptions"));
+const SemiCollapse = lazy(() => import("@douyinfe/semi-ui-19/lib/es/collapse"));
+const SemiCollapsePanel = lazy(() => import("@douyinfe/semi-ui-19/lib/es/collapse/item"));
+const SemiEmpty = lazy(() => import("@douyinfe/semi-ui-19/lib/es/empty"));
+const SemiRadioGroup = lazy(() => import("@douyinfe/semi-ui-19/lib/es/radio/radioGroup"));
 import type {
   MailboxBackgroundJob,
   MailboxBackgroundJobHistory,
@@ -48,7 +59,6 @@ import {
   newMailboxDraft,
   type MailboxDraft,
 } from "./mailbox-model";
-import "./mailbox.css";
 
 export type MailboxToastKind = "success" | "error";
 
@@ -90,6 +100,73 @@ function sourceTagRuleMatchLabel(kind: SourceTagRuleMatchKind): string {
     ?? "匹配条件";
 }
 
+function SectionHeading({
+  id,
+  title,
+  description,
+}: {
+  id?: string;
+  title: string;
+  description?: string;
+}) {
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <SemiTitle heading={3} id={id} style={{ margin: 0 }}>{title}</SemiTitle>
+      {description && (
+        <SemiParagraph type="tertiary" style={{ margin: "6px 0 0" }}>{description}</SemiParagraph>
+      )}
+    </div>
+  );
+}
+
+function FormField({
+  htmlFor,
+  hint,
+  hintId,
+  label,
+  children,
+}: {
+  htmlFor: string;
+  hint?: string;
+  hintId?: string;
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="field-stack">
+      <label className="field-label" htmlFor={htmlFor} id={`${htmlFor}-label`}>{label}</label>
+      {children}
+      {hint && <p className="field-help" id={hintId}>{hint}</p>}
+    </div>
+  );
+}
+
+const noteRowStyle: CSSProperties = {
+  display: "flex",
+  gap: 8,
+  alignItems: "flex-start",
+};
+
+const alertBoxStyle: CSSProperties = {
+  display: "flex",
+  gap: 8,
+  alignItems: "flex-start",
+  padding: "10px 12px",
+  color: "#7a2a24",
+  fontSize: "0.8125rem",
+  lineHeight: 1.45,
+  background: "var(--red-tint)",
+  border: "1px solid rgb(215 22 24 / 0.2)",
+  borderRadius: "var(--radius-sm)",
+};
+
+const alertBoxWarningStyle: CSSProperties = {
+  ...alertBoxStyle,
+  color: "#7d410b",
+  background: "var(--amber-tint)",
+  borderColor: "#f1d7bb",
+};
+
 export function MailboxPage({
   notify,
   onImported,
@@ -97,7 +174,7 @@ export function MailboxPage({
   humanizeError,
   embedded = false,
 }: MailboxPageProps) {
-  const pageClassName = `mailbox-page${embedded ? " is-embedded" : " page-frame"}`;
+  const pageClassName = embedded ? "is-embedded" : "page-frame";
   const [mailboxes, setMailboxes] = useState<MailboxConfig[]>([]);
   const [providers, setProviders] = useState<MailboxProvider[]>([]);
   const [selectedMailboxId, setSelectedMailboxId] = useState<string | null>(null);
@@ -962,14 +1039,9 @@ export function MailboxPage({
     : "";
 
   const mailboxConnectionFields = (
-    <div className="mailbox-connection-form">
-      <section className="mailbox-form-section" aria-labelledby="mailbox-provider-heading">
-        <div className="mailbox-form-section-heading">
-          <div>
-            <h3 id="mailbox-provider-heading">邮箱服务商</h3>
-            <p>{formProviderDescription}</p>
-          </div>
-        </div>
+    <div style={{ display: "grid", gap: 22 }}>
+      <section aria-labelledby="mailbox-provider-heading">
+        <SectionHeading id="mailbox-provider-heading" title="邮箱服务商" description={formProviderDescription} />
         {isCreating ? (
           <>
             <MailboxProviderPicker
@@ -980,19 +1052,31 @@ export function MailboxPage({
               value={draft.providerKey}
             />
             {draftProvider && (
-              <p className={`mailbox-provider-help${draftProvider.available ? "" : " is-warning"}`} role={draftProvider.available ? undefined : "alert"}>
+              <p
+                className="field-help"
+                role={draftProvider.available ? undefined : "alert"}
+                style={draftProvider.available ? { marginTop: 10 } : { marginTop: 10, color: "var(--red)" }}
+              >
                 <Icon name={draftProvider.available ? "check" : "activity"} size={15} />
                 <span>{draftProvider.available ? draftProvider.help_text : "该服务商尚未在当前部署启用，请联系部署管理员完成配置。"}</span>
               </p>
             )}
           </>
         ) : (
-          <div className="mailbox-provider-locked">
-            <div>
-              <strong>{formProviderName}</strong>
-              <span>{mailboxAuthenticationModeLabel(selectedConfig?.authentication_mode ?? null)}{savedGenericEndpoint}</span>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <div style={{ minWidth: 0 }}>
+              <strong style={{ fontSize: 14 }}>{formProviderName}</strong>
+              <p className="field-help" style={{ marginTop: 2 }}>
+                {mailboxAuthenticationModeLabel(selectedConfig?.authentication_mode ?? null)}{savedGenericEndpoint}
+              </p>
             </div>
-            <span className={`status-pill${selectedConfig?.authorization_status === "connected" ? " is-success" : selectedConfig?.authorization_status === "reauthorization_required" ? " is-error" : " is-warning"}`}>
+            <StatusTag
+              className={selectedConfig?.authorization_status === "connected"
+                ? "is-success"
+                : selectedConfig?.authorization_status === "reauthorization_required"
+                  ? "is-error"
+                  : "is-warning"}
+            >
               {selectedConfig?.authorization_status === "connected"
                 ? "已连接"
                 : selectedConfig?.authorization_status === "reauthorization_required"
@@ -1000,21 +1084,15 @@ export function MailboxPage({
                   : selectedConfig?.authorization_status === "unavailable"
                     ? "服务未启用"
                     : "待连接"}
-            </span>
+            </StatusTag>
           </div>
         )}
       </section>
 
-      <section className="mailbox-form-section" aria-labelledby="mailbox-identity-heading">
-        <div className="mailbox-form-section-heading">
-          <div>
-            <h3 id="mailbox-identity-heading">收件身份</h3>
-            <p>用于区分简历来源；不会向候选人发送邮件。</p>
-          </div>
-        </div>
-        <div className="form-grid mailbox-form-grid">
-          <div className="field-stack">
-            <label className="field-label" htmlFor="mailbox-display-name">通道名称</label>
+      <section aria-labelledby="mailbox-identity-heading">
+        <SectionHeading id="mailbox-identity-heading" title="收件身份" description="用于区分简历来源；不会向候选人发送邮件。" />
+        <div className="form-grid" style={{ columnGap: 24 }}>
+          <FormField htmlFor="mailbox-display-name" label="通道名称">
             <BackofficeInput
               disabled={selectedMailboxArchived || selectedSyncInProgress}
               id="mailbox-display-name"
@@ -1023,9 +1101,12 @@ export function MailboxPage({
               placeholder="例如：招聘邮箱"
               value={draft.displayName}
             />
-          </div>
-          <div className="field-stack">
-            <label className="field-label" htmlFor="imap-address">收件邮箱</label>
+          </FormField>
+          <FormField
+            htmlFor="imap-address"
+            hint={!isCreating ? "收件邮箱与服务商属于这个通道的来源身份。需要换邮箱时，请新建收件通道。" : undefined}
+            label="收件邮箱"
+          >
             <BackofficeInput
               autoComplete="email"
               disabled={!isCreating || selectedMailboxArchived || selectedSyncInProgress || authorizing}
@@ -1034,28 +1115,20 @@ export function MailboxPage({
               type="email"
               value={draft.emailAddress}
             />
-            {!isCreating && <p className="field-help">收件邮箱与服务商属于这个通道的来源身份。需要换邮箱时，请新建收件通道。</p>}
-          </div>
+          </FormField>
         </div>
       </section>
 
       {isCreating && (
-        <section className="mailbox-form-section" aria-labelledby="mailbox-initial-sync-heading">
-          <div className="mailbox-form-section-heading">
-            <div>
-              <h3 id="mailbox-initial-sync-heading">首次入库范围</h3>
-              <p>只在首次绑定时生效，创建后不能修改。</p>
-            </div>
-          </div>
-          <div className="form-grid mailbox-form-grid">
-            <div className="field-stack span-full">
-              <label
-                className="field-label"
-                htmlFor="initial-sync-lookback-days"
-                id="initial-sync-lookback-days-label"
-              >
-                导入历史邮件
-              </label>
+        <section aria-labelledby="mailbox-initial-sync-heading">
+          <SectionHeading id="mailbox-initial-sync-heading" title="首次入库范围" description="只在首次绑定时生效，创建后不能修改。" />
+          <div className="form-grid" style={{ columnGap: 24 }}>
+            <FormField
+              htmlFor="initial-sync-lookback-days"
+              hint="系统只会导入这个时间范围内的简历附件；首次完成后，后续同步始终只接收新邮件。"
+              hintId="initial-sync-lookback-days-hint"
+              label="导入历史邮件"
+            >
               <BackofficeSelect
                 ariaDescribedBy="initial-sync-lookback-days-hint"
                 ariaLabelledBy="initial-sync-lookback-days-label"
@@ -1069,26 +1142,26 @@ export function MailboxPage({
                 options={mailboxInitialSyncLookbackOptions}
                 value={String(draft.initialSyncLookbackDays)}
               />
-              <p className="field-help" id="initial-sync-lookback-days-hint">
-                系统只会导入这个时间范围内的简历附件；首次完成后，后续同步始终只接收新邮件。
-              </p>
-            </div>
+            </FormField>
           </div>
         </section>
       )}
 
-      <section className="mailbox-form-section" aria-labelledby="mailbox-connection-heading">
-        <div className="mailbox-form-section-heading">
-          <div>
-            <h3 id="mailbox-connection-heading">连接与同步</h3>
-            <p>系统只同步收件箱（INBOX）。{formUsesOAuth ? "授权将在服务商页面完成，系统不会收集网页登录密码。" : "请使用服务商生成的专用授权码或客户端密码。"}</p>
-          </div>
-        </div>
-        <div className="form-grid mailbox-form-grid">
+      <section aria-labelledby="mailbox-connection-heading">
+        <SectionHeading
+          id="mailbox-connection-heading"
+          title="连接与同步"
+          description={`系统只同步收件箱（INBOX）。${formUsesOAuth ? "授权将在服务商页面完成，系统不会收集网页登录密码。" : "请使用服务商生成的专用授权码或客户端密码。"}`}
+        />
+        <div className="form-grid" style={{ columnGap: 24 }}>
           {isCreating && formUsesCustomEndpoint && (
             <>
-              <div className="field-stack span-full">
-                <label className="field-label" htmlFor="imap-host">IMAP 服务器域名</label>
+              <FormField
+                htmlFor="imap-host"
+                hint="仅填写服务器域名，不要填写 https://、路径或端口。保存时会校验连接目标。"
+                hintId="imap-host-hint"
+                label="IMAP 服务器域名"
+              >
                 <BackofficeInput
                   aria-describedby="imap-host-hint"
                   autoComplete="off"
@@ -1099,32 +1172,33 @@ export function MailboxPage({
                   spellCheck={false}
                   value={draft.imapHost}
                 />
-                <p className="field-help" id="imap-host-hint">
-                  仅填写服务器域名，不要填写 https://、路径或端口。保存时会校验连接目标。
-                </p>
-              </div>
-              <div className="mailbox-imaps-security span-full" role="note">
-                <span className="mailbox-imaps-security-icon"><Icon name="check" size={16} /></span>
+              </FormField>
+              <div className="span-full" role="note" style={noteRowStyle}>
+                <Icon name="check" size={16} />
                 <div>
-                  <strong>加密连接已固定</strong>
-                  <p>SSL/TLS（IMAPS）· 端口 993</p>
+                  <strong style={{ fontSize: 13 }}>加密连接已固定</strong>
+                  <p className="field-help" style={{ marginTop: 2 }}>SSL/TLS（IMAPS）· 端口 993</p>
                 </div>
               </div>
             </>
           )}
           {isCreating && !draftProvider ? (
-            <p className="mailbox-connection-pending span-full">先选择一个可用的邮箱服务商，再填写连接所需信息。</p>
+            <p className="field-help span-full">先选择一个可用的邮箱服务商，再填写连接所需信息。</p>
           ) : formUsesOAuth ? (
-            <div className="mailbox-oauth-explainer span-full">
-              <span className="mailbox-oauth-explainer-icon"><Icon name="arrow-right" size={16} /></span>
+            <div className="span-full" role="note" style={noteRowStyle}>
+              <Icon name="arrow-right" size={16} />
               <div>
-                <strong>{formProviderName} 网页授权</strong>
-                <p>点击授权后会前往服务商登录页，完成后自动回到这里。系统只保存服务端加密的授权凭据。</p>
+                <strong style={{ fontSize: 13 }}>{formProviderName} 网页授权</strong>
+                <p className="field-help" style={{ marginTop: 2 }}>点击授权后会前往服务商登录页，完成后自动回到这里。系统只保存服务端加密的授权凭据。</p>
               </div>
             </div>
           ) : (
-            <div className="field-stack span-full">
-              <label className="field-label" htmlFor="imap-password">{formCredentialLabel}</label>
+            <FormField
+              htmlFor="imap-password"
+              hint={isCreating ? "只用于连接当前通道，不会在页面中回显。" : "更新后只替换服务端加密保存的授权码，不改变收件起点。"}
+              hintId="imap-password-hint"
+              label={formCredentialLabel}
+            >
               <BackofficeInput
                 aria-describedby="imap-password-hint"
                 autoComplete="new-password"
@@ -1135,23 +1209,27 @@ export function MailboxPage({
                 type="password"
                 value={draft.password}
               />
-              <p className="field-help" id="imap-password-hint">{isCreating ? "只用于连接当前通道，不会在页面中回显。" : "更新后只替换服务端加密保存的授权码，不改变收件起点。"}</p>
-            </div>
+            </FormField>
           )}
-          <label className="choice-row span-full mailbox-sync-toggle">
-            <input checked={draft.enabled} disabled={selectedMailboxArchived || selectedSyncInProgress || authorizing} onChange={(event) => updateDraft("enabled", event.target.checked)} type="checkbox" />
-            <span>
-              <strong>启用后台定时同步</strong>
-              <small>你也可以在保存后随时手动同步这个通道。</small>
-            </span>
-          </label>
+          <div className="span-full" style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 2 }}>
+            <SemiSwitch
+              aria-label="启用后台定时同步"
+              checked={draft.enabled}
+              disabled={selectedMailboxArchived || selectedSyncInProgress || authorizing}
+              onChange={(checked) => updateDraft("enabled", checked)}
+            />
+            <div>
+              <strong style={{ fontSize: 13 }}>启用后台定时同步</strong>
+              <p className="field-help" style={{ marginTop: 2 }}>你也可以在保存后随时手动同步这个通道。</p>
+            </div>
+          </div>
         </div>
       </section>
     </div>
   );
 
   const mailboxFormActions = (
-    <div className="review-actions mailbox-form-actions">
+    <div className="review-actions" style={{ justifyContent: "flex-end" }}>
       {isCreating && hasMailboxChannels && (
         <BackofficeButton
           disabled={saving || archiving}
@@ -1234,224 +1312,233 @@ export function MailboxPage({
   );
   const activeSourceTagRuleCount = sourceTagRules.filter((rule) => rule.enabled).length;
   const mailboxSourceTagRulesPanel = (
-    <details className="panel mailbox-source-tag-rules">
-      <summary className="panel-heading mailbox-disclosure-heading">
-        <div>
-          <h2>投递渠道规则</h2>
-          <p>标记后续邮件的投递来源，可用于筛选。</p>
-        </div>
-        {selectedConfig?.configured && (
-          <span className="status-pill">
-            {activeSourceTagRuleCount ? `${activeSourceTagRuleCount} 条已启用` : "未设置"}
-          </span>
-        )}
-      </summary>
-      {sourceTagRulesLoading ? (
-        <TableSkeleton />
-      ) : !selectedConfig?.configured ? (
-        <div className="mailbox-source-tag-empty">
-          <strong>先保存收件通道</strong>
-          <span>保存后可为这个通道设置后续邮件的投递渠道识别规则。</span>
-        </div>
-      ) : (
-        <>
-          <p className="mailbox-source-tag-note">
-            只匹配后续邮件，不保存实际邮件头；已有标签不会因改规则而改变。
-          </p>
-          {sourceTagRulesError && (
-            <div className="mailbox-source-tag-error" role="alert">
-              <span>{sourceTagRulesError}</span>
-              <BackofficeButton
-                disabled={sourceTagRulesLoading}
-                icon={<Icon name="refresh" size={15} />}
-                onClick={() => void loadSourceTagRules(selectedConfig.mailbox_id)}
-              >
-                重试
-              </BackofficeButton>
+    <SemiCollapse defaultActiveKey={[]} key={`source-tags-${selectedMailboxId ?? "new"}`}>
+      <SemiCollapsePanel
+        header={
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, width: "100%" }}>
+            <div>
+              <SemiTitle heading={4} style={{ margin: 0 }}>投递渠道规则</SemiTitle>
+              <SemiParagraph type="tertiary" style={{ margin: "4px 0 0" }}>标记后续邮件的投递来源，可用于筛选。</SemiParagraph>
             </div>
-          )}
-          {sourceTagRules.length > 0 ? (
-            <div className="mailbox-source-tag-rule-list">
-              {sourceTagRules.map((rule) => {
-                const editing = editingSourceTagRuleId === rule.rule_id;
-                const disabling = disablingSourceTagRuleId === rule.rule_id;
-                return (
-                  <div
-                    className={`mailbox-source-tag-rule${rule.enabled ? "" : " is-disabled"}${editing ? " is-editing" : ""}`}
-                    key={rule.rule_id}
-                  >
-                    <div className="mailbox-source-tag-rule-copy">
-                      <div className="mailbox-source-tag-rule-title">
-                        <span className="tag">{rule.source_tag.display_name}</span>
-                        <span className={`status-pill${rule.enabled ? " is-success" : ""}`}>
-                          {rule.enabled ? "已启用" : "已停用"}
-                        </span>
-                      </div>
-                      <span>
-                        {sourceTagRuleMatchLabel(rule.match_kind)} · {rule.match_value}
-                        {rule.priority !== 100 ? ` · 优先级 ${rule.priority}` : ""}
-                      </span>
-                    </div>
-                    <div className="mailbox-source-tag-rule-actions">
-                      <BackofficeButton
-                        disabled={savingSourceTagRule || disabling || !rule.enabled}
-                        onClick={() => editSourceTagRule(rule)}
-                      >
-                        编辑
-                      </BackofficeButton>
-                      {rule.enabled && (
-                        <BackofficeButton
-                          disabled={savingSourceTagRule || disabling}
-                          loading={disabling}
-                          onClick={() => void disableSourceTagRule(rule)}
-                          tone="danger"
-                        >
-                          停用
-                        </BackofficeButton>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          ) : !sourceTagRulesError ? (
-            <div className="mailbox-source-tag-empty">
-              <strong>还没有投递渠道规则</strong>
-              <span>可先在下方添加规则，将后续投递标记为招聘平台、内推或其他来源。</span>
-            </div>
-          ) : null}
-
-          <section aria-label={editingSourceTagRuleId ? "编辑投递渠道规则" : "添加投递渠道规则"} className="mailbox-source-tag-rule-editor">
-            <div className="mailbox-source-tag-rule-editor-heading">
-              <div>
-                <h3>{editingSourceTagRuleId ? "编辑规则" : "添加规则"}</h3>
-                <p>命中后为附件保留投递渠道标签。</p>
-              </div>
-              {editingSourceTagRuleId && (
-                <BackofficeButton disabled={savingSourceTagRule} onClick={cancelSourceTagRuleEdit}>
-                  取消编辑
+            {selectedConfig?.configured && (
+              <StatusTag className="">
+                {activeSourceTagRuleCount ? `${activeSourceTagRuleCount} 条已启用` : "未设置"}
+              </StatusTag>
+            )}
+          </div>
+        }
+        itemKey="source-tag-rules"
+      >
+        {sourceTagRulesLoading ? (
+          <TableSkeleton />
+        ) : !selectedConfig?.configured ? (
+          <SemiEmpty title="先保存收件通道" description="保存后可为这个通道设置后续邮件的投递渠道识别规则。" />
+        ) : (
+          <>
+            <p className="field-help">
+              只匹配后续邮件，不保存实际邮件头；已有标签不会因改规则而改变。
+            </p>
+            {sourceTagRulesError && (
+              <div role="alert" style={{ display: "flex", alignItems: "center", gap: 12, color: "var(--red)", fontSize: "0.8125rem" }}>
+                <span>{sourceTagRulesError}</span>
+                <BackofficeButton
+                  disabled={sourceTagRulesLoading}
+                  icon={<Icon name="refresh" size={15} />}
+                  onClick={() => void loadSourceTagRules(selectedConfig.mailbox_id)}
+                >
+                  重试
                 </BackofficeButton>
-              )}
-            </div>
-            <div className="form-grid mailbox-source-tag-rule-fields">
-              <div className="field-stack">
-                <label className="field-label" htmlFor="mailbox-source-tag" id="mailbox-source-tag-label">投递渠道</label>
-                {selectableSourceTags.length ? (
-                  <BackofficeSelect
-                    ariaLabelledBy="mailbox-source-tag-label"
-                    disabled={savingSourceTagRule || savingSourceTag}
-                    id="mailbox-source-tag"
-                    onChange={(value) => updateSourceTagRuleDraft("sourceTagId", value)}
-                    options={selectableSourceTags.map((tag) => ({
-                      label: tag.enabled ? tag.display_name : `${tag.display_name}（已停用）`,
-                      value: tag.source_tag_id,
-                    }))}
-                    value={sourceTagRuleDraft.sourceTagId}
-                  />
-                ) : (
-                  <div className="mailbox-source-tag-empty-inline">先新建一个投递渠道标签。</div>
-                )}
-                <div className="mailbox-source-tag-create-toggle">
-                  <button
-                    className="text-button"
-                    disabled={savingSourceTag || savingSourceTagRule}
-                    onClick={() => setCreatingSourceTag((current) => !current)}
-                    type="button"
-                  >
-                    {creatingSourceTag ? "收起新建标签" : "新建投递渠道标签"}
-                  </button>
-                </div>
-                {creatingSourceTag && (
-                  <div className="mailbox-source-tag-create">
-                    <BackofficeInput
-                      disabled={savingSourceTag}
-                      maxLength={64}
-                      onChange={setNewSourceTagName}
-                      placeholder="例如：员工内推"
-                      value={newSourceTagName}
-                    />
-                    <BackofficeButton
-                      disabled={savingSourceTag || !newSourceTagName.trim()}
-                      loading={savingSourceTag}
-                      onClick={() => void createSourceTag()}
+              </div>
+            )}
+            {sourceTagRules.length > 0 ? (
+              <div style={{ display: "grid", gap: 10 }}>
+                {sourceTagRules.map((rule) => {
+                  const editing = editingSourceTagRuleId === rule.rule_id;
+                  const disabling = disablingSourceTagRuleId === rule.rule_id;
+                  return (
+                    <div
+                      key={rule.rule_id}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 12,
+                        padding: "10px 12px",
+                        border: "1px solid var(--line)",
+                        borderRadius: "var(--radius-sm)",
+                        opacity: rule.enabled ? 1 : 0.6,
+                        outline: editing ? "2px solid var(--blue)" : undefined,
+                      }}
                     >
-                      创建标签
-                    </BackofficeButton>
-                  </div>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <SemiTag color="grey" size="small">{rule.source_tag.display_name}</SemiTag>
+                          <StatusTag className={rule.enabled ? "is-success" : ""}>
+                            {rule.enabled ? "已启用" : "已停用"}
+                          </StatusTag>
+                        </div>
+                        <p className="field-help" style={{ marginTop: 4 }}>
+                          {sourceTagRuleMatchLabel(rule.match_kind)} · {rule.match_value}
+                          {rule.priority !== 100 ? ` · 优先级 ${rule.priority}` : ""}
+                        </p>
+                      </div>
+                      <div className="review-actions" style={{ flex: "0 0 auto" }}>
+                        <BackofficeButton
+                          disabled={savingSourceTagRule || disabling || !rule.enabled}
+                          onClick={() => editSourceTagRule(rule)}
+                        >
+                          编辑
+                        </BackofficeButton>
+                        {rule.enabled && (
+                          <BackofficeButton
+                            disabled={savingSourceTagRule || disabling}
+                            loading={disabling}
+                            onClick={() => void disableSourceTagRule(rule)}
+                            tone="danger"
+                          >
+                            停用
+                          </BackofficeButton>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : !sourceTagRulesError ? (
+              <SemiEmpty title="还没有投递渠道规则" description="可先在下方添加规则，将后续投递标记为招聘平台、内推或其他来源。" />
+            ) : null}
+
+            <section aria-label={editingSourceTagRuleId ? "编辑投递渠道规则" : "添加投递渠道规则"} style={{ marginTop: 4 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
+                <div>
+                  <SemiTitle heading={4} style={{ margin: 0 }}>{editingSourceTagRuleId ? "编辑规则" : "添加规则"}</SemiTitle>
+                  <SemiParagraph type="tertiary" style={{ margin: "4px 0 0" }}>命中后为附件保留投递渠道标签。</SemiParagraph>
+                </div>
+                {editingSourceTagRuleId && (
+                  <BackofficeButton disabled={savingSourceTagRule} onClick={cancelSourceTagRuleEdit}>
+                    取消编辑
+                  </BackofficeButton>
                 )}
               </div>
-              <div className="field-stack">
-                <label className="field-label" htmlFor="mailbox-source-tag-match-kind" id="mailbox-source-tag-match-kind-label">匹配字段</label>
-                <BackofficeSelect
-                  ariaLabelledBy="mailbox-source-tag-match-kind-label"
-                  disabled={savingSourceTagRule}
-                  id="mailbox-source-tag-match-kind"
-                  onChange={(value) => updateSourceTagRuleDraft("matchKind", value as SourceTagRuleMatchKind)}
-                  options={sourceTagRuleMatchOptions}
-                  value={sourceTagRuleDraft.matchKind}
-                />
+              <div className="form-grid" style={{ columnGap: 24 }}>
+                <FormField htmlFor="mailbox-source-tag" label="投递渠道">
+                  {selectableSourceTags.length ? (
+                    <BackofficeSelect
+                      ariaLabelledBy="mailbox-source-tag-label"
+                      disabled={savingSourceTagRule || savingSourceTag}
+                      id="mailbox-source-tag"
+                      onChange={(value) => updateSourceTagRuleDraft("sourceTagId", value)}
+                      options={selectableSourceTags.map((tag) => ({
+                        label: tag.enabled ? tag.display_name : `${tag.display_name}（已停用）`,
+                        value: tag.source_tag_id,
+                      }))}
+                      value={sourceTagRuleDraft.sourceTagId}
+                    />
+                  ) : (
+                    <p className="field-help">先新建一个投递渠道标签。</p>
+                  )}
+                  <div style={{ marginTop: 6 }}>
+                    <button
+                      className="text-button"
+                      disabled={savingSourceTag || savingSourceTagRule}
+                      onClick={() => setCreatingSourceTag((current) => !current)}
+                      type="button"
+                    >
+                      {creatingSourceTag ? "收起新建标签" : "新建投递渠道标签"}
+                    </button>
+                  </div>
+                  {creatingSourceTag && (
+                    <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                      <BackofficeInput
+                        disabled={savingSourceTag}
+                        maxLength={64}
+                        onChange={setNewSourceTagName}
+                        placeholder="例如：员工内推"
+                        value={newSourceTagName}
+                      />
+                      <BackofficeButton
+                        disabled={savingSourceTag || !newSourceTagName.trim()}
+                        loading={savingSourceTag}
+                        onClick={() => void createSourceTag()}
+                      >
+                        创建标签
+                      </BackofficeButton>
+                    </div>
+                  )}
+                </FormField>
+                <FormField htmlFor="mailbox-source-tag-match-kind" label="匹配字段">
+                  <BackofficeSelect
+                    ariaLabelledBy="mailbox-source-tag-match-kind-label"
+                    disabled={savingSourceTagRule}
+                    id="mailbox-source-tag-match-kind"
+                    onChange={(value) => updateSourceTagRuleDraft("matchKind", value as SourceTagRuleMatchKind)}
+                    options={sourceTagRuleMatchOptions}
+                    value={sourceTagRuleDraft.matchKind}
+                  />
+                </FormField>
+                <FormField htmlFor="mailbox-source-tag-match-value" label="匹配值">
+                  <BackofficeInput
+                    disabled={savingSourceTagRule}
+                    id="mailbox-source-tag-match-value"
+                    maxLength={255}
+                    onChange={(value) => updateSourceTagRuleDraft("matchValue", value)}
+                    placeholder={
+                      sourceTagRuleDraft.matchKind === "sender_domain"
+                        ? "例如：example.com"
+                        : sourceTagRuleDraft.matchKind === "sender_address"
+                          ? "例如：no-reply@example.com"
+                          : "例如：候选人简历"
+                    }
+                    value={sourceTagRuleDraft.matchValue}
+                  />
+                </FormField>
+                <FormField htmlFor="mailbox-source-tag-priority" hint="数值越小越优先，默认 100。" label="优先级">
+                  <BackofficeInput
+                    disabled={savingSourceTagRule}
+                    id="mailbox-source-tag-priority"
+                    inputMode="numeric"
+                    maxLength={5}
+                    onChange={(value) => updateSourceTagRuleDraft("priority", value.replace(/[^0-9]/g, ""))}
+                    value={sourceTagRuleDraft.priority}
+                  />
+                </FormField>
               </div>
-              <div className="field-stack">
-                <label className="field-label" htmlFor="mailbox-source-tag-match-value">匹配值</label>
-                <BackofficeInput
-                  disabled={savingSourceTagRule}
-                  id="mailbox-source-tag-match-value"
-                  maxLength={255}
-                  onChange={(value) => updateSourceTagRuleDraft("matchValue", value)}
-                  placeholder={
-                    sourceTagRuleDraft.matchKind === "sender_domain"
-                      ? "例如：example.com"
-                      : sourceTagRuleDraft.matchKind === "sender_address"
-                        ? "例如：no-reply@example.com"
-                        : "例如：候选人简历"
-                  }
-                  value={sourceTagRuleDraft.matchValue}
-                />
+              <div className="review-actions" style={{ justifyContent: "flex-end", marginTop: 14 }}>
+                <BackofficeButton
+                  disabled={savingSourceTagRule || savingSourceTag || !sourceTagRuleDraft.sourceTagId}
+                  icon={savingSourceTagRule ? undefined : <Icon name="check" size={16} />}
+                  loading={savingSourceTagRule}
+                  onClick={() => void saveSourceTagRule()}
+                  tone="primary"
+                >
+                  {savingSourceTagRule ? "正在保存" : editingSourceTagRuleId ? "保存规则" : "添加规则"}
+                </BackofficeButton>
               </div>
-              <div className="field-stack">
-                <label className="field-label" htmlFor="mailbox-source-tag-priority">优先级</label>
-                <BackofficeInput
-                  disabled={savingSourceTagRule}
-                  id="mailbox-source-tag-priority"
-                  inputMode="numeric"
-                  maxLength={5}
-                  onChange={(value) => updateSourceTagRuleDraft("priority", value.replace(/[^0-9]/g, ""))}
-                  value={sourceTagRuleDraft.priority}
-                />
-                <p className="field-help">数值越小越优先，默认 100。</p>
-              </div>
-            </div>
-            <div className="review-actions mailbox-source-tag-rule-editor-actions">
-              <BackofficeButton
-                disabled={savingSourceTagRule || savingSourceTag || !sourceTagRuleDraft.sourceTagId}
-                icon={savingSourceTagRule ? undefined : <Icon name="check" size={16} />}
-                loading={savingSourceTagRule}
-                onClick={() => void saveSourceTagRule()}
-                tone="primary"
-              >
-                {savingSourceTagRule ? "正在保存" : editingSourceTagRuleId ? "保存规则" : "添加规则"}
-              </BackofficeButton>
-            </div>
-          </section>
-        </>
-      )}
-    </details>
+            </section>
+          </>
+        )}
+      </SemiCollapsePanel>
+    </SemiCollapse>
   );
 
   const mailboxOperationalOverview = selectedConfig && (
-    <section className="panel mailbox-operation-overview" aria-label={`${selectedConfig.display_name} 收件概览`}>
-      <div className="mailbox-operation-heading">
-        <div className="mailbox-operation-identity">
-          <span className="mailbox-operation-icon"><Icon name="inbox" size={20} /></span>
-          <div>
-            <div className="mailbox-operation-title-row">
-              <h2>{selectedConfig.display_name}</h2>
-              <span className={`status-pill${mailboxChannelStatusClass(selectedConfig)}`}>{mailboxChannelStatus(selectedConfig)}</span>
+    <section className="panel" aria-label={`${selectedConfig.display_name} 收件概览`} style={{ display: "grid", gap: 18 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 12, minWidth: 0 }}>
+          <span style={{ flex: "0 0 auto", display: "inline-flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: "var(--radius-md)", background: "var(--surface-muted)", color: "var(--ink)" }}>
+            <Icon name="inbox" size={20} />
+          </span>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <SemiTitle heading={2} style={{ margin: 0 }}>{selectedConfig.display_name}</SemiTitle>
+              <StatusTag className={mailboxChannelStatusClass(selectedConfig)}>{mailboxChannelStatus(selectedConfig)}</StatusTag>
             </div>
-            <p>{mailboxProviderDisplayName(selectedConfig)} · {selectedConfig.email_address || "尚未配置收件邮箱"}</p>
+            <SemiParagraph type="tertiary" style={{ margin: "4px 0 0" }}>
+              {mailboxProviderDisplayName(selectedConfig)} · {selectedConfig.email_address || "尚未配置收件邮箱"}
+            </SemiParagraph>
           </div>
         </div>
-        <div className="mailbox-operation-actions">
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {selectedMailboxRequiresAuthorization ? (
             <BackofficeButton
               disabled={Boolean(selectedConfig.archived_at)}
@@ -1493,39 +1580,41 @@ export function MailboxPage({
         </div>
       </div>
 
-      <div className="mailbox-operation-facts">
-        <div>
-          <span>连接方式</span>
-          <strong>{mailboxAuthenticationModeLabel(selectedConfig.authentication_mode)}</strong>
-        </div>
-        <div>
-          <span>首次范围</span>
-          <strong>{mailboxInitialSyncLookbackLabel(selectedInitialSyncLookbackDays)}</strong>
-        </div>
-        <div>
-          <span>最近同步</span>
-          <strong>{selectedConfig.last_synced_at ? formatLibraryDate(selectedConfig.last_synced_at) : "尚未同步"}</strong>
-        </div>
-        <div>
-          <span>{selectedInitialSyncLookbackDays > 0 ? "首次导入" : "后台同步"}</span>
-          <strong>{selectedInitialSyncLookbackDays > 0 ? selectedInitialImportStatus : selectedSyncJob ? mailboxBackgroundJobStatusLabel(selectedSyncJob) : selectedMailboxCanSync ? "已启用" : selectedConfig.enabled ? "等待授权" : "已暂停"}</strong>
-        </div>
-      </div>
+      <SemiDescriptions
+        size="small"
+        data={[
+          { key: "连接方式", value: mailboxAuthenticationModeLabel(selectedConfig.authentication_mode) },
+          { key: "首次范围", value: mailboxInitialSyncLookbackLabel(selectedInitialSyncLookbackDays) },
+          { key: "最近同步", value: selectedConfig.last_synced_at ? formatLibraryDate(selectedConfig.last_synced_at) : "尚未同步" },
+          {
+            key: selectedInitialSyncLookbackDays > 0 ? "首次导入" : "后台同步",
+            value: selectedInitialSyncLookbackDays > 0
+              ? selectedInitialImportStatus
+              : selectedSyncJob
+                ? mailboxBackgroundJobStatusLabel(selectedSyncJob)
+                : selectedMailboxCanSync
+                  ? "已启用"
+                  : selectedConfig.enabled
+                    ? "等待授权"
+                    : "已暂停",
+          },
+        ]}
+      />
 
       {selectedConfig.authentication_mode === "oauth2" && selectedConfig.authorization_status === "reauthorization_required" && (
-        <div className="mailbox-operation-alert" role="alert">
+        <div role="alert" style={alertBoxStyle}>
           <Icon name="activity" size={16} />
           <span>邮箱授权已失效。重新授权后会恢复原通道的同步，历史入库记录与收件起点不会改变。</span>
         </div>
       )}
       {selectedConfig.authorization_status === "unavailable" && (
-        <div className="mailbox-operation-alert is-warning" role="alert">
+        <div role="alert" style={alertBoxWarningStyle}>
           <Icon name="activity" size={16} />
           <span>该服务商当前未在部署环境启用。系统不会尝试同步，请联系部署管理员完成配置。</span>
         </div>
       )}
       {selectedConfig.active_sync_alert && (
-        <div className="mailbox-operation-alert" role="alert">
+        <div role="alert" style={alertBoxStyle}>
           <Icon name="activity" size={16} />
           <span>{mailboxSyncAlertTitle(selectedConfig)}，连续失败 {selectedConfig.active_sync_alert.consecutive_failures} 次。{mailboxImportErrorLabel(selectedConfig.active_sync_alert.last_error_code)}</span>
         </div>
@@ -1534,14 +1623,15 @@ export function MailboxPage({
   );
 
   return (
-    <div className={pageClassName}>
+    <Suspense fallback={<p>加载邮箱设置…</p>}>
+      <div className={pageClassName} style={{ display: "grid", gap: "1.5rem" }}>
       <header className="page-heading">
         <div>
           {embedded ? <h2>收件邮箱</h2> : <h1>邮箱附件入库</h1>}
           <p>连接招聘邮箱后，可按首次范围导入历史附件，后续持续接收新邮件。</p>
         </div>
         {hasMailboxChannels && !isCreating && (
-          <div className="mailbox-heading-actions">
+          <div style={{ display: "flex", gap: 8 }}>
             <BackofficeButton
               disabled={loading || saving || enqueuingAll}
               icon={<Icon name="plus" size={16} />}
@@ -1563,26 +1653,42 @@ export function MailboxPage({
       </header>
 
       {!isCreating && activeSyncAlerts.length > 0 && (
-        <section aria-label="需要处理的邮箱同步异常" className="mailbox-sync-alert-list" role="alert">
-          <div className="mailbox-sync-alert-list-heading">
+        <section aria-label="需要处理的邮箱同步异常" className="panel" role="alert">
+          <div className="panel-heading" style={{ alignItems: "center" }}>
             <div>
-              <h2>需要处理的同步异常</h2>
-              <p>这些通道的后台同步已连续失败。请检查连接配置后重新同步，成功后提示会自动恢复。</p>
+              <SemiTitle heading={3} style={{ margin: 0 }}>需要处理的同步异常</SemiTitle>
+              <SemiParagraph type="tertiary" style={{ margin: "4px 0 0" }}>这些通道的后台同步已连续失败。请检查连接配置后重新同步，成功后提示会自动恢复。</SemiParagraph>
             </div>
-            <span className="status-pill is-error">{activeSyncAlerts.length} 个通道需处理</span>
+            <StatusTag className="is-error">{activeSyncAlerts.length} 个通道需处理</StatusTag>
           </div>
-          <div className="mailbox-sync-alert-items">
+          <div style={{ display: "grid", gap: 12 }}>
             {activeSyncAlerts.map((config) => {
               const alert = config.active_sync_alert!;
               const canSync = mailboxCanSync(config)
                 && enqueuingMailboxId !== config.mailbox_id
                 && !activeSyncMailboxIds.has(config.mailbox_id);
               return (
-              <div className="mailbox-sync-alert-item" key={config.mailbox_id}>
-                <div>
-                  <strong>{config.display_name}</strong>
-                    <span>{config.authorization_status === "reauthorization_required" ? "邮箱授权已失效，重新授权后会恢复同步。" : `${mailboxSyncAlertTitle(config)}，后台同步任务已连续失败 ${alert.consecutive_failures} 次，最近一次 ${formatLibraryDate(alert.last_failed_at)}。`}</span>
-                    <small>{mailboxImportErrorLabel(alert.last_error_code)}</small>
+                <div
+                  key={config.mailbox_id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    padding: "10px 12px",
+                    border: "1px solid #f1c6c2",
+                    background: "var(--red-tint)",
+                    borderRadius: "var(--radius-md)",
+                  }}
+                >
+                  <div style={{ minWidth: 0 }}>
+                    <strong style={{ color: "#6e231f", fontSize: 13 }}>{config.display_name}</strong>
+                    <span style={{ display: "block", marginTop: 3, color: "#713b36", fontSize: "0.8125rem", lineHeight: 1.45 }}>
+                      {config.authorization_status === "reauthorization_required"
+                        ? "邮箱授权已失效，重新授权后会恢复同步。"
+                        : `${mailboxSyncAlertTitle(config)}，后台同步任务已连续失败 ${alert.consecutive_failures} 次，最近一次 ${formatLibraryDate(alert.last_failed_at)}。`}
+                    </span>
+                    <small style={{ display: "block", marginTop: 3, color: "#713b36", fontSize: "0.8125rem", lineHeight: 1.45 }}>{mailboxImportErrorLabel(alert.last_error_code)}</small>
                   </div>
                   {mailboxRequiresAuthorization(config) ? (
                     <BackofficeButton
@@ -1617,41 +1723,64 @@ export function MailboxPage({
       )}
 
       {showMailboxCreation ? (
-        <section className="mailbox-setup-shell" aria-label={mailboxCreationTitle}>
-          <section className="panel mailbox-setup-form-panel">
-            <div className="mailbox-setup-heading">
-              <span className="mailbox-setup-kicker"><Icon name="inbox" size={16} />{mailboxCreationKicker}</span>
-              <h2>{mailboxCreationTitle}</h2>
-              <p>{mailboxCreationDescription}</p>
+        <section
+          className="mailbox-setup-shell"
+          aria-label={mailboxCreationTitle}
+          style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 32, maxWidth: "76rem", alignItems: "start" }}
+        >
+          <section className="panel">
+            <div style={{ paddingBottom: 20, marginBottom: 20, borderBottom: "1px solid var(--line)" }}>
+              <span style={{ display: "inline-flex", gap: 6, alignItems: "center", marginBottom: 10, color: "var(--red-pressed)", fontSize: "0.75rem", fontWeight: 720, letterSpacing: "0.04em" }}>
+                <Icon name="inbox" size={16} />
+                {mailboxCreationKicker}
+              </span>
+              <SemiTitle heading={2} style={{ margin: 0 }}>{mailboxCreationTitle}</SemiTitle>
+              <SemiParagraph type="tertiary" style={{ margin: "6px 0 0" }}>{mailboxCreationDescription}</SemiParagraph>
             </div>
             {mailboxConnectionFields}
             {mailboxFormActions}
           </section>
 
-          <aside className="panel mailbox-setup-aside">
-            <div className="mailbox-setup-aside-heading">
-              <h2>接入后如何工作</h2>
-              <p>{hasMailboxChannels ? "先完成这个新通道的连接，已有通道和处理记录不会被带进这个新通道。" : "连接配置、同步状态和处理记录都只属于当前工作区。"}</p>
+          <aside className="panel">
+            <div className="panel-heading">
+              <div>
+                <SemiTitle heading={3} style={{ margin: 0 }}>接入后如何工作</SemiTitle>
+                <SemiParagraph type="tertiary" style={{ margin: "4px 0 0" }}>
+                  {hasMailboxChannels ? "先完成这个新通道的连接，已有通道和处理记录不会被带进这个新通道。" : "连接配置、同步状态和处理记录都只属于当前工作区。"}
+                </SemiParagraph>
+              </div>
             </div>
-            <ol className="mailbox-setup-steps">
-              <li>
-                <span>1</span>
-                <div><strong>保存连接</strong><p>系统按首次范围建立入库起点，范围外的历史邮件不会扫描。</p></div>
+            <ol style={{ display: "grid", gap: 14, margin: 0, paddingLeft: 0, listStyle: "none" }}>
+              <li style={{ display: "flex", gap: 10 }}>
+                <span style={{ flex: "0 0 auto", display: "inline-flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: "50%", background: "var(--surface-muted)", color: "var(--ink-soft)", fontSize: 12, fontWeight: 700 }}>1</span>
+                <div>
+                  <strong style={{ fontSize: 13 }}>保存连接</strong>
+                  <p className="field-help" style={{ marginTop: 2 }}>系统按首次范围建立入库起点，范围外的历史邮件不会扫描。</p>
+                </div>
               </li>
-              <li>
-                <span>2</span>
-                <div><strong>后台同步</strong><p>如选择历史范围，先在后台导入对应附件；随后按计划检查新邮件。</p></div>
+              <li style={{ display: "flex", gap: 10 }}>
+                <span style={{ flex: "0 0 auto", display: "inline-flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: "50%", background: "var(--surface-muted)", color: "var(--ink-soft)", fontSize: 12, fontWeight: 700 }}>2</span>
+                <div>
+                  <strong style={{ fontSize: 13 }}>后台同步</strong>
+                  <p className="field-help" style={{ marginTop: 2 }}>如选择历史范围，先在后台导入对应附件；随后按计划检查新邮件。</p>
+                </div>
               </li>
-              <li>
-                <span>3</span>
-                <div><strong>附件入库</strong><p>支持 PDF、Word、图片、Excel 和 HTML，处理结果会留在本页。</p></div>
+              <li style={{ display: "flex", gap: 10 }}>
+                <span style={{ flex: "0 0 auto", display: "inline-flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: "50%", background: "var(--surface-muted)", color: "var(--ink-soft)", fontSize: 12, fontWeight: 700 }}>3</span>
+                <div>
+                  <strong style={{ fontSize: 13 }}>附件入库</strong>
+                  <p className="field-help" style={{ marginTop: 2 }}>支持 PDF、Word、图片、Excel 和 HTML，处理结果会留在本页。</p>
+                </div>
               </li>
             </ol>
-            <p className="mailbox-setup-footnote"><Icon name="check" size={15} />{hasMailboxChannels ? "创建完成后，再查看这个通道的同步、入库和保留信息。" : "连接完成后，可在这里查看入库记录、同步异常和内容保留策略。"}</p>
+            <p className="field-help" style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 16 }}>
+              <Icon name="check" size={15} />
+              {hasMailboxChannels ? "创建完成后，再查看这个通道的同步、入库和保留信息。" : "连接完成后，可在这里查看入库记录、同步异常和内容保留策略。"}
+            </p>
           </aside>
         </section>
       ) : (
-      <div className="mailbox-workspace">
+      <div className="mailbox-workspace" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 32, alignItems: "start" }}>
         <MailboxChannelList
           isCreating={isCreating}
           loading={loading}
@@ -1661,31 +1790,38 @@ export function MailboxPage({
           selectedMailboxId={selectedMailboxId}
         />
 
-        <div className={`mailbox-detail${showMailboxOverview ? " is-overview" : ""}`}>
+        <div className="mailbox-detail" style={{ display: "grid", gap: 32, minWidth: 0 }}>
           {showMailboxOverview ? mailboxOperationalOverview : (
-          <div className="mailbox-detail-grid">
-            <section className="panel mailbox-config-panel">
+          <div className="mailbox-detail-grid" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 32, alignItems: "start" }}>
+            <section className="panel">
               <div className="panel-heading">
                 <div>
-                  <h2>{isCreating ? "新建收件通道" : "收件通道设置"}</h2>
-                  <p>{isCreating ? "选择首次范围后，系统会在后台导入对应时间内的附件；之后只接收新邮件。" : "首次范围已固定；授权码始终保持隐藏，留空则继续使用已保存的值。"}</p>
+                  <SemiTitle heading={3} style={{ margin: 0 }}>{isCreating ? "新建收件通道" : "收件通道设置"}</SemiTitle>
+                  <SemiParagraph type="tertiary" style={{ margin: "4px 0 0" }}>
+                    {isCreating ? "选择首次范围后，系统会在后台导入对应时间内的附件；之后只接收新邮件。" : "首次范围已固定；授权码始终保持隐藏，留空则继续使用已保存的值。"}
+                  </SemiParagraph>
                 </div>
-                {selectedConfig && <span className={`status-pill${mailboxChannelStatusClass(selectedConfig)}`}>{mailboxChannelStatus(selectedConfig)}</span>}
+                {selectedConfig && <StatusTag className={mailboxChannelStatusClass(selectedConfig)}>{mailboxChannelStatus(selectedConfig)}</StatusTag>}
               </div>
               {loading ? <TableSkeleton /> : mailboxConnectionFields}
               {mailboxFormActions}
             </section>
 
-            <aside className="panel mailbox-status-panel">
-              <div className="panel-heading"><div><h2>运行状态</h2><p>同步、异常和内容保留都按当前通道独立管理；相同内容附件不会重复创建候选人。</p></div></div>
+            <aside className="panel">
+              <div className="panel-heading">
+                <div>
+                  <SemiTitle heading={3} style={{ margin: 0 }}>运行状态</SemiTitle>
+                  <SemiParagraph type="tertiary" style={{ margin: "4px 0 0" }}>同步、异常和内容保留都按当前通道独立管理；相同内容附件不会重复创建候选人。</SemiParagraph>
+                </div>
+              </div>
               {selectedConfig ? (
                 <>
                   {selectedConfig.active_sync_alert && (
-                    <section className="mailbox-sync-alert-detail" role="alert">
+                    <section role="alert" style={{ ...alertBoxStyle, alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
                       <div>
-                        <strong>{mailboxSyncAlertTitle(selectedConfig)}</strong>
-                        <span>后台同步任务已连续失败 {selectedConfig.active_sync_alert.consecutive_failures} 次，最近一次 {formatLibraryDate(selectedConfig.active_sync_alert.last_failed_at)}。</span>
-                        <small>{mailboxImportErrorLabel(selectedConfig.active_sync_alert.last_error_code)}</small>
+                        <strong style={{ fontSize: 13 }}>{mailboxSyncAlertTitle(selectedConfig)}</strong>
+                        <span style={{ display: "block", marginTop: 3, fontSize: "0.8125rem", lineHeight: 1.45 }}>后台同步任务已连续失败 {selectedConfig.active_sync_alert.consecutive_failures} 次，最近一次 {formatLibraryDate(selectedConfig.active_sync_alert.last_failed_at)}。</span>
+                        <small style={{ display: "block", marginTop: 3, fontSize: "0.8125rem", lineHeight: 1.45 }}>{mailboxImportErrorLabel(selectedConfig.active_sync_alert.last_error_code)}</small>
                       </div>
                       <BackofficeButton
                         disabled={!selectedConfig.enabled || Boolean(selectedConfig.archived_at) || selectedSyncInProgress}
@@ -1698,25 +1834,32 @@ export function MailboxPage({
                       </BackofficeButton>
                     </section>
                   )}
-                <div className="fact-list">
-                  <div className="fact-row"><strong>开始接收</strong><span>{selectedConfig.import_started_at ? formatLibraryDate(selectedConfig.import_started_at) : "正在初始化"}</span></div>
-                  <div className="fact-row"><strong>最近同步</strong><span>{selectedConfig.last_synced_at ? formatLibraryDate(selectedConfig.last_synced_at) : "尚未同步"}</span></div>
-                  {selectedSyncJob && <div className="fact-row"><strong>后台任务</strong><span className={`status-pill ${mailboxBackgroundJobStatusClass(selectedSyncJob)}`}>{mailboxBackgroundJobStatusLabel(selectedSyncJob)}</span></div>}
-                  <div className="fact-row"><strong>附件处理记录</strong><span>{historyFilterMailboxId === selectedConfig.mailbox_id ? `${history?.total ?? 0} 条` : "可在下方按来源筛选"}</span></div>
-                  <div className="fact-row"><strong>支持格式</strong><span>PDF、Word、图片、Excel、HTML</span></div>
-                  {retention && <>
-                    <div className="fact-row"><strong>当前保留</strong><span>{mailboxRetentionPolicyLabel(retention.retention_policy)}</span></div>
-                    <div className="fact-row"><strong>缓存内容</strong><span>{retention.body_copy_count} 正文 · {retention.attachment_copy_count + retention.failure_artifact_count} 附件副本</span></div>
-                    <div className="fact-row"><strong>缓存占用</strong><span>{formatFileSize(retention.cache_bytes)}</span></div>
-                    <div className="fact-row"><strong>最早到期</strong><span>{retention.earliest_expires_at ? formatLibraryDate(retention.earliest_expires_at) : "暂无待清理内容"}</span></div>
-                    <div className="fact-row"><strong>最近清理</strong><span>{retention.last_cleanup_at ? formatLibraryDate(retention.last_cleanup_at) : "尚未执行"}</span></div>
-                    <div className="fact-row"><strong>下次清理</strong><span>{retention.next_cleanup_at ? formatLibraryDate(retention.next_cleanup_at) : "由系统定时安排"}</span></div>
-                  </>}
-                  {selectedConfig.last_sync_error && <div className="fact-row"><strong>最近异常</strong><span>{mailboxImportErrorLabel(selectedConfig.last_sync_error)}</span></div>}
-                </div>
+                  <SemiDescriptions
+                    size="small"
+                    data={[
+                      { key: "开始接收", value: selectedConfig.import_started_at ? formatLibraryDate(selectedConfig.import_started_at) : "正在初始化" },
+                      { key: "最近同步", value: selectedConfig.last_synced_at ? formatLibraryDate(selectedConfig.last_synced_at) : "尚未同步" },
+                      selectedSyncJob
+                        ? { key: "后台任务", value: <StatusTag className={mailboxBackgroundJobStatusClass(selectedSyncJob)}>{mailboxBackgroundJobStatusLabel(selectedSyncJob)}</StatusTag> }
+                        : { key: "后台任务", value: "", hidden: true },
+                      { key: "附件处理记录", value: historyFilterMailboxId === selectedConfig.mailbox_id ? `${history?.total ?? 0} 条` : "可在下方按来源筛选" },
+                      { key: "支持格式", value: "PDF、Word、图片、Excel、HTML" },
+                      ...(retention ? [
+                        { key: "当前保留", value: mailboxRetentionPolicyLabel(retention.retention_policy) },
+                        { key: "缓存内容", value: `${retention.body_copy_count} 正文 · ${retention.attachment_copy_count + retention.failure_artifact_count} 附件副本` },
+                        { key: "缓存占用", value: formatFileSize(retention.cache_bytes) },
+                        { key: "最早到期", value: retention.earliest_expires_at ? formatLibraryDate(retention.earliest_expires_at) : "暂无待清理内容" },
+                        { key: "最近清理", value: retention.last_cleanup_at ? formatLibraryDate(retention.last_cleanup_at) : "尚未执行" },
+                        { key: "下次清理", value: retention.next_cleanup_at ? formatLibraryDate(retention.next_cleanup_at) : "由系统定时安排" },
+                      ] : []),
+                      ...(selectedConfig.last_sync_error
+                        ? [{ key: "最近异常", value: mailboxImportErrorLabel(selectedConfig.last_sync_error) }]
+                        : []),
+                    ]}
+                  />
                 </>
               ) : (
-                <div className="mailbox-status-empty"><Icon name="history" size={19} /><span>保存后会显示这个通道的收件起点、最近同步时间和异常状态。</span></div>
+                <SemiEmpty title="保存后会显示运行状态" description="保存后会显示这个通道的收件起点、最近同步时间和异常状态。" />
               )}
             </aside>
           </div>
@@ -1724,107 +1867,109 @@ export function MailboxPage({
 
           {mailboxSourceTagRulesPanel}
 
-          <details className="panel mailbox-retention-panel">
-            <summary className="panel-heading mailbox-disclosure-heading">
-              <div>
-                <h2>内容保留</h2>
-                <p>只清理当前通道的系统邮件正文与附件副本，不会删除源邮件或候选人原始简历。</p>
-              </div>
-              {retention && <span className="status-pill">{mailboxRetentionPolicyLabel(retention.retention_policy)}</span>}
-            </summary>
-            {loading ? <TableSkeleton /> : !selectedConfig?.configured ? (
-              <div className="mailbox-retention-empty">
-                <strong>先保存收件通道</strong>
-                <span>保存连接配置后，可为这个通道设置正文和附件副本的保留周期。</span>
-              </div>
-            ) : (
-              <>
-                {selectedMailboxArchived && <p className="mailbox-retention-notice">该通道已归档，不会接收新附件；已有内容仍按以下策略清理。</p>}
-                <fieldset className="mailbox-retention-policy" disabled={!canManageRetention || retentionSaving}>
-                  <legend className="field-label">内容保留档位</legend>
-                  <div className="mailbox-retention-policy-options">
-                    {mailboxRetentionPolicies.map((option) => (
-                      <label className="choice-row mailbox-retention-option" key={option.value}>
-                        <input
-                          checked={retentionPolicy === option.value}
-                          name="mailbox-retention-policy"
-                          onChange={() => {
-                            setRetentionPolicy(option.value);
-                            setRetentionPreview(null);
-                          }}
-                          type="radio"
-                        />
-                        <span>
-                          <strong>{option.label}</strong>
-                          <small>{option.description}</small>
-                        </span>
-                      </label>
-                    ))}
+          <SemiCollapse defaultActiveKey={[]} key={`retention-${selectedMailboxId ?? "new"}`}>
+            <SemiCollapsePanel
+              header={
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, width: "100%" }}>
+                  <div>
+                    <SemiTitle heading={4} style={{ margin: 0 }}>内容保留</SemiTitle>
+                    <SemiParagraph type="tertiary" style={{ margin: "4px 0 0" }}>只清理当前通道的系统邮件正文与附件副本，不会删除源邮件或候选人原始简历。</SemiParagraph>
                   </div>
-                </fieldset>
-                {!canManageRetention && <p className="field-help">仅工作区管理员可以修改保留策略或执行清理。当前策略与清理统计仍可查看。</p>}
-                <p className="mailbox-retention-notice">已删除的系统副本不可恢复。简历库中的候选人原始简历、AI 结论与邮箱服务商中的源邮件不受影响。</p>
-                {canManageRetention && (
-                  <div className="review-actions mailbox-retention-actions">
-                    <BackofficeButton
-                      disabled={retentionSaving || !retention || !retentionPolicyChanged}
-                      icon={retentionSaving ? undefined : <Icon name="check" size={16} />}
-                      loading={retentionSaving}
-                      onClick={() => void saveRetentionPolicy()}
-                      tone="primary"
-                    >
-                      {retentionSaving ? "正在保存" : "保存保留策略"}
-                    </BackofficeButton>
-                    <BackofficeButton
-                      disabled={!retention || previewingRetention || retentionSaving || retentionPolicyChanged || retentionHasActiveRun}
-                      icon={previewingRetention ? undefined : <Icon name="history" size={16} />}
-                      loading={previewingRetention}
-                      onClick={() => void previewRetentionCleanup()}
-                    >
-                      {previewingRetention ? "正在预览" : "预览已到期内容"}
-                    </BackofficeButton>
-                  </div>
-                )}
-                {retentionPreview && (
-                  <section aria-live="polite" className="mailbox-retention-preview">
-                    <div className="mailbox-retention-preview-heading">
-                      <div>
-                        <h3>已到期内容预览</h3>
-                        <p>以下系统副本将不可恢复地删除，不包含邮箱源邮件或候选人原始简历。</p>
-                      </div>
-                      <span className={`status-pill${mailboxRetentionDueCount(retentionPreview) ? " is-warning" : " is-success"}`}>
-                        {mailboxRetentionDueCount(retentionPreview) ? `${mailboxRetentionDueCount(retentionPreview)} 项待清理` : "暂无待清理内容"}
-                      </span>
+                  {retention && <StatusTag className="">{mailboxRetentionPolicyLabel(retention.retention_policy)}</StatusTag>}
+                </div>
+              }
+              itemKey="retention-policy"
+            >
+              {loading ? <TableSkeleton /> : !selectedConfig?.configured ? (
+                <SemiEmpty title="先保存收件通道" description="保存连接配置后，可为这个通道设置正文和附件副本的保留周期。" />
+              ) : (
+                <>
+                  {selectedMailboxArchived && <p className="field-help" style={{ color: "var(--red)" }}>该通道已归档，不会接收新附件；已有内容仍按以下策略清理。</p>}
+                  <SemiRadioGroup
+                    aria-label="内容保留档位"
+                    disabled={!canManageRetention || retentionSaving}
+                    name="mailbox-retention-policy"
+                    onChange={(event) => {
+                      setRetentionPolicy(event.target.value as MailboxRetentionPolicy);
+                      setRetentionPreview(null);
+                    }}
+                    options={mailboxRetentionPolicies.map((option) => ({
+                      label: option.label,
+                      value: option.value,
+                      extra: option.description,
+                    }))}
+                    value={retentionPolicy}
+                  />
+                  {!canManageRetention && <p className="field-help">仅工作区管理员可以修改保留策略或执行清理。当前策略与清理统计仍可查看。</p>}
+                  <p className="field-help">已删除的系统副本不可恢复。简历库中的候选人原始简历、AI 结论与邮箱服务商中的源邮件不受影响。</p>
+                  {canManageRetention && (
+                    <div className="review-actions" style={{ justifyContent: "flex-end" }}>
+                      <BackofficeButton
+                        disabled={retentionSaving || !retention || !retentionPolicyChanged}
+                        icon={retentionSaving ? undefined : <Icon name="check" size={16} />}
+                        loading={retentionSaving}
+                        onClick={() => void saveRetentionPolicy()}
+                        tone="primary"
+                      >
+                        {retentionSaving ? "正在保存" : "保存保留策略"}
+                      </BackofficeButton>
+                      <BackofficeButton
+                        disabled={!retention || previewingRetention || retentionSaving || retentionPolicyChanged || retentionHasActiveRun}
+                        icon={previewingRetention ? undefined : <Icon name="history" size={16} />}
+                        loading={previewingRetention}
+                        onClick={() => void previewRetentionCleanup()}
+                      >
+                        {previewingRetention ? "正在预览" : "预览已到期内容"}
+                      </BackofficeButton>
                     </div>
-                    <div className="mailbox-retention-preview-stats">
-                      <div><strong>正文副本</strong><span>{retentionPreview.expired_body_count} 项</span></div>
-                      <div><strong>成功与失败附件副本</strong><span>{retentionPreview.expired_attachment_copy_count + retentionPreview.expired_failure_artifact_count} 项</span></div>
-                      <div><strong>预计释放</strong><span>{formatFileSize(retentionPreview.expired_bytes)}</span></div>
-                      <div><strong>暂不清理</strong><span>{retentionPreview.skipped_count} 项</span></div>
-                    </div>
-                    {canManageRetention && mailboxRetentionDueCount(retentionPreview) > 0 && (
-                      <div className="review-actions mailbox-retention-confirm-actions">
-                        <BackofficeButton
-                          disabled={cleaningRetention || retentionHasActiveRun}
-                          loading={cleaningRetention}
-                          onClick={() => void startRetentionCleanup()}
-                          tone="danger"
-                        >
-                          {cleaningRetention ? "正在创建清理任务" : "确认清理已到期内容"}
-                        </BackofficeButton>
+                  )}
+                  {retentionPreview && (
+                    <section aria-live="polite" style={{ display: "grid", gap: 14, padding: "12px 14px", background: "var(--surface-muted)", borderRadius: "var(--radius-md)" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                        <div>
+                          <SemiTitle heading={4} style={{ margin: 0 }}>已到期内容预览</SemiTitle>
+                          <SemiParagraph type="tertiary" style={{ margin: "4px 0 0" }}>以下系统副本将不可恢复地删除，不包含邮箱源邮件或候选人原始简历。</SemiParagraph>
+                        </div>
+                        <StatusTag className={mailboxRetentionDueCount(retentionPreview) ? "is-warning" : "is-success"}>
+                          {mailboxRetentionDueCount(retentionPreview) ? `${mailboxRetentionDueCount(retentionPreview)} 项待清理` : "暂无待清理内容"}
+                        </StatusTag>
                       </div>
-                    )}
-                  </section>
-                )}
-              </>
-            )}
-          </details>
+                      <SemiDescriptions
+                        size="small"
+                        data={[
+                          { key: "正文副本", value: `${retentionPreview.expired_body_count} 项` },
+                          { key: "成功与失败附件副本", value: `${retentionPreview.expired_attachment_copy_count + retentionPreview.expired_failure_artifact_count} 项` },
+                          { key: "预计释放", value: formatFileSize(retentionPreview.expired_bytes) },
+                          { key: "暂不清理", value: `${retentionPreview.skipped_count} 项` },
+                        ]}
+                      />
+                      {canManageRetention && mailboxRetentionDueCount(retentionPreview) > 0 && (
+                        <div className="review-actions" style={{ justifyContent: "flex-end" }}>
+                          <BackofficeButton
+                            disabled={cleaningRetention || retentionHasActiveRun}
+                            loading={cleaningRetention}
+                            onClick={() => void startRetentionCleanup()}
+                            tone="danger"
+                          >
+                            {cleaningRetention ? "正在创建清理任务" : "确认清理已到期内容"}
+                          </BackofficeButton>
+                        </div>
+                      )}
+                    </section>
+                  )}
+                </>
+              )}
+            </SemiCollapsePanel>
+          </SemiCollapse>
 
           <section className="panel mailbox-history">
-            <div className="panel-heading mailbox-history-heading">
-              <div><h2>附件入库记录</h2><p>每封新邮件保留一条附件处理记录；相同内容只关联既有入库结果，不展示邮件正文或候选人信息。</p></div>
-              <div className="mailbox-history-filter">
-                <label className="field-label" htmlFor="mailbox-history-filter" id="mailbox-history-filter-label">来源</label>
+            <div className="panel-heading mailbox-history-heading" style={{ alignItems: "flex-end" }}>
+              <div>
+                <SemiTitle heading={3} style={{ margin: 0 }}>附件入库记录</SemiTitle>
+                <SemiParagraph type="tertiary" style={{ margin: "4px 0 0" }}>每封新邮件保留一条附件处理记录；相同内容只关联既有入库结果，不展示邮件正文或候选人信息。</SemiParagraph>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <label className="field-label" htmlFor="mailbox-history-filter" id="mailbox-history-filter-label" style={{ marginBottom: 0 }}>来源</label>
                 <BackofficeSelect
                   ariaLabelledBy="mailbox-history-filter-label"
                   id="mailbox-history-filter"
@@ -1847,7 +1992,7 @@ export function MailboxPage({
             <span aria-live="polite" className="sr-only">{activeRetryImportIds.size ? "附件正在后台重新入库。" : activeSyncMailboxIds.size ? "收件通道正在后台同步。" : ""}</span>
             {historyLoading ? <TableSkeleton /> : history?.items.length ? (
               <div className="table-scroll">
-                <table className="candidate-table mailbox-history-table">
+                <table className="candidate-table">
                   <thead>
                     <tr>
                       <th scope="col">附件</th>
@@ -1875,32 +2020,34 @@ export function MailboxPage({
                       return (
                         <tr key={item.import_id}>
                           <th scope="row"><strong>{item.attachment_filename}</strong></th>
-                          <td className="mailbox-source-cell">
-                            <div className="mailbox-import-source">
+                          <td>
+                            <div>
                               <strong>{item.mailbox_display_name || "已归档收件通道"}</strong>
                               {item.source_tags.length > 0 && (
                                 <div
                                   aria-label={`投递渠道：${item.source_tags.map((tag) => tag.display_name).join("、")}`}
-                                  className="mailbox-import-source-tags"
+                                  style={{ display: "flex", gap: 4, marginTop: 4, flexWrap: "wrap" }}
                                   title={`投递渠道：${item.source_tags.map((tag) => tag.display_name).join("、")}`}
                                 >
                                   {item.source_tags.slice(0, 2).map((tag) => (
-                                    <span className="tag" key={tag.source_tag_id}>{tag.display_name}</span>
+                                    <SemiTag color="grey" size="small" key={tag.source_tag_id}>{tag.display_name}</SemiTag>
                                   ))}
-                                  {item.source_tags.length > 2 && <span>+{item.source_tags.length - 2}</span>}
+                                  {item.source_tags.length > 2 && <span className="field-help">+{item.source_tags.length - 2}</span>}
                                 </div>
                               )}
                             </div>
                           </td>
                           <td>
-                            <span className={`status-pill mailbox-import-status ${statusClass}`}>{mailboxImportStatusLabel(item.status, item.can_retry)}</span>
-                            {item.error && <small className="mailbox-import-error">{mailboxImportErrorLabel(item.error)}</small>}
+                            <StatusTag className={statusClass}>{mailboxImportStatusLabel(item.status, item.can_retry)}</StatusTag>
+                            {item.error && <small style={{ display: "block", marginTop: 3, color: "var(--red)", fontSize: "0.75rem", lineHeight: 1.4 }}>{mailboxImportErrorLabel(item.error)}</small>}
                           </td>
-                          <td className="mailbox-attempt-cell">{item.attempt_count} 次</td>
+                          <td>{item.attempt_count} 次</td>
                           <td>{formatLibraryDate(item.last_attempted_at ?? item.created_at)}</td>
-                          <td className="mailbox-action-cell">
+                          <td>
                             {isRetrying ? (
-                              <span className="mailbox-retry-pending"><i className="spinner" />正在重试</span>
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "var(--ink-muted)", fontSize: "0.8125rem" }}>
+                                <i className="spinner" />正在重试
+                              </span>
                             ) : item.can_retry ? (
                               <BackofficeButton
                                 ariaLabel={`重新入库：${item.attachment_filename}`}
@@ -1919,63 +2066,66 @@ export function MailboxPage({
                   </tbody>
                 </table>
               </div>
-            ) : <div className="mailbox-history-empty"><span className="empty-glyph"><Icon name="inbox" size={21} /></span><div><h3>还没有附件入库记录</h3><p>首次范围内和后续收到的简历附件，都会显示在这里。</p></div></div>}
+            ) : (
+              <SemiEmpty title="还没有附件入库记录" description="首次范围内和后续收到的简历附件，都会显示在这里。" />
+            )}
           </section>
 
-          <details className="panel mailbox-retention-history">
-            <summary className="panel-heading mailbox-disclosure-heading">
-              <div>
-                <h2>清理记录</h2>
-                <p>仅保留安全统计与任务状态，不展示邮件正文、邮箱地址或附件内容。</p>
-              </div>
-              {retentionHasActiveRun && <span className="status-pill is-progress"><i className="spinner" />正在更新</span>}
-            </summary>
-            <span aria-live="polite" className="sr-only">{retentionHasActiveRun ? "正在更新当前收件通道的内容清理任务状态。" : ""}</span>
-            {loading ? <TableSkeleton /> : !selectedConfig?.configured ? (
-              <div className="mailbox-retention-empty">
-                <strong>尚未配置清理</strong>
-                <span>保存收件通道后，系统会按该通道的保留策略自动清理过期副本。</span>
-              </div>
-            ) : retentionRuns?.items.length ? (
-              <div className="table-scroll">
-                <table className="candidate-table mailbox-retention-history-table">
-                  <thead>
-                    <tr>
-                      <th scope="col">触发方式</th>
-                      <th scope="col">保留策略</th>
-                      <th scope="col">状态</th>
-                      <th scope="col">扫描 / 清理</th>
-                      <th scope="col">释放空间</th>
-                      <th scope="col">处理时间</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {retentionRuns.items.map((run) => (
-                      <tr key={run.run_id}>
-                        <th scope="row">{run.trigger_type === "manual" ? "手动" : "定时"}</th>
-                        <td>{mailboxRetentionPolicyLabel(run.retention_policy)}</td>
-                        <td>
-                          <span className={`status-pill ${mailboxRetentionRunStatusClass(run.status)}`}>{mailboxRetentionRunStatusLabel(run.status)}</span>
-                          {run.error_code && <small className="mailbox-import-error">{mailboxRetentionRunErrorLabel(run.error_code)}</small>}
-                        </td>
-                        <td className="mailbox-retention-count-cell">{run.scanned_count} / {run.deleted_count}{run.skipped_count ? `，跳过 ${run.skipped_count}` : ""}{run.failed_count ? `，失败 ${run.failed_count}` : ""}</td>
-                        <td className="mailbox-retention-count-cell">{formatFileSize(run.reclaimed_bytes)}</td>
-                        <td>{formatLibraryDate(run.finished_at ?? run.started_at ?? "")}</td>
+          <SemiCollapse defaultActiveKey={[]} key={`retention-history-${selectedMailboxId ?? "new"}`}>
+            <SemiCollapsePanel
+              header={
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, width: "100%" }}>
+                  <div>
+                    <SemiTitle heading={4} style={{ margin: 0 }}>清理记录</SemiTitle>
+                    <SemiParagraph type="tertiary" style={{ margin: "4px 0 0" }}>仅保留安全统计与任务状态，不展示邮件正文、邮箱地址或附件内容。</SemiParagraph>
+                  </div>
+                  {retentionHasActiveRun && <StatusTag className="is-progress">正在更新</StatusTag>}
+                </div>
+              }
+              itemKey="retention-history"
+            >
+              <span aria-live="polite" className="sr-only">{retentionHasActiveRun ? "正在更新当前收件通道的内容清理任务状态。" : ""}</span>
+              {loading ? <TableSkeleton /> : !selectedConfig?.configured ? (
+                <SemiEmpty title="尚未配置清理" description="保存收件通道后，系统会按该通道的保留策略自动清理过期副本。" />
+              ) : retentionRuns?.items.length ? (
+                <div className="table-scroll">
+                  <table className="candidate-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">触发方式</th>
+                        <th scope="col">保留策略</th>
+                        <th scope="col">状态</th>
+                        <th scope="col">扫描 / 清理</th>
+                        <th scope="col">释放空间</th>
+                        <th scope="col">处理时间</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="mailbox-retention-empty">
-                <strong>还没有清理记录</strong>
-                <span>系统会每日检查当前通道的到期副本；管理员也可先预览后手动执行。</span>
-              </div>
-            )}
-          </details>
+                    </thead>
+                    <tbody>
+                      {retentionRuns.items.map((run) => (
+                        <tr key={run.run_id}>
+                          <th scope="row">{run.trigger_type === "manual" ? "手动" : "定时"}</th>
+                          <td>{mailboxRetentionPolicyLabel(run.retention_policy)}</td>
+                          <td>
+                            <StatusTag className={mailboxRetentionRunStatusClass(run.status)}>{mailboxRetentionRunStatusLabel(run.status)}</StatusTag>
+                            {run.error_code && <small style={{ display: "block", marginTop: 3, color: "var(--red)", fontSize: "0.75rem", lineHeight: 1.4 }}>{mailboxRetentionRunErrorLabel(run.error_code)}</small>}
+                          </td>
+                          <td>{run.scanned_count} / {run.deleted_count}{run.skipped_count ? `，跳过 ${run.skipped_count}` : ""}{run.failed_count ? `，失败 ${run.failed_count}` : ""}</td>
+                          <td>{formatFileSize(run.reclaimed_bytes)}</td>
+                          <td>{formatLibraryDate(run.finished_at ?? run.started_at ?? "")}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <SemiEmpty title="还没有清理记录" description="系统会每日检查当前通道的到期副本；管理员也可先预览后手动执行。" />
+              )}
+            </SemiCollapsePanel>
+          </SemiCollapse>
         </div>
       </div>
       )}
-    </div>
+      </div>
+    </Suspense>
   );
 }

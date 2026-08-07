@@ -310,6 +310,9 @@ jobs:
           : "${PROD_RELAY_HOST:?Missing staging-env variable PROD_RELAY_HOST}"
           : "${PROD_RELAY_SSH_PRIVATE_KEY:?Missing staging-env secret PROD_RELAY_SSH_PRIVATE_KEY}"
           : "${PROD_RELAY_SSH_KNOWN_HOSTS:?Missing staging-env secret PROD_RELAY_SSH_KNOWN_HOSTS}"
+          # A variable pasted with a trailing newline must not break host
+          # matching (ssh-keygen -F) or the ssh target below.
+          PROD_RELAY_HOST="${PROD_RELAY_HOST%"${PROD_RELAY_HOST##*[![:space:]]}"}"
           umask 077
           printf '%s\n' "$PROD_RELAY_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/greatsell-prod-relay"
           chmod 600 "$RUNNER_TEMP/greatsell-prod-relay"
@@ -331,6 +334,7 @@ jobs:
           RELEASE_SHA: ${{ env.RELEASE_SHA }}
         run: |
           set -Eeuo pipefail
+          PROD_RELAY_HOST="${PROD_RELAY_HOST%"${PROD_RELAY_HOST##*[![:space:]]}"}"
           scripts/stream-images-to-production.sh "$RELEASE_SHA" \
             --host "$PROD_RELAY_HOST" \
             --ssh-key "$RUNNER_TEMP/greatsell-prod-relay" \

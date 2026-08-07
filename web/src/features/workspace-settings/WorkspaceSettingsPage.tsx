@@ -6,6 +6,7 @@ import { CandidateDataLifecyclePage } from "../candidate-data/CandidateDataLifec
 import { MailboxPage } from "../mailbox/MailboxPage";
 import { AiImportSettingsPanel } from "./AiImportSettingsPanel";
 import { DisplayFieldsSettingsPanel } from "./DisplayFieldsSettingsPanel";
+import { FilterSectionsSettingsPanel } from "./FilterSectionsSettingsPanel";
 import type { WorkspaceSettingsSection } from "../workspace-shell/workspace-navigation-types";
 
 const SemiTag = lazy(() => import("@douyinfe/semi-ui-19/lib/es/tag"));
@@ -42,6 +43,7 @@ function settingsNavItems(
     items.push({ key: "ai-import", label: "AI 导入处理", icon: "spark" });
   }
   items.push({ key: "display-fields", label: "筛选显示字段", icon: "layers" });
+  items.push({ key: "filter-sections", label: "初筛条件板块", icon: "filter" });
   return items;
 }
 
@@ -134,6 +136,9 @@ export function WorkspaceSettingsPage({
               )}
               {currentSection === "display-fields" && (
                 <DisplayFieldsSettingsPanel formatError={formatError} notify={notify} />
+              )}
+              {currentSection === "filter-sections" && (
+                <FilterSectionsSettingsPanel formatError={formatError} notify={notify} />
               )}
             </SemiLayout.Content>
           </SemiLayout>

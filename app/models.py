@@ -1462,6 +1462,9 @@ class UserFilterDisplayPreference(OrganizationScoped, Base):
         ForeignKey("user_accounts.id"),
     )
     display_field_keys: Mapped[list[str]] = mapped_column(JSON)
+    # "初筛条件板块" — which initial-filter panel sections the user keeps
+    # visible. Same per-(user, organization) scope as the columns above.
+    filter_section_keys: Mapped[list[str]] = mapped_column(JSON, default=list)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utcnow,

@@ -20,4 +20,5 @@ export type WorkspaceSettingsSection =
   | "mailbox"
   | "data"
   | "ai-import"
-  | "display-fields";
+  | "display-fields"
+  | "filter-sections";

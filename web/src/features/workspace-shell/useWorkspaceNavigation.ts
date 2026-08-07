@@ -30,6 +30,7 @@ function settingsSectionFromHash(
   if (value === "settings/data" || value === "data") return "data";
   if (value === "settings/ai-import" || value === "ai-import") return "ai-import";
   if (value === "settings/display-fields" || value === "display-fields") return "display-fields";
+  if (value === "settings/filter-sections" || value === "filter-sections") return "filter-sections";
   return null;
 }
 
@@ -190,7 +191,8 @@ export function useWorkspaceNavigation({
       (settingsSection === "mailbox" && canManageMailbox) ||
       (settingsSection === "data" && canManageCandidateData) ||
       (settingsSection === "ai-import" && canManageAiImport) ||
-      settingsSection === "display-fields";
+      settingsSection === "display-fields" ||
+      settingsSection === "filter-sections";
     if (sectionAllowed) return;
 
     const fallbackSection = canManageMailbox

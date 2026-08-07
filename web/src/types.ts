@@ -2057,3 +2057,22 @@ export interface AiImportSettings {
 export interface DisplayFieldPreferences {
   display_field_keys: string[];
 }
+
+/**
+ * The "初筛条件板块" of the left filter panel. Mirrors the sections rendered
+ * by FilterPanel; a key in this set means that section stays visible.
+ */
+export type FilterSectionKey =
+  | "condition_mode"
+  | "institution"
+  | "basic_profile"
+  | "academic"
+  | "graduation"
+  | "experience"
+  | "source_channel"
+  | "keywords";
+
+/** Which filter-panel sections this account keeps visible (stored per user+organization). */
+export interface FilterSectionPreferences {
+  filter_section_keys: FilterSectionKey[];
+}

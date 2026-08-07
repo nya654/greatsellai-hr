@@ -75,6 +75,8 @@ from app.schemas import (
     AiImportSettingsUpdate,
     DisplayFieldPreferencesResponse,
     DisplayFieldPreferencesUpdate,
+    FilterSectionPreferencesResponse,
+    FilterSectionPreferencesUpdate,
     EmailVerificationComplete,
     EmailVerificationResendResult,
     OrganizationInvitationAccept,
@@ -385,6 +387,7 @@ from app.services.recruiting_agent_service import (
     clear_recruiting_agent_context,
     delete_recruiting_agent_conversation,
     get_recruiting_agent_conversation,
+    list_recruiting_agent_candidate_directory,
     list_recruiting_agent_candidate_references,
     run_recruiting_agent_turn,
     start_recruiting_agent_scoped_profile_search,
@@ -564,7 +567,9 @@ from app.services.workspace_ai_import_settings_service import (
 )
 from app.services.user_filter_display_preferences_service import (
     display_field_preferences_response,
+    filter_section_preferences_response,
     update_display_field_preferences,
+    update_filter_section_preferences,
 )
 
 
@@ -4426,6 +4431,28 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                 detail="agent_conversation_not_found",
             ) from exc
 
+    @app.get(
+        "/v1/recruiting-agent/candidate-directory",
+        response_model=RecruitingAgentCandidateReferencePage,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def list_recruiting_agent_candidate_directory_route(
+        query: str | None = Query(default=None, max_length=120),
+        cursor: str | None = Query(default=None, max_length=256),
+        limit: int = Query(default=50, ge=1, le=100),
+        principal: AuthPrincipal = Depends(require_single_admin),
+        session: Session = Depends(get_session),
+    ) -> RecruitingAgentCandidateReferencePage:
+        """List every visible candidate in the workspace for the @ menu."""
+
+        return list_recruiting_agent_candidate_directory(
+            session,
+            organization_id=principal.organization_id,
+            query=query,
+            cursor=cursor,
+            limit=limit,
+        )
+
     @app.post(
         "/v1/recruiting-agent/conversations/context",
         response_model=RecruitingAgentConversationResponse,
@@ -5882,6 +5909,47 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                 user_id=principal.user.id,
                 organization_id=principal.organization_id,
                 field_keys=payload.display_field_keys,
+            )
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        _commit_or_raise(session)
+        return response
+
+    @app.get(
+        "/v1/settings/filter-sections",
+        response_model=FilterSectionPreferencesResponse,
+    )
+    def get_filter_section_preferences(
+        principal: AuthPrincipal = Depends(require_authenticated_member),
+        session: Session = Depends(get_session),
+    ) -> FilterSectionPreferencesResponse:
+        response = filter_section_preferences_response(
+            session,
+            user_id=principal.user.id,
+            organization_id=principal.organization_id,
+        )
+        _commit_or_raise(session)
+        return response
+
+    @app.put(
+        "/v1/settings/filter-sections",
+        response_model=FilterSectionPreferencesResponse,
+    )
+    def put_filter_section_preferences(
+        payload: FilterSectionPreferencesUpdate,
+        principal: AuthPrincipal = Depends(require_authenticated_member),
+        session: Session = Depends(get_session),
+    ) -> FilterSectionPreferencesResponse:
+        try:
+            response = update_filter_section_preferences(
+                session,
+                user_id=principal.user.id,
+                organization_id=principal.organization_id,
+                section_keys=payload.filter_section_keys,
             )
         except ValueError as exc:
             session.rollback()

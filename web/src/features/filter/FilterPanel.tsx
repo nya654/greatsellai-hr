@@ -1,5 +1,7 @@
-import { type KeyboardEvent, useState } from "react";
+import { type KeyboardEvent, useEffect, useState } from "react";
 import { Icon } from "../../icons";
+import { api } from "../../api";
+import { ALL_FILTER_SECTION_KEYS } from "./filter-section-options";
 import {
   clampPercentage,
   clampMonths,
@@ -15,7 +17,7 @@ import {
   sortInstitutionClassifications,
   type FilterDraft,
 } from "./filter-model";
-import type { FilterOptions } from "../../types";
+import type { FilterOptions, FilterSectionKey } from "../../types";
 
 /**
  * The left rail deliberately stays conservative. It only performs direct,
@@ -35,6 +37,41 @@ export function FilterPanel({
 }) {
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [keywordInput, setKeywordInput] = useState("");
+  // null while loading (or on a failed load) keeps the product default where
+  // every section is visible; an empty saved array hides them all.
+  const [visibleSectionKeys, setVisibleSectionKeys] = useState<
+    FilterSectionKey[] | null
+  >(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getFilterSectionPreferences()
+      .then((preferences) => {
+        if (!cancelled) {
+          setVisibleSectionKeys(
+            preferences.filter_section_keys.filter(
+              (key): key is FilterSectionKey =>
+                (ALL_FILTER_SECTION_KEYS as readonly string[]).includes(key),
+            ),
+          );
+        }
+      })
+      .catch(() => {
+        // Non-fatal: keep the default (all sections visible).
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const visibleSections = new Set<FilterSectionKey>(
+    visibleSectionKeys === null ? ALL_FILTER_SECTION_KEYS : visibleSectionKeys,
+  );
+  const isSectionVisible = (key: FilterSectionKey) => visibleSections.has(key);
+  const hasAnyVisibleSection = ALL_FILTER_SECTION_KEYS.some((key) =>
+    visibleSections.has(key),
+  );
   const institutionClassifications = resolvedInstitutionClassificationOptions(
     filterOptions,
   );
@@ -116,6 +153,12 @@ export function FilterPanel({
     });
   };
 
+  if (!hasAnyVisibleSection) {
+    // Every section is hidden by preference: drop the whole left rail so the
+    // results pane takes the full workspace width.
+    return null;
+  }
+
   return (
     <aside
       aria-label="初筛条件"
@@ -148,6 +191,7 @@ export function FilterPanel({
       </div>
 
       <div className="filter-scroll filter-scroll-basic" id="filter-controls">
+        {isSectionVisible("condition_mode") && (
         <section className="filter-section filter-condition-mode">
           <div className="filter-section-heading">
             <h3>全局匹配方式</h3>
@@ -187,7 +231,9 @@ export function FilterPanel({
             不改变同一条件内的规则。模糊匹配会列出每位候选人未满足和待核实的条件。
           </p>
         </section>
+        )}
 
+        {isSectionVisible("institution") && (
         <section className="filter-section">
           <div className="filter-section-heading">
             <h3>院校等级</h3>
@@ -238,7 +284,9 @@ export function FilterPanel({
             </div>
           </div>
         </section>
+        )}
 
+        {isSectionVisible("basic_profile") && (
         <section className="filter-section">
           <div className="filter-section-heading">
             <h3>基本资料</h3>
@@ -323,7 +371,9 @@ export function FilterPanel({
             年龄按简历写明的出生日期计算；仅设置一端时另一端不限。两端均为 0 时不筛选年龄。
           </p>
         </section>
+        )}
 
+        {isSectionVisible("academic") && (
         <section className="filter-section">
           <div className="filter-section-heading">
             <h3>学业表现</h3>
@@ -389,7 +439,9 @@ export function FilterPanel({
             </p>
           </div>
         </section>
+        )}
 
+        {isSectionVisible("graduation") && (
         <section className="filter-section">
           <div className="filter-section-heading">
             <h3>毕业状态</h3>
@@ -440,7 +492,9 @@ export function FilterPanel({
             </div>
           )}
         </section>
+        )}
 
+        {isSectionVisible("experience") && (
         <section className="filter-section">
           <div className="filter-section-heading">
             <h3>工作年限</h3>
@@ -476,8 +530,9 @@ export function FilterPanel({
             </div>
           </div>
         </section>
+        )}
 
-        {sourceTagOptions.length > 0 && (
+        {isSectionVisible("source_channel") && sourceTagOptions.length > 0 && (
           <section className="filter-section">
             <div className="filter-section-heading">
               <h3>投递渠道</h3>
@@ -506,6 +561,7 @@ export function FilterPanel({
           </section>
         )}
 
+        {isSectionVisible("keywords") && (
         <section className="filter-section">
           <div className="filter-section-heading">
             <h3>匹配关键词</h3>
@@ -571,6 +627,7 @@ export function FilterPanel({
             </div>
           )}
         </section>
+        )}
       </div>
     </aside>
   );

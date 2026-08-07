@@ -227,10 +227,14 @@ def enqueue_resume_score_batch(
     """Queue currently scoreable resumes for one fixed score template.
 
     When ``resume_id`` is given, the batch contains exactly that one resume
-    item instead of every scoreable resume in the workspace.  A scoped resume
-    that is not scoreable (missing, inactive, or in another workspace) simply
-    produces today's zero-item completed batch rather than raising, so callers
-    may safely use this inside a broader extraction transaction.
+    item instead of every scoreable resume in the workspace.  If an active
+    batch already exists for the template, a scoreable scoped resume is
+    appended to it as an item (idempotent per resume); a scoped resume that
+    is not scoreable (missing, inactive, or in another workspace) contributes
+    no item.  With no active batch, a non-scoreable scoped resume simply
+    produces today's zero-item completed batch.  Either way a scoped resume
+    never raises here, so callers may safely use it inside a broader
+    extraction transaction.
     """
 
     template, _ = _require_scoreable_template(session, template_id=template_id)
@@ -320,8 +324,19 @@ def enqueue_resume_score_batch(
                     )
                 session.flush()
         except IntegrityError:
-            # A concurrent scoped enqueue already appended this resume.
-            return _batch_response(existing)
+            # A concurrent scoped enqueue may have already appended this
+            # resume (the per-(batch, resume) unique item constraint).  Only
+            # treat that as an idempotent success; any other integrity
+            # failure must surface rather than silently skipping the resume.
+            already_appended = session.scalar(
+                select(ResumeScoreBatchItem.id).where(
+                    ResumeScoreBatchItem.batch_id == existing.id,
+                    ResumeScoreBatchItem.resume_id == resume_id,
+                )
+            )
+            if already_appended is not None:
+                return _batch_response(existing)
+            raise
         # Recompute the aggregate from actual items.  The new pending item
         # keeps/returns the batch to a claimable status even if a worker
         # completed it between the active-batch lookup and this append.
@@ -979,6 +994,9 @@ def _refresh_batch_progress(
     pending = counts.get(ITEM_QUEUED, 0) + counts.get(ITEM_RUNNING, 0)
     if pending:
         batch.status = BATCH_RUNNING
+        # A batch flipped back to running (e.g. a scoped append racing a
+        # worker's terminal transition) must not report a stale completion.
+        batch.completed_at = None
         return
     batch.status = BATCH_PARTIAL if batch.failed_count else BATCH_COMPLETED
     batch.completed_at = now

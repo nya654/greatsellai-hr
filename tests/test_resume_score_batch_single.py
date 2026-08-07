@@ -334,3 +334,62 @@ def test_enqueue_score_batch_scoped_resumes_append_to_active_batch(
                 assert len(items) == 2
     finally:
         database.dispose()
+
+
+def test_enqueue_score_batch_scoped_unknown_resume_while_active_batch_returns_existing(
+    tmp_path: Path,
+) -> None:
+    """A non-scoreable scoped resume must not disturb an active batch."""
+
+    settings = _settings(tmp_path)
+    database = Database("sqlite://")
+    database.create_all()
+    try:
+        with database.session_factory() as session:
+            organization = Organization(name="Append-empty org")
+            session.add(organization)
+            session.flush()
+            organization_id = organization.id
+
+            scoreable_resume_id, _ = _seed_ready_resume(
+                session,
+                organization_id=organization_id,
+                label="append-active-scoreable",
+            )
+
+            with _workspace(session, organization_id):
+                template = _scoreable_template(
+                    session,
+                    name="Append-empty template",
+                )
+
+                first = resume_score_batch_service.enqueue_resume_score_batch(
+                    session,
+                    template_id=template.id,
+                    settings=settings,
+                    resume_id=scoreable_resume_id,
+                )
+                assert first.total_count == 1
+                assert first.status == "queued"
+
+                second = resume_score_batch_service.enqueue_resume_score_batch(
+                    session,
+                    template_id=template.id,
+                    settings=settings,
+                    resume_id="00000000-0000-4000-8000-000000000000",
+                )
+
+                # Returns the existing active batch unchanged: no raise, no
+                # item for the unknown resume, aggregate untouched.
+                assert second.batch_id == first.batch_id
+                assert second.total_count == 1
+                assert second.status == "queued"
+                items = session.scalars(
+                    select(ResumeScoreBatchItem).where(
+                        ResumeScoreBatchItem.batch_id == first.batch_id
+                    )
+                ).all()
+                assert len(items) == 1
+                assert items[0].resume_id == scoreable_resume_id
+    finally:
+        database.dispose()

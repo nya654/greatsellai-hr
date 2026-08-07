@@ -69,15 +69,17 @@ jobs:
           # so this key can only check reachability, docker load, and inspect a
           # greatsellai-hr content ID — never open a shell or publish anything.
           authorized_line="command=\"/home/ubuntu/.relay-allow.sh\",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty $RELAY_PUBLIC_KEY"
-          scp -i "$RUNNER_TEMP/greatsell-production-relay-bootstrap" \
-            -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            scripts/relay-allow.sh "$PROD_DEPLOY_HOST:/home/ubuntu/.relay-allow.sh"
-          ssh -i "$RUNNER_TEMP/greatsell-production-relay-bootstrap" \
-            -o BatchMode=yes -o StrictHostKeyChecking=yes "$PROD_DEPLOY_HOST" \
-            "bash -s" -- "$authorized_line" <<'REMOTE'
-          set -Eeuo pipefail
-          authorized_line="$1"
 
+          # Deliver the wrapper plus a standalone remote install script by file,
+          # not by a heredoc fed straight into ssh, so the runner's script
+          # handling cannot silently drop the remote program. The guard below
+          # fails loudly if the local heredoc did not materialize.
+          remote_script="$RUNNER_TEMP/relay-install.sh"
+          cat > "$remote_script" <<'INSTALL'
+          set -Eeuo pipefail
+          echo "relay-install: started"
+          authorized_line="$(cat /tmp/relay-authorized-line)"
+          
           # Discover where sshd actually reads authorized_keys for ubuntu, and
           # append to every consulted file with correct ownership/modes. Cloud
           # images often point AuthorizedKeysFile at /etc/ssh/authorized_keys/%u
@@ -85,7 +87,7 @@ jobs:
           echo "=== sudo capability on production host ==="
           can_sudo=no
           if sudo -n true 2>/dev/null; then can_sudo=yes; echo "passwordless sudo: available"; else echo "passwordless sudo: NOT available (docker-only or none)"; fi
-
+          
           echo "=== effective sshd AuthorizedKeysFile on production host ==="
           authfiles=""
           if sudo -n sshd -T 2>/dev/null | sed -n 's/^authorizedkeysfile //p' | grep -q .; then
@@ -95,7 +97,7 @@ jobs:
             echo "sshd -T unavailable; using conventional candidates"
             authfiles=".ssh/authorized_keys /etc/ssh/authorized_keys/%u"
           fi
-
+          
           files=()
           for entry in $authfiles; do
             case "$entry" in
@@ -111,10 +113,10 @@ jobs:
           done
           files=("${dedup[@]}")
           [[ "${#files[@]}" -gt 0 ]] || files=("$HOME/.ssh/authorized_keys")
-
+          
           chmod 755 /home/ubuntu/.relay-allow.sh 2>/dev/null || true
           chown ubuntu:ubuntu /home/ubuntu/.relay-allow.sh 2>/dev/null || true
-
+          
           # Relay dir that the whitelist wrapper restricts all stream/load/rm to.
           echo "=== relay dir ==="
           if [[ "$can_sudo" == "yes" ]]; then
@@ -122,7 +124,7 @@ jobs:
           else
             mkdir -p /var/lib/greatsellai-relay 2>/dev/null && echo "OK: /var/lib/greatsellai-relay ready (no sudo)" || echo "WARN: cannot create /var/lib/greatsellai-relay"
           fi
-
+          
           for f in "${files[@]}"; do
             echo "--- target: $f ---"
             if [[ "$can_sudo" == "yes" ]]; then
@@ -159,4 +161,14 @@ jobs:
               esac
             fi
           done
-          REMOTE
+          rm -f /tmp/relay-install.sh /tmp/relay-authorized-line
+          echo "relay-install: finished"
+          INSTALL
+          test -s "$remote_script" || { echo "Failed to build remote install script." >&2; exit 1; }
+          printf '%s\n' "$authorized_line" > "$RUNNER_TEMP/relay-authorized-line"
+
+          ssh_base=(-i "$RUNNER_TEMP/greatsell-production-relay-bootstrap" -o BatchMode=yes -o StrictHostKeyChecking=yes)
+          scp "${ssh_base[@]}" scripts/relay-allow.sh "$PROD_DEPLOY_HOST:/home/ubuntu/.relay-allow.sh"
+          scp "${ssh_base[@]}" "$remote_script" "$PROD_DEPLOY_HOST:/tmp/relay-install.sh"
+          scp "${ssh_base[@]}" "$RUNNER_TEMP/relay-authorized-line" "$PROD_DEPLOY_HOST:/tmp/relay-authorized-line"
+          ssh "${ssh_base[@]}" "$PROD_DEPLOY_HOST" "bash /tmp/relay-install.sh"

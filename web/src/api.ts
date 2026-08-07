@@ -538,6 +538,18 @@ export function createApiClient(options: ApiClientOptions = {}) {
       );
     },
 
+    listRecruitingAgentCandidateDirectory(
+      params: { query?: string; cursor?: string | null; limit?: number } = {},
+    ): Promise<RecruitingAgentCandidateReferencePage> {
+      const query = new URLSearchParams();
+      if (params.query?.trim()) query.set("query", params.query.trim());
+      if (params.cursor) query.set("cursor", params.cursor);
+      query.set("limit", String(params.limit ?? 50));
+      return request<RecruitingAgentCandidateReferencePage>(
+        `/recruiting-agent/candidate-directory?${query.toString()}`,
+      );
+    },
+
     bindRecruitingAgentContext(
       input: RecruitingAgentContextBindInput,
     ): Promise<RecruitingAgentConversation> {

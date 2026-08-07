@@ -126,6 +126,15 @@ def _list_references(
     return response.json()
 
 
+def _list_directory(client: TestClient, **params: Any) -> dict[str, Any]:
+    response = client.get(
+        "/v1/recruiting-agent/candidate-directory",
+        params=params,
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 def test_candidate_references_returns_working_scope_in_set_order(
     ai_client: TestClient,
 ) -> None:
@@ -330,3 +339,144 @@ def test_candidate_references_respects_owner_and_workspace_isolation(
     )
     assert foreign_scope.status_code == 404, foreign_scope.text
     assert foreign_scope.json()["detail"] == "agent_conversation_not_found"
+
+
+def test_candidate_directory_lists_every_visible_candidate_alphabetically(
+    ai_client: TestClient,
+) -> None:
+    """The directory covers the whole workspace, not just a saved scope."""
+
+    _seed_reference_scope(
+        ai_client,
+        display_names=["陈晨", "Alice", "王芳", "李明", "张伟"],
+    )
+    payload = _list_directory(ai_client)
+    assert payload["next_cursor"] is None
+    assert [item["display_name"] for item in payload["items"]] == [
+        "Alice",
+        "张伟",
+        "李明",
+        "王芳",
+        "陈晨",
+    ]
+    assert len(payload["items"]) == 5
+
+
+def test_candidate_directory_pages_continuously_by_cursor(
+    ai_client: TestClient,
+) -> None:
+    """Scroll pagination follows name order and ends with a null cursor."""
+
+    _seed_reference_scope(
+        ai_client,
+        display_names=["钱七", "赵六", "王五", "李四", "张三"],
+    )
+    collected: list[dict[str, str]] = []
+    cursor: str | None = None
+    pages = 0
+    while pages < 10:
+        payload = _list_directory(ai_client, limit=2, cursor=cursor)
+        collected.extend(payload["items"])
+        pages += 1
+        if payload["next_cursor"] is None:
+            break
+        cursor = payload["next_cursor"]
+    assert pages == 3
+    assert payload["next_cursor"] is None
+    assert [item["display_name"] for item in collected] == [
+        "张三",
+        "李四",
+        "王五",
+        "赵六",
+        "钱七",
+    ]
+    assert len({item["candidate_id"] for item in collected}) == 5
+
+
+def test_candidate_directory_name_search_filters_within_workspace(
+    ai_client: TestClient,
+) -> None:
+    """Typing a name narrows the directory to matching candidates only."""
+
+    _seed_reference_scope(
+        ai_client,
+        display_names=["张伟", "李张", "王伟", "Alice Chen"],
+    )
+    zh = _list_directory(ai_client, query="张")
+    assert [item["display_name"] for item in zh["items"]] == ["张伟", "李张"]
+
+    latin = _list_directory(ai_client, query="alice")
+    assert [item["display_name"] for item in latin["items"]] == ["Alice Chen"]
+
+    none = _list_directory(ai_client, query="不存在的名字")
+    assert none["items"] == []
+    assert none["next_cursor"] is None
+
+
+def test_candidate_directory_omits_deleted_archived_and_not_ready(
+    ai_client: TestClient,
+) -> None:
+    """Reads re-check resume visibility so hidden members never surface."""
+
+    _seed_reference_scope(
+        ai_client,
+        display_names=["可用甲", "已归档乙", "未就绪丙"],
+        mark_hidden=[1, 2],
+    )
+    payload = _list_directory(ai_client)
+    assert [item["display_name"] for item in payload["items"]] == ["可用甲"]
+
+
+def test_candidate_directory_ignores_an_invalid_cursor_safely(
+    ai_client: TestClient,
+) -> None:
+    """A malformed cursor falls back to the first page instead of erroring."""
+
+    _seed_reference_scope(
+        ai_client,
+        display_names=["第一位", "第二位"],
+    )
+    payload = _list_directory(ai_client, cursor="not-a-cursor")
+    assert [item["display_name"] for item in payload["items"]] == ["第一位", "第二位"]
+
+
+def test_candidate_directory_empty_workspace_returns_an_empty_page(
+    ai_client: TestClient,
+) -> None:
+    """A workspace with no visible resumes lists nobody."""
+
+    payload = _list_directory(ai_client)
+    assert payload == {"items": [], "next_cursor": None}
+
+
+def test_candidate_directory_respects_workspace_isolation(
+    workspace_clients: tuple[TestClient, TestClient],
+) -> None:
+    """Each workspace sees only its own candidates."""
+
+    client_a, client_b = workspace_clients
+    _register_and_login(
+        client_a,
+        organization_name="Candidate directory workspace A",
+        full_name="Candidate directory A",
+        email="candidate-directory-a@example.test",
+        password="tenant-test-password",
+    )
+    _register_and_login(
+        client_b,
+        organization_name="Candidate directory workspace B",
+        full_name="Candidate directory B",
+        email="candidate-directory-b@example.test",
+        password="tenant-test-password",
+    )
+    _seed_reference_scope(
+        client_a,
+        display_names=["仅工作区 A 可见"],
+    )
+
+    directory_a = _list_directory(client_a)
+    assert [item["display_name"] for item in directory_a["items"]] == ["仅工作区 A 可见"]
+
+    directory_b = _list_directory(client_b)
+    assert directory_b["items"] == []
+    assert directory_b["next_cursor"] is None

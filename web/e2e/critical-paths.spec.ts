@@ -2671,6 +2671,11 @@ test.describe("招聘工作台关键路径", () => {
       cursor: string | null;
       limit: string | null;
     }> = [];
+    const directoryRequests: Array<{
+      query: string | null;
+      cursor: string | null;
+      limit: string | null;
+    }> = [];
     const referenceItems = (start: number, end: number) =>
       Array.from({ length: end - start + 1 }, (_, offset) => {
         const suffix = String(start + offset).padStart(2, "0");
@@ -2742,6 +2747,35 @@ test.describe("招聘工作台关键路径", () => {
         await route.fulfill({ json: { items, next_cursor: nextCursor } });
       },
     );
+    // The directory always lists everyone; overlapping working-set members
+    // prove the menu never shows the same person in both sections.
+    await page.route("**/v1/recruiting-agent/candidate-directory**", async (route) => {
+      const url = new URL(route.request().url());
+      const query = url.searchParams.get("query");
+      const cursor = url.searchParams.get("cursor");
+      directoryRequests.push({
+        query,
+        cursor,
+        limit: url.searchParams.get("limit"),
+      });
+      let items: Array<{
+        candidate_id: string;
+        resume_id: string;
+        display_name: string;
+      }>;
+      let nextCursor: string | null;
+      if (query != null && query !== "") {
+        items = query.includes("02") ? referenceItems(2, 2) : [];
+        nextCursor = null;
+      } else if (cursor === "dir-page-2") {
+        items = referenceItems(21, 25);
+        nextCursor = null;
+      } else {
+        items = [...referenceItems(1, 1), ...referenceItems(16, 20)];
+        nextCursor = "dir-page-2";
+      }
+      await route.fulfill({ json: { items, next_cursor: nextCursor } });
+    });
     await page.route("**/v1/recruiting-agent/conversations/candidate-scope", async (route) => {
       candidateScopeRequests.push(route.request().postDataJSON() as Record<string, unknown>);
       await route.fulfill({
@@ -2772,23 +2806,35 @@ test.describe("招聘工作台关键路径", () => {
 
     const referenceMenu = dialog.getByRole("listbox", { name: "选择要引用的资料" });
     await dialog.getByRole("button", { name: "添加引用" }).click();
-    await expect(referenceMenu.getByText("候选人（工作集）")).toBeVisible();
+    await expect(referenceMenu.getByText("候选人（工作集）", { exact: true })).toBeVisible();
+    await expect(referenceMenu.getByText("全部候选人", { exact: true })).toBeVisible();
     await expect(referenceMenu.getByRole("option", { name: /候选人 01/ })).toBeVisible();
     await expect(referenceMenu.getByRole("option", { name: /候选人 12/ })).toBeVisible();
     await expect(referenceMenu.getByRole("option", { name: /候选人 13/ })).toHaveCount(0);
+    // The directory covers working-set members too, but each person renders
+    // exactly once and the directory's own people are also listed.
+    await expect(referenceMenu.getByRole("option", { name: /候选人 01/ })).toHaveCount(1);
+    await expect(referenceMenu.getByRole("option", { name: /候选人 16/ })).toBeVisible();
 
-    // Scrolling the list near the bottom requests the next server page.
+    // Scrolling near the bottom pages the working set AND the directory.
     await referenceMenu.evaluate((element) => element.scrollTo(0, element.scrollHeight));
     await expect(referenceMenu.getByRole("option", { name: /候选人 13/ })).toHaveCount(1);
     await expect(referenceMenu.getByRole("option", { name: /候选人 15/ })).toHaveCount(1);
+    await expect(referenceMenu.getByRole("option", { name: /候选人 21/ })).toBeVisible();
     await expect.poll(() =>
       candidateReferenceRequests.some((request) => request.cursor === "cursor-page-2"),
     ).toBe(true);
+    await expect.poll(() =>
+      directoryRequests.some((request) => request.cursor === "dir-page-2"),
+    ).toBe(true);
 
-    // Typing a name searches server-side and narrows the working-set list.
+    // Typing a name searches both sections server-side and narrows the lists.
     await dialog.getByLabel("搜索要引用的资料").fill("候选人 02");
     await expect.poll(() =>
       candidateReferenceRequests.some((request) => request.query === "候选人 02"),
+    ).toBe(true);
+    await expect.poll(() =>
+      directoryRequests.some((request) => request.query === "候选人 02"),
     ).toBe(true);
     await expect(referenceMenu.getByRole("option", { name: /候选人 02/ })).toBeVisible();
     await expect(referenceMenu.getByRole("option", { name: /候选人 01/ })).toHaveCount(0);
@@ -2802,6 +2848,73 @@ test.describe("招聘工作台关键路径", () => {
       context_version: 2,
     });
     await expect(referenceMenu).toHaveCount(0);
+  });
+
+  test("招聘 Agent @ 没有筛选范围时也能看到全部候选人", async ({ page }) => {
+    await registerAndVerify(page, "agent-at-all");
+    const conversationId = "e2e-agent-at-all";
+    const directoryRequests: Array<{ query: string | null; cursor: string | null }> = [];
+
+    await page.route("**/v1/recruiting-agent/turns", async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          conversation_id: conversationId,
+          context_version: 1,
+          active_context: {
+            // No saved filter scope: the @ menu must still offer everyone.
+            candidate_set_source: null,
+            candidate_count: 0,
+            active_job_version_id: null,
+            active_job_title: null,
+            active_talent_profile: null,
+            input_references: [],
+            expires_at: "2026-07-25T10:00:00Z",
+          },
+          message: "好的，请问你想查找、比较或核验什么？",
+          intent: "clarify",
+          job_version_id: null,
+          candidates: [],
+          actions: [],
+          tool_trace: [],
+          search_summary: null,
+          batch_id: null,
+        }),
+      });
+    });
+    await page.route("**/v1/recruiting-agent/candidate-directory**", async (route) => {
+      const url = new URL(route.request().url());
+      directoryRequests.push({
+        query: url.searchParams.get("query"),
+        cursor: url.searchParams.get("cursor"),
+      });
+      await route.fulfill({
+        json: {
+          items: Array.from({ length: 8 }, (_, index) => {
+            const suffix = String(index + 1).padStart(2, "0");
+            return {
+              candidate_id: `candidate-${suffix}`,
+              resume_id: `resume-${suffix}`,
+              display_name: `全部候选人 ${suffix}`,
+            };
+          }),
+          next_cursor: null,
+        },
+      });
+    });
+
+    await page.locator("#recruiting-agent-trigger").click();
+    const dialog = recruitingAgentPage(page);
+    await dialog.getByLabel("向招聘 Agent 提问").fill("帮我看看现在有哪些候选人");
+    await dialog.getByRole("button", { name: "发送提问" }).click();
+    await expect(dialog.getByText("好的，请问你想查找、比较或核验什么？")).toBeVisible();
+
+    await dialog.getByRole("button", { name: "添加引用" }).click();
+    const referenceMenu = dialog.getByRole("listbox", { name: "选择要引用的资料" });
+    await expect(referenceMenu.getByText("候选人（工作集）", { exact: true })).toHaveCount(0);
+    await expect(referenceMenu.getByText("全部候选人", { exact: true })).toBeVisible();
+    await expect(referenceMenu.getByRole("option", { name: /全部候选人 01/ })).toBeVisible();
+    await expect.poll(() => directoryRequests.length).toBeGreaterThan(0);
   });
 
   test("招聘 Agent 恢复安全工作范围，并在后续提问携带最新会话版本", async ({ page }) => {

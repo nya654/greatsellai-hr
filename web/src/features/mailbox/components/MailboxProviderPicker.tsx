@@ -1,6 +1,9 @@
-import { Icon } from "../../../icons";
+import { lazy } from "react";
 import type { MailboxProvider } from "../../../types";
 import { TableSkeleton } from "../../../backoffice/ui/TableSkeleton";
+
+const SemiRadioGroup = lazy(() => import("@douyinfe/semi-ui-19/lib/es/radio/radioGroup"));
+const SemiRadio = lazy(() => import("@douyinfe/semi-ui-19/lib/es/radio"));
 
 interface MailboxProviderPickerProps {
   disabled?: boolean;
@@ -27,51 +30,48 @@ export function MailboxProviderPicker({
   value,
 }: MailboxProviderPickerProps) {
   if (loading) {
-    return <div className="mailbox-provider-loading"><TableSkeleton /></div>;
+    return <TableSkeleton />;
   }
 
   if (!providers.length) {
     return (
-      <p className="mailbox-provider-empty" role="alert">
+      <p role="alert" style={{ color: "var(--red)", fontSize: "0.875rem" }}>
         暂时无法读取可接入的邮箱服务商，请刷新后重试。
       </p>
     );
   }
 
   return (
-    <div aria-label="邮箱服务商" className="mailbox-provider-options" role="radiogroup">
+    <SemiRadioGroup
+      aria-label="邮箱服务商"
+      name="mailbox-provider"
+      onChange={(event) => {
+        const provider = providers.find((item) => item.provider_key === event.target.value);
+        if (provider) onChange(provider);
+      }}
+      type="card"
+      value={value}
+    >
       {providers.map((provider) => {
-        const selected = value === provider.provider_key;
         const unavailable = !provider.available;
         return (
-          <button
-            aria-checked={selected}
-            aria-describedby={`mailbox-provider-${provider.provider_key}-hint`}
-            className={`mailbox-provider-option${selected ? " is-selected" : ""}${unavailable ? " is-unavailable" : ""}`}
+          <SemiRadio
             disabled={disabled || unavailable}
+            extra={
+              <span style={{ display: "block", color: "var(--ink-muted)", fontSize: "0.75rem", lineHeight: 1.4 }}>
+                {unavailable ? "当前部署尚未启用该服务商。" : provider.help_text}
+              </span>
+            }
             key={provider.provider_key}
-            onClick={() => onChange(provider)}
-            role="radio"
-            type="button"
+            value={provider.provider_key}
           >
-            <span className="mailbox-provider-option-heading">
-              <span className="mailbox-provider-option-mark">
-                <Icon name={provider.allows_custom_endpoint ? "gear" : "inbox"} size={16} />
-              </span>
-              <span>
-                <strong>{provider.display_name}</strong>
-                <small>{authenticationLabel(provider)}</small>
-              </span>
-            </span>
-            <span className={`status-pill${unavailable ? " is-warning" : selected ? " is-selected" : ""}`}>
-              {unavailable ? "当前未启用" : selected ? "已选择" : "可连接"}
-            </span>
-            <span className="sr-only" id={`mailbox-provider-${provider.provider_key}-hint`}>
-              {unavailable ? "当前部署尚未启用该服务商。" : provider.help_text}
-            </span>
-          </button>
+            <strong>{provider.display_name}</strong>
+            <small style={{ display: "block", color: "var(--ink-muted)", fontWeight: 400, fontSize: "0.8125rem" }}>
+              {authenticationLabel(provider)}
+            </small>
+          </SemiRadio>
         );
       })}
-    </div>
+    </SemiRadioGroup>
   );
 }

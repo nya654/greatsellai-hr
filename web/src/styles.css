@@ -1583,44 +1583,6 @@ button {
   .page-layout {
     grid-template-columns: 1fr;
   }
-
-  .mailbox-workspace {
-    grid-template-columns: 1fr;
-  }
-
-  .mailbox-setup-shell {
-    grid-template-columns: 1fr;
-  }
-
-  .mailbox-operation-heading {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .mailbox-operation-actions {
-    justify-content: flex-start;
-  }
-
-  .mailbox-channel-panel {
-    min-height: 0;
-  }
-
-  .mailbox-channel-list {
-    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
-  }
-
-  .mailbox-sync-alert-list-heading,
-  .mailbox-sync-alert-item,
-  .mailbox-sync-alert-detail {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .mailbox-add-channel {
-    width: auto;
-    margin-top: var(--space-md);
-    align-self: flex-start;
-  }
 }
 
 @media (max-width: 52rem) {
@@ -1687,47 +1649,6 @@ button {
 }
 
 @media (max-width: 47rem) {
-  .mailbox-operation-facts {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .mailbox-operation-facts > div:nth-child(odd) {
-    border-left: 0;
-  }
-
-  .mailbox-operation-facts > div:nth-child(n + 3) {
-    border-top: 1px solid var(--line);
-  }
-
-  .mailbox-operation-title-row {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .mailbox-operation-identity p {
-    white-space: normal;
-  }
-
-  .mailbox-retention-policy-options {
-    grid-template-columns: 1fr;
-  }
-
-  .mailbox-retention-preview-heading {
-    display: grid;
-  }
-
-  .mailbox-retention-preview-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .mailbox-retention-preview-stats > div:nth-child(odd) {
-    border-left: 0;
-  }
-
-  .mailbox-retention-preview-stats > div:nth-child(n + 3) {
-    border-top: 1px solid var(--line);
-  }
-
   .app-shell {
     grid-template-columns: 1fr;
     grid-template-rows: auto minmax(0, 1fr);
@@ -1867,31 +1788,6 @@ button {
   .page-heading {
     display: grid;
     align-items: start;
-  }
-
-  .mailbox-heading-actions {
-    justify-content: flex-start;
-  }
-
-  .mailbox-heading-actions .button {
-    flex: 1 1 11rem;
-  }
-
-  .mailbox-channel-list {
-    grid-template-columns: 1fr;
-  }
-
-  .mailbox-history-heading {
-    align-items: stretch;
-  }
-
-  .mailbox-history-filter {
-    width: 100%;
-    flex-basis: auto;
-  }
-
-  .mailbox-form-actions {
-    justify-content: flex-start;
   }
 
   .review-page-actions {

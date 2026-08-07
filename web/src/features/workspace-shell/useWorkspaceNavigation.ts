@@ -28,6 +28,8 @@ function settingsSectionFromHash(
 
   if (value === "settings/mailbox" || value === "inbox") return "mailbox";
   if (value === "settings/data" || value === "data") return "data";
+  if (value === "settings/ai-import" || value === "ai-import") return "ai-import";
+  if (value === "settings/display-fields" || value === "display-fields") return "display-fields";
   return null;
 }
 
@@ -50,6 +52,7 @@ function sameRouteParams(
 interface UseWorkspaceNavigationOptions {
   canManageCandidateData: boolean;
   canManageMailbox: boolean;
+  canManageAiImport: boolean;
   hasSession: boolean;
 }
 
@@ -61,6 +64,7 @@ interface UseWorkspaceNavigationOptions {
 export function useWorkspaceNavigation({
   canManageCandidateData,
   canManageMailbox,
+  canManageAiImport,
   hasSession,
 }: UseWorkspaceNavigationOptions) {
   const [view, setView] = useState<WorkspaceView>(() =>
@@ -184,14 +188,18 @@ export function useWorkspaceNavigation({
     if (!hasSession || view !== "settings") return;
     const sectionAllowed =
       (settingsSection === "mailbox" && canManageMailbox) ||
-      (settingsSection === "data" && canManageCandidateData);
+      (settingsSection === "data" && canManageCandidateData) ||
+      (settingsSection === "ai-import" && canManageAiImport) ||
+      settingsSection === "display-fields";
     if (sectionAllowed) return;
 
     const fallbackSection = canManageMailbox
       ? "mailbox"
       : canManageCandidateData
         ? "data"
-        : null;
+        : canManageAiImport
+          ? "ai-import"
+          : null;
     if (!fallbackSection) {
       setView("library");
       updateSettingsHash(null, true);
@@ -200,6 +208,7 @@ export function useWorkspaceNavigation({
     setSettingsSection(fallbackSection);
     updateSettingsHash(fallbackSection, true);
   }, [
+    canManageAiImport,
     canManageCandidateData,
     canManageMailbox,
     hasSession,

@@ -42,6 +42,14 @@ from app.services.resume_service import (
 )
 from app.services.resume_summary_job_service import enqueue_resume_summary_job
 from app.services.candidate_name_job_service import enqueue_candidate_name_extraction_job
+from app.services.resume_score_batch_service import (
+    ScoreServiceError,
+    enqueue_resume_score_batch,
+)
+from app.services.workspace_ai_import_settings_service import (
+    ai_import_settings_response,
+    should_auto_process_source,
+)
 from app.services.workspace_background_lane_service import (
     acquire_workspace_background_lane,
     fair_available_workspace_ids,
@@ -1032,17 +1040,33 @@ def _save_completed_ai_facts(
                     resume=saved_resume,
                     settings=settings,
                 )
-                # Queue the independent summary stage in this same
-                # transaction, never in the HTTP upload request and never by
-                # reusing the extraction lease.
-                # A route/credential problem creates an actionable
-                # ``unavailable`` summary job rather than rolling back a
-                # valid searchable candidate.
-                enqueue_resume_summary_job(
-                    session,
-                    resume=saved_resume,
-                    settings=settings,
-                )
+                # Auto-processing gate: run the independent summary and
+                # score stages only when this workspace's AI-import
+                # automation is on for the resume's source channel. A
+                # missing/invalid scoring route must not roll back a valid
+                # searchable candidate, so the score enqueue is best-effort.
+                source = saved_resume.ingestion_source_type or "manual_upload"
+                if should_auto_process_source(session, source=source):
+                    settings_row = ai_import_settings_response(session)
+                    if settings_row.auto_summary_enabled:
+                        enqueue_resume_summary_job(
+                            session,
+                            resume=saved_resume,
+                            settings=settings,
+                        )
+                    if (
+                        settings_row.auto_score_enabled
+                        and settings_row.default_score_template_id
+                    ):
+                        try:
+                            enqueue_resume_score_batch(
+                                session,
+                                template_id=settings_row.default_score_template_id,
+                                settings=settings,
+                                resume_id=saved_resume.id,
+                            )
+                        except ScoreServiceError:
+                            pass
                 job.status = AI_EXTRACTION_COMPLETED
                 job.lease_owner = None
                 job.lease_expires_at = None

@@ -2048,7 +2048,7 @@ export interface JobMatch {
 export interface AiImportSettings {
   auto_summary_enabled: boolean;
   auto_score_enabled: boolean;
-  default_score_template_id: string | null;
+  score_template_ids: string[];
   trigger_manual_upload: boolean;
   trigger_mailbox_import: boolean;
 }

@@ -1541,7 +1541,7 @@ class CandidateDataRetentionHoldUpdate(ApiModel):
 class AiImportSettingsUpdate(ApiModel):
     auto_summary_enabled: bool
     auto_score_enabled: bool
-    default_score_template_id: str | None = None
+    score_template_ids: list[str] = Field(default_factory=list)
     trigger_manual_upload: bool
     trigger_mailbox_import: bool
 
@@ -1549,7 +1549,7 @@ class AiImportSettingsUpdate(ApiModel):
 class AiImportSettingsResponse(ApiModel):
     auto_summary_enabled: bool
     auto_score_enabled: bool
-    default_score_template_id: str | None
+    score_template_ids: list[str]
     trigger_manual_upload: bool
     trigger_mailbox_import: bool
 

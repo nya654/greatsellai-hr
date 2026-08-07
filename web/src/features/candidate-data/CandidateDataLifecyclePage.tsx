@@ -216,7 +216,7 @@ export function CandidateDataLifecyclePage({
       setRetentionMode(saved.mode);
       setRetentionDays(saved.retention_days ? String(saved.retention_days) : "365");
       setPreview(null);
-      notify("success", saved.mode === "automatic" ? "已启用候选人资料自动保留策略。" : "已改为手动保留，系统不会按期限自动删除候选人资料。");
+      notify("success", saved.mode === "automatic" ? "已启用候选人资料自动删除策略。" : "已改为手动删除，系统不会按期限自动删除候选人资料。");
       await load(false);
     } catch (saveError) {
       notify("error", formatError(saveError));
@@ -308,11 +308,11 @@ export function CandidateDataLifecyclePage({
     <section className="panel">
       <div className="panel-heading">
         <div>
-          <SemiTitle heading={3} style={{ margin: 0 }}>候选人资料保留策略</SemiTitle>
+          <SemiTitle heading={4} style={{ margin: 0 }}>候选人资料保留策略</SemiTitle>
           <SemiParagraph type="tertiary" style={{ margin: "4px 0 0" }}>自动清理只处理到期且未被保留标记的候选人，先进入可恢复删除流程。</SemiParagraph>
         </div>
         <StatusPillTag className={retentionMode === "automatic" ? "is-warning" : ""}>
-          {retentionMode === "automatic" ? "自动保留" : "手动保留"}
+          {retentionMode === "automatic" ? "自动删除" : "手动删除"}
         </StatusPillTag>
       </div>
       <fieldset disabled={savingPolicy || previewing} style={{ display: "grid", gap: "var(--space-md)", padding: 0, margin: 0, border: 0 }}>
@@ -328,12 +328,10 @@ export function CandidateDataLifecyclePage({
           value={retentionMode}
         >
           <SemiRadio value="manual">
-            <strong>手动保留</strong>
-            <small style={{ display: "block", color: "var(--ink-muted)", fontWeight: 400, fontSize: "0.8125rem" }}>不会按期限自动删除候选人资料。</small>
+            <strong>手动删除</strong>
           </SemiRadio>
           <SemiRadio value="automatic">
-            <strong>自动保留</strong>
-            <small style={{ display: "block", color: "var(--ink-muted)", fontWeight: 400, fontSize: "0.8125rem" }}>到期候选人进入可恢复删除流程，恢复期结束后才清理。</small>
+            <strong>自动删除</strong>
           </SemiRadio>
         </SemiRadioGroup>
         {retentionMode === "automatic" && (
@@ -648,8 +646,12 @@ export function CandidateDataLifecyclePage({
     </section>
   );
 
+  const layoutClassName = embedded
+    ? "candidate-data-layout is-single-column"
+    : "candidate-data-layout";
+
   const activityLayout = (
-    <div className="candidate-data-layout" style={fullLayoutStyle}>
+    <div className={layoutClassName} style={fullLayoutStyle}>
       <div style={mainColumnStyle}>
         {recoverySection}
         {exportSection}
@@ -662,7 +664,7 @@ export function CandidateDataLifecyclePage({
   );
 
   const standaloneLayout = (
-    <div className="candidate-data-layout" style={fullLayoutStyle}>
+    <div className={layoutClassName} style={fullLayoutStyle}>
       <div style={mainColumnStyle}>
         {retentionSection}
         {recoverySection}

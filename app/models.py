@@ -1422,10 +1422,7 @@ class WorkspaceAiImportSettings(OrganizationScoped, Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     auto_summary_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     auto_score_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    default_score_template_id: Mapped[str | None] = mapped_column(
-        ForeignKey("score_templates.id"),
-        nullable=True,
-    )
+    score_template_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     trigger_manual_upload: Mapped[bool] = mapped_column(Boolean, default=True)
     trigger_mailbox_import: Mapped[bool] = mapped_column(Boolean, default=True)
     updated_by_user_id: Mapped[str | None] = mapped_column(

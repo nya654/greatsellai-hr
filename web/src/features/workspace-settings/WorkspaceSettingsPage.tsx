@@ -1,14 +1,13 @@
 import { lazy, Suspense } from "react";
 import { Icon, type IconName } from "../../icons";
 import SemiNavigation from "@douyinfe/semi-ui-19/lib/es/navigation";
+import SemiLayout from "@douyinfe/semi-ui-19/lib/es/layout";
 import { CandidateDataLifecyclePage } from "../candidate-data/CandidateDataLifecyclePage";
 import { MailboxPage } from "../mailbox/MailboxPage";
 import { AiImportSettingsPanel } from "./AiImportSettingsPanel";
 import { DisplayFieldsSettingsPanel } from "./DisplayFieldsSettingsPanel";
 import type { WorkspaceSettingsSection } from "../workspace-shell/workspace-navigation-types";
 
-const SemiLayout = lazy(() => import("@douyinfe/semi-ui-19/lib/es/layout"));
-const SemiSider = lazy(() => import("@douyinfe/semi-ui-19/lib/es/layout/Sider"));
 const SemiTag = lazy(() => import("@douyinfe/semi-ui-19/lib/es/tag"));
 const SemiTitle = lazy(() => import("@douyinfe/semi-ui-19/lib/es/typography/title"));
 const SemiParagraph = lazy(() => import("@douyinfe/semi-ui-19/lib/es/typography/paragraph"));
@@ -78,67 +77,66 @@ export function WorkspaceSettingsPage({
 
   return (
     <div className="page-frame settings-page">
-      <div style={{ padding: "28px 32px 0" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <SemiTitle heading={4}>设置</SemiTitle>
-          {role && (
-            <SemiTag color={role === "admin" ? "blue" : "grey"} size="small">
-              {role === "admin" ? "管理员" : "招聘成员"}
-            </SemiTag>
-          )}
-        </div>
-        <SemiParagraph type="tertiary">
-          管理当前工作区的收件通道、候选人资料留存和访问规则。
-        </SemiParagraph>
-      </div>
       <Suspense fallback={<p>加载设置…</p>}>
-        <SemiLayout className="settings-layout" style={{ marginTop: 24 }}>
-          <SemiSider
-            aria-label="设置分类"
-            style={{ flexShrink: 0, width: 260 }}
-          >
-            <SemiNavigation
-              onSelect={(data) =>
-                onSelectSection(data.itemKey as WorkspaceSettingsSection)
-              }
-              selectedKeys={[currentSection]}
-              style={{ height: "100%" }}
-            >
-              {items.map((item) => (
-                <SemiNavigation.Item
-                  icon={<Icon name={item.icon} size={16} />}
-                  itemKey={item.key}
-                  key={item.key}
-                  text={item.label}
+        <SemiLayout className="settings-layout">
+          <SemiLayout.Header className="settings-header">
+            <div className="settings-title">
+              <SemiTitle heading={4}>设置</SemiTitle>
+              {role && (
+                <SemiTag color={role === "admin" ? "blue" : "grey"} size="small">
+                  {role === "admin" ? "管理员" : "招聘成员"}
+                </SemiTag>
+              )}
+            </div>
+            <SemiParagraph type="tertiary">
+              管理当前工作区的收件通道、候选人资料留存和访问规则。
+            </SemiParagraph>
+          </SemiLayout.Header>
+          <SemiLayout className="settings-body">
+            <SemiLayout.Sider aria-label="设置分类" className="settings-sider">
+              <SemiNavigation
+                onSelect={(data) =>
+                  onSelectSection(data.itemKey as WorkspaceSettingsSection)
+                }
+                selectedKeys={[currentSection]}
+                style={{ height: "100%" }}
+              >
+                {items.map((item) => (
+                  <SemiNavigation.Item
+                    icon={<Icon name={item.icon} size={16} />}
+                    itemKey={item.key}
+                    key={item.key}
+                    text={item.label}
+                  />
+                ))}
+              </SemiNavigation>
+            </SemiLayout.Sider>
+            <SemiLayout.Content className="settings-content">
+              {currentSection === "mailbox" && (
+                <MailboxPage
+                  embedded
+                  humanizeError={formatError}
+                  notify={notify}
+                  onImported={onImported}
+                  role={role}
                 />
-              ))}
-            </SemiNavigation>
-          </SemiSider>
-          <div style={{ flex: 1, minWidth: 0, padding: "0 32px 32px" }}>
-            {currentSection === "mailbox" && (
-              <MailboxPage
-                embedded
-                humanizeError={formatError}
-                notify={notify}
-                onImported={onImported}
-                role={role}
-              />
-            )}
-            {currentSection === "data" && (
-              <CandidateDataLifecyclePage
-                embedded
-                formatError={formatError}
-                notify={notify}
-                onOpenLibrary={onOpenLibrary}
-              />
-            )}
-            {currentSection === "ai-import" && (
-              <AiImportSettingsPanel formatError={formatError} notify={notify} />
-            )}
-            {currentSection === "display-fields" && (
-              <DisplayFieldsSettingsPanel formatError={formatError} notify={notify} />
-            )}
-          </div>
+              )}
+              {currentSection === "data" && (
+                <CandidateDataLifecyclePage
+                  embedded
+                  formatError={formatError}
+                  notify={notify}
+                  onOpenLibrary={onOpenLibrary}
+                />
+              )}
+              {currentSection === "ai-import" && (
+                <AiImportSettingsPanel formatError={formatError} notify={notify} />
+              )}
+              {currentSection === "display-fields" && (
+                <DisplayFieldsSettingsPanel formatError={formatError} notify={notify} />
+              )}
+            </SemiLayout.Content>
+          </SemiLayout>
         </SemiLayout>
       </Suspense>
     </div>

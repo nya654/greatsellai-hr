@@ -1861,3 +1861,73 @@ button {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Embedded (settings center) layout: stack every panel in one column. */
+.candidate-data-layout.is-single-column {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* Settings center shell — Semi Layout (Header / Sider / Content) */
+.settings-page {
+  min-height: 100%;
+}
+
+.settings-header {
+  padding-bottom: var(--space-lg);
+  margin-bottom: var(--space-lg);
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+
+.settings-body {
+  display: flex;
+  gap: var(--space-xl);
+  align-items: flex-start;
+}
+
+.settings-sider {
+  flex-shrink: 0;
+  width: 15rem;
+}
+
+.settings-content {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: var(--space-md);
+  align-content: start;
+}
+
+/* Settings panels: aligned form rows + bottom action bar */
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
+  max-width: 34rem;
+  align-self: flex-start;
+}
+
+.settings-row-options {
+  display: flex;
+  gap: var(--space-md);
+}
+
+/* Multi-select for AI scoring templates — keep the selector on a fixed
+   width so the row stays one line when several chips are selected. */
+.settings-score-templates {
+  width: 22rem;
+}
+
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: var(--space-md);
+  margin-top: var(--space-lg);
+  border-top: 1px solid var(--line);
+}

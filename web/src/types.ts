@@ -2053,7 +2053,7 @@ export interface AiImportSettings {
   trigger_mailbox_import: boolean;
 }
 
-/** The recruiter-facing candidate-table columns this workspace prefers. */
+/** The candidate-table columns this account prefers (stored per user+organization). */
 export interface DisplayFieldPreferences {
   display_field_keys: string[];
 }

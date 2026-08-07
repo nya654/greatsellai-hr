@@ -90,7 +90,7 @@ export function useWorkspaceNavigation({
         : {};
     },
   );
-  const canManageSettings = canManageMailbox || canManageCandidateData;
+  const canManageSettings = hasSession;
 
   const updateHash = useCallback(
     (nextHash: string, replace = false) => {
@@ -199,12 +199,7 @@ export function useWorkspaceNavigation({
         ? "data"
         : canManageAiImport
           ? "ai-import"
-          : null;
-    if (!fallbackSection) {
-      setView("library");
-      updateSettingsHash(null, true);
-      return;
-    }
+          : "display-fields";
     setSettingsSection(fallbackSection);
     updateSettingsHash(fallbackSection, true);
   }, [

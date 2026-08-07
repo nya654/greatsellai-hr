@@ -71,6 +71,10 @@ from app.schemas import (
     AiRunUsageSummaryResponse,
     AiUsageAggregateResponse,
     AiUsageTrendBucketResponse,
+    AiImportSettingsResponse,
+    AiImportSettingsUpdate,
+    DisplayFieldPreferencesResponse,
+    DisplayFieldPreferencesUpdate,
     EmailVerificationComplete,
     EmailVerificationResendResult,
     OrganizationInvitationAccept,
@@ -409,6 +413,7 @@ from app.services.score_service import (
     list_score_templates,
     list_resume_scores,
     optimize_existing_score_template,
+    optimize_score_template_draft,
     override_score_dimension,
     run_resume_score,
 )
@@ -553,6 +558,14 @@ from app.services.source_tag_service import (
     source_tag_filter_options,
     update_mailbox_source_tag_rule,
     update_source_tag,
+)
+from app.services.workspace_ai_import_settings_service import (
+    ai_import_settings_response,
+    update_ai_import_settings,
+)
+from app.services.user_filter_display_preferences_service import (
+    display_field_preferences_response,
+    update_display_field_preferences,
 )
 
 
@@ -5825,6 +5838,84 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         return list_retention_cleanup_runs(session, limit=limit)
 
     @app.get(
+        "/v1/settings/ai-import",
+        response_model=AiImportSettingsResponse,
+        dependencies=[Depends(require_organization_admin)],
+    )
+    def get_ai_import_settings(
+        session: Session = Depends(get_session),
+    ) -> AiImportSettingsResponse:
+        response = ai_import_settings_response(session)
+        _commit_or_raise(session)
+        return response
+
+    @app.put(
+        "/v1/settings/ai-import",
+        response_model=AiImportSettingsResponse,
+        dependencies=[Depends(require_organization_admin)],
+    )
+    def put_ai_import_settings(
+        payload: AiImportSettingsUpdate,
+        principal: AuthPrincipal = Depends(require_organization_admin),
+        session: Session = Depends(get_session),
+    ) -> AiImportSettingsResponse:
+        try:
+            response = update_ai_import_settings(
+                session,
+                request=payload,
+                actor_user_id=principal.user.id,
+            )
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        _commit_or_raise(session)
+        return response
+
+    @app.get(
+        "/v1/settings/display-fields",
+        response_model=DisplayFieldPreferencesResponse,
+    )
+    def get_display_field_preferences(
+        principal: AuthPrincipal = Depends(require_authenticated_member),
+        session: Session = Depends(get_session),
+    ) -> DisplayFieldPreferencesResponse:
+        response = display_field_preferences_response(
+            session,
+            user_id=principal.user.id,
+            organization_id=principal.organization_id,
+        )
+        _commit_or_raise(session)
+        return response
+
+    @app.put(
+        "/v1/settings/display-fields",
+        response_model=DisplayFieldPreferencesResponse,
+    )
+    def put_display_field_preferences(
+        payload: DisplayFieldPreferencesUpdate,
+        principal: AuthPrincipal = Depends(require_authenticated_member),
+        session: Session = Depends(get_session),
+    ) -> DisplayFieldPreferencesResponse:
+        try:
+            response = update_display_field_preferences(
+                session,
+                user_id=principal.user.id,
+                organization_id=principal.organization_id,
+                field_keys=payload.display_field_keys,
+            )
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        _commit_or_raise(session)
+        return response
+
+    @app.get(
         "/v1/candidate-data/audit-events",
         response_model=CandidateDataAuditEventListResponse,
         dependencies=[Depends(require_organization_admin)],
@@ -6338,6 +6429,58 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         except ScoreTemplateNotFoundError as exc:
             session.rollback()
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except ScoreServiceError as exc:
+            session.rollback()
+            code = str(exc)
+            if code in {
+                "deepseek_api_key_not_configured",
+                "ai_route_not_configured",
+                "ai_route_not_published",
+                "ai_route_disabled",
+            }:
+                response_status = status.HTTP_503_SERVICE_UNAVAILABLE
+            elif code == "score_template_optimization_source_has_no_safe_dimensions":
+                response_status = status.HTTP_422_UNPROCESSABLE_CONTENT
+            else:
+                response_status = status.HTTP_409_CONFLICT
+            raise HTTPException(status_code=response_status, detail=code) from exc
+        except DeepSeekProviderError as exc:
+            session.rollback()
+            log_exception_event(
+                "score_template_optimization_provider_failed",
+                level=logging.WARNING,
+                error_code="score_template_optimization_provider_failed",
+                exception=exc,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="score_template_optimization_provider_failed",
+            ) from exc
+
+    @app.post(
+        "/v1/score-templates/optimize-draft",
+        response_model=ScoreTemplateOptimizationResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def post_optimize_score_template_draft(
+        payload: ScoreTemplateCreate,
+        session: Session = Depends(get_session),
+    ) -> ScoreTemplateOptimizationResponse:
+        """Return an AI-improved draft from the editor's current content.
+
+        Unlike the template-id endpoint this accepts the recruiter's
+        in-progress draft (name, description, dimensions) directly, so
+        unpersisted editor content can be improved without first saving a
+        template.  The result is still only a copy; creation goes through the
+        normal template-creation endpoint after review.
+        """
+
+        try:
+            return optimize_score_template_draft(
+                session,
+                payload=payload,
+                settings=settings,
+            )
         except ScoreServiceError as exc:
             session.rollback()
             code = str(exc)

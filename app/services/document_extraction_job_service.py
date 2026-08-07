@@ -1017,12 +1017,17 @@ def _save_completed_document_extraction(
                 from app.services.ai_extraction_job_service import (
                     request_resume_ai_extraction,
                 )
-
-                request_resume_ai_extraction(
-                    session,
-                    resume_id=resume.id,
-                    settings=settings,
+                from app.services.workspace_ai_import_settings_service import (
+                    should_auto_process_source,
                 )
+
+                source = resume.ingestion_source_type or "manual_upload"
+                if should_auto_process_source(session, source=source):
+                    request_resume_ai_extraction(
+                        session,
+                        resume_id=resume.id,
+                        settings=settings,
+                    )
             session.commit()
 
 

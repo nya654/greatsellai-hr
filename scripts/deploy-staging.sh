@@ -246,9 +246,9 @@ chmod 700 "$history_dir" "$history_dir/releases"
 exec 9>"$history_dir/.staging-release.lock"
 flock -n 9 || die "Another staging deployment is already running."
 
-candidate_compose="$(mktemp "/tmp/greatsell-staging-${release_commit}.XXXXXX")"
-normalized_compose="$(mktemp "/tmp/greatsell-staging-normalized-${release_commit}.XXXXXX")"
-rendered_compose="$(mktemp "/tmp/greatsell-staging-rendered-${release_commit}.XXXXXX")"
+candidate_compose="$(mktemp "${RUNNER_TEMP:-/tmp}/greatsell-staging-${release_commit}.XXXXXX")"
+normalized_compose="$(mktemp "${RUNNER_TEMP:-/tmp}/greatsell-staging-normalized-${release_commit}.XXXXXX")"
+rendered_compose="$(mktemp "${RUNNER_TEMP:-/tmp}/greatsell-staging-rendered-${release_commit}.XXXXXX")"
 trap 'rm -f -- "$candidate_compose" "$normalized_compose" "$rendered_compose"' EXIT
 cat > "$candidate_compose"
 compose_content "$candidate_compose" > "$normalized_compose"

@@ -480,4 +480,3 @@ def test_candidate_directory_respects_workspace_isolation(
     directory_b = _list_directory(client_b)
     assert directory_b["items"] == []
     assert directory_b["next_cursor"] is None
-

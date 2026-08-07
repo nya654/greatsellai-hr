@@ -133,9 +133,9 @@ else
 fi
 command -v flock >/dev/null
 sudo -n docker compose version >/dev/null
-temporary_compose="$(mktemp "/tmp/greatsell-staging-preflight-${release_commit}.XXXXXX")"
-temporary_normalized="$(mktemp "/tmp/greatsell-staging-normalized-${release_commit}.XXXXXX")"
-temporary_rendered="$(mktemp "/tmp/greatsell-staging-rendered-${release_commit}.XXXXXX")"
+temporary_compose="$(mktemp "${RUNNER_TEMP:-/tmp}/greatsell-staging-preflight-${release_commit}.XXXXXX")"
+temporary_normalized="$(mktemp "${RUNNER_TEMP:-/tmp}/greatsell-staging-normalized-${release_commit}.XXXXXX")"
+temporary_rendered="$(mktemp "${RUNNER_TEMP:-/tmp}/greatsell-staging-rendered-${release_commit}.XXXXXX")"
 trap 'rm -f -- "$temporary_compose" "$temporary_normalized" "$temporary_rendered"' EXIT
 cat > "$temporary_compose"
 compose_content "$temporary_compose" > "$temporary_normalized"

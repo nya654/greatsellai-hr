@@ -1538,6 +1538,30 @@ class CandidateDataRetentionHoldUpdate(ApiModel):
     retention_hold: bool
 
 
+class AiImportSettingsUpdate(ApiModel):
+    auto_summary_enabled: bool
+    auto_score_enabled: bool
+    default_score_template_id: str | None = None
+    trigger_manual_upload: bool
+    trigger_mailbox_import: bool
+
+
+class AiImportSettingsResponse(ApiModel):
+    auto_summary_enabled: bool
+    auto_score_enabled: bool
+    default_score_template_id: str | None
+    trigger_manual_upload: bool
+    trigger_mailbox_import: bool
+
+
+class DisplayFieldPreferencesUpdate(ApiModel):
+    display_field_keys: list[str]
+
+
+class DisplayFieldPreferencesResponse(ApiModel):
+    display_field_keys: list[str]
+
+
 class CandidateDataExportCreate(ApiModel):
     candidate_ids: list[str] = Field(min_length=1, max_length=1000)
     include_originals: bool = False
@@ -3060,16 +3084,20 @@ class ScoreTemplateResponse(ApiModel):
 
 
 class ScoreTemplateOptimizationResponse(ApiModel):
-    """An AI-generated, editable copy of an existing score template.
+    """An AI-generated, editable copy of a score template or editor draft.
 
     The response is deliberately a draft only.  Clients must send
     ``proposed_template`` through the normal template-creation endpoint after
     the recruiter has reviewed it, so an AI call can never overwrite an
     active scoring rule or its historical results.
+
+    ``source_template_id`` / ``source_template_version`` are populated only
+    when the AI improved a stored template; a draft-based optimization has no
+    source template and leaves both null.
     """
 
-    source_template_id: str
-    source_template_version: int
+    source_template_id: str | None = None
+    source_template_version: int | None = None
     proposed_template: ScoreTemplateCreate
     improvement_notes: list[str] = Field(default_factory=list, max_length=8)
 

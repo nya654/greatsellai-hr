@@ -52,8 +52,9 @@ def test_production_is_a_manual_promotion_of_a_completed_staging_candidate() -> 
     assert "--prebuilt-images" in workflow
     assert 'scripts/transfer-production-images.sh' not in workflow
     assert 'scripts/load-verified-release-images.sh' not in workflow
-    # Images are silent-preloaded to the production host by the staging relay;
-    # promotion only verifies their content IDs equal the completed staging record.
+    # Images are silent-preloaded to the production host by the release runner
+    # (see the staging-release preload step); promotion only verifies their
+    # content IDs equal the completed staging record.
     assert '--api-image-id "$STAGING_API_IMAGE_ID"' in workflow
     assert '--caddy-image-id "$STAGING_CADDY_IMAGE_ID"' in workflow
     assert "api_image_id: ${{ steps.verified.outputs.api_image_id }}" in workflow
@@ -336,7 +337,7 @@ def test_production_verifies_preloaded_images_while_staging_streams_direct() -> 
     )
 
     # Production promotion no longer pulls TCR images or re-verifies CI image
-    # identity. The staging relay silent-preloaded the smoke-tested images to
+    # identity. The release runner silent-preloaded the smoke-tested images to
     # the production host; promotion only verifies their content IDs equal the
     # completed staging record, then tags and deploys the exact images.
     assert "scripts/pull-tcr-release-images.sh" not in production
@@ -356,7 +357,9 @@ def test_production_verifies_preloaded_images_while_staging_streams_direct() -> 
     # Staging builds the exact commit images on the US release runner and
     # streams them straight to the US staging host; it must never touch TCR
     # credentials or the CI metadata artifact handoff. After the public smoke
-    # check, the staging host relays the verified images to production.
+    # check, the same release runner streams the verified images directly to
+    # production over the whitelist-limited relay key held in the staging
+    # environment (no staging-host relay).
     assert "scripts/pull-tcr-release-images.sh" not in staging
     assert "scripts/verify-tcr-release-metadata.sh" not in staging
     assert "TCR_USERNAME" not in staging
@@ -370,7 +373,15 @@ def test_production_verifies_preloaded_images_while_staging_streams_direct() -> 
     assert "sudo -n docker load" in staging
     assert "Pre-load verified images to production host" in staging
     assert "scripts/stream-images-to-production.sh" in staging
-    assert "bash -s $RELEASE_SHA" in staging
+    # The preload step runs on the runner with the staging-environment relay
+    # credentials; it does not ssh into the staging host to run the old relay.
+    assert 'scripts/stream-images-to-production.sh "$RELEASE_SHA"' in staging
+    assert '--host "$PROD_RELAY_HOST"' in staging
+    assert '--ssh-key "$RUNNER_TEMP/greatsell-prod-relay"' in staging
+    assert '--known-hosts "$RUNNER_TEMP/known_hosts_prod"' in staging
+    assert "PROD_RELAY_SSH_PRIVATE_KEY" in staging
+    assert "PROD_RELAY_SSH_KNOWN_HOSTS" in staging
+    assert "bash -s $RELEASE_SHA" not in staging
 
     # verify-staging-release.sh branches on image_delivery: direct records are
     # attested by image content ID + revision; legacy TCR records keep the full
@@ -391,11 +402,15 @@ def test_production_verifies_preloaded_images_while_staging_streams_direct() -> 
     assert "ID does not equal the completed staging record" in preloaded_verify
     assert "revision does not match" in preloaded_verify
 
-    # The staging relay streams save|gzip|load and re-verifies the loaded ID.
+    # The runner-direct relay streams save|gzip|tee, loads via seekable file
+    # input, and re-verifies the loaded ID against the local image.
     assert "docker save" in stream
     assert "docker load" in stream
     assert "pv" in stream
     assert "revision" in stream
+    assert "--host" in stream
+    assert "--ssh-key" in stream
+    assert "--known-hosts" in stream
 
 
 def test_tcr_docker_auth_writer_creates_private_standard_credentials(

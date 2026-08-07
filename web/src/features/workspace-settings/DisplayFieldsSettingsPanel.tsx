@@ -5,7 +5,7 @@ import { DISPLAY_FIELD_OPTIONS } from "../filter/display-field-options";
 import type { CandidateSearchDisplayFieldKey } from "../../types";
 
 const SemiCheckboxGroup = lazy(() => import("@douyinfe/semi-ui-19/lib/es/checkbox/checkboxGroup"));
-const SemiTitle = lazy(() => import("@douyinfe/semi-ui-19/lib/es/typography/title"));
+const SemiCard = lazy(() => import("@douyinfe/semi-ui-19/lib/es/card"));
 const SemiParagraph = lazy(() => import("@douyinfe/semi-ui-19/lib/es/typography/paragraph"));
 
 export interface DisplayFieldsSettingsPanelProps {
@@ -68,14 +68,13 @@ export function DisplayFieldsSettingsPanel({
 
   return (
     <Suspense fallback={<p>加载设置控件…</p>}>
-      <div>
-        <SemiTitle heading={5}>筛选显示字段</SemiTitle>
-        <SemiParagraph type="tertiary">
+      <SemiCard className="settings-panel" title="筛选显示字段">
+        <SemiParagraph type="tertiary" style={{ margin: 0 }}>
           选择后，筛选结果表将固定显示这些字段；未选择时沿用自动推断。
         </SemiParagraph>
 
         {savedKeys === null ? (
-          <p>加载显示字段偏好…</p>
+          <p style={{ marginTop: 20 }}>加载显示字段偏好…</p>
         ) : (
           <SemiCheckboxGroup
             aria-label="筛选结果显示字段"
@@ -85,19 +84,21 @@ export function DisplayFieldsSettingsPanel({
               label: option.label,
               value: option.key,
             }))}
-            style={{ marginTop: 20, maxWidth: 480 }}
+            style={{ marginTop: 20 }}
             value={savedKeys}
           />
         )}
 
-        <BackofficeButton
-          loading={saving}
-          onClick={() => void save()}
-          tone="primary"
-        >
-          保存
-        </BackofficeButton>
-      </div>
+        <div className="settings-actions">
+          <BackofficeButton
+            loading={saving}
+            onClick={() => void save()}
+            tone="primary"
+          >
+            保存
+          </BackofficeButton>
+        </div>
+      </SemiCard>
     </Suspense>
   );
 }

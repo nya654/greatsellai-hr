@@ -58,7 +58,7 @@ def test_ai_import_settings_defaults(client):
     assert body["auto_score_enabled"] is True
     assert body["trigger_manual_upload"] is True
     assert body["trigger_mailbox_import"] is True
-    assert body["default_score_template_id"] is None
+    assert body["score_template_ids"] == []
 
 
 def test_ai_import_settings_require_admin(client):
@@ -108,7 +108,7 @@ def test_ai_import_settings_toggle_and_persist(client):
         json={
             "auto_summary_enabled": False,
             "auto_score_enabled": False,
-            "default_score_template_id": None,
+            "score_template_ids": [],
             "trigger_manual_upload": True,
             "trigger_mailbox_import": False,
         },
@@ -129,13 +129,13 @@ def test_ai_import_settings_auto_score_requires_template(client):
         json={
             "auto_summary_enabled": True,
             "auto_score_enabled": True,
-            "default_score_template_id": None,
+            "score_template_ids": [],
             "trigger_manual_upload": True,
             "trigger_mailbox_import": True,
         },
     )
     assert response.status_code == 422, response.text
-    assert response.json()["detail"] == "default_score_template_required"
+    assert response.json()["detail"] == "score_template_required"
 
 
 def test_ai_import_settings_rejects_foreign_template(client):
@@ -173,26 +173,26 @@ def test_ai_import_settings_rejects_foreign_template(client):
         json={
             "auto_summary_enabled": True,
             "auto_score_enabled": True,
-            "default_score_template_id": foreign_template_id,
+            "score_template_ids": [foreign_template_id],
             "trigger_manual_upload": True,
             "trigger_mailbox_import": True,
         },
     )
     assert foreign.status_code == 422, foreign.text
-    assert foreign.json()["detail"] == "default_score_template_not_found"
+    assert foreign.json()["detail"] == "score_template_not_found"
 
     unknown = client.put(
         "/v1/settings/ai-import",
         json={
             "auto_summary_enabled": True,
             "auto_score_enabled": True,
-            "default_score_template_id": "00000000-0000-4000-8000-000000000000",
+            "score_template_ids": ["00000000-0000-4000-8000-000000000000"],
             "trigger_manual_upload": True,
             "trigger_mailbox_import": True,
         },
     )
     assert unknown.status_code == 422, unknown.text
-    assert unknown.json()["detail"] == "default_score_template_not_found"
+    assert unknown.json()["detail"] == "score_template_not_found"
 
 
 def test_ai_import_settings_org_isolation(client):
@@ -207,7 +207,7 @@ def test_ai_import_settings_org_isolation(client):
         json={
             "auto_summary_enabled": False,
             "auto_score_enabled": False,
-            "default_score_template_id": None,
+            "score_template_ids": [],
             "trigger_manual_upload": True,
             "trigger_mailbox_import": True,
         },
@@ -230,7 +230,7 @@ def test_ai_import_settings_org_isolation(client):
         json={
             "auto_summary_enabled": True,
             "auto_score_enabled": False,
-            "default_score_template_id": None,
+            "score_template_ids": [],
             "trigger_manual_upload": False,
             "trigger_mailbox_import": True,
         },
@@ -252,3 +252,65 @@ def test_ai_import_settings_org_isolation(client):
     assert refreshed.status_code == 200, refreshed.text
     assert refreshed.json()["auto_summary_enabled"] is False
     assert refreshed.json()["trigger_manual_upload"] is True
+
+
+def test_ai_import_settings_multiple_templates_persist(client):
+    registration = _register_and_login(
+        client,
+        organization_name="Settings Ai Multi Org",
+        email="settings-ai-multi@example.test",
+    )
+    org_id = registration["organization"]["organization_id"]
+    with client.app.state.database.session_factory() as session:
+        set_organization_context(session, org_id)
+        first = ScoreTemplate(name="Multi template A", version=1)
+        second = ScoreTemplate(name="Multi template B", version=1)
+        session.add_all([first, second])
+        session.commit()
+        first_id, second_id = first.id, second.id
+
+    response = client.put(
+        "/v1/settings/ai-import",
+        json={
+            "auto_summary_enabled": True,
+            "auto_score_enabled": True,
+            "score_template_ids": [first_id, second_id],
+            "trigger_manual_upload": True,
+            "trigger_mailbox_import": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body["score_template_ids"]) == {first_id, second_id}
+    assert set(client.get("/v1/settings/ai-import").json()["score_template_ids"]) == {
+        first_id,
+        second_id,
+    }
+
+
+def test_ai_import_settings_rejects_duplicate_template(client):
+    registration = _register_and_login(
+        client,
+        organization_name="Settings Ai Duplicate Org",
+        email="settings-ai-duplicate@example.test",
+    )
+    org_id = registration["organization"]["organization_id"]
+    with client.app.state.database.session_factory() as session:
+        set_organization_context(session, org_id)
+        template = ScoreTemplate(name="Duplicate template", version=1)
+        session.add(template)
+        session.commit()
+        template_id = template.id
+
+    response = client.put(
+        "/v1/settings/ai-import",
+        json={
+            "auto_summary_enabled": True,
+            "auto_score_enabled": True,
+            "score_template_ids": [template_id, template_id],
+            "trigger_manual_upload": True,
+            "trigger_mailbox_import": True,
+        },
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == "duplicate_score_template"

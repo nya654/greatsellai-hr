@@ -87,14 +87,14 @@ def _put_ai_import_settings(
     *,
     auto_summary_enabled: bool,
     auto_score_enabled: bool,
-    default_score_template_id: str | None,
+    score_template_ids: list[str],
 ) -> None:
     response = client.put(
         "/v1/settings/ai-import",
         json={
             "auto_summary_enabled": auto_summary_enabled,
             "auto_score_enabled": auto_score_enabled,
-            "default_score_template_id": default_score_template_id,
+            "score_template_ids": score_template_ids,
             "trigger_manual_upload": True,
             "trigger_mailbox_import": True,
         },
@@ -197,7 +197,7 @@ def test_extraction_completion_auto_enqueues_summary_and_score(
         c,
         auto_summary_enabled=True,
         auto_score_enabled=True,
-        default_score_template_id=template_id,
+        score_template_ids=[template_id],
     )
     resume_id = _upload_run_document_then_ai_worker(c, monkeypatch)
 
@@ -218,7 +218,7 @@ def test_extraction_completion_respects_auto_summary_off(client, monkeypatch) ->
         c,
         auto_summary_enabled=False,
         auto_score_enabled=True,
-        default_score_template_id=template_id,
+        score_template_ids=[template_id],
     )
     resume_id = _upload_run_document_then_ai_worker(c, monkeypatch)
 
@@ -240,7 +240,7 @@ def test_extraction_completion_score_failure_does_not_rollback(
         c,
         auto_summary_enabled=True,
         auto_score_enabled=True,
-        default_score_template_id=template_id,
+        score_template_ids=[template_id],
     )
 
     def raise_score_error(*args: object, **kwargs: object) -> None:

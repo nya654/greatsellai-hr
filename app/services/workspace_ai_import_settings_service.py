@@ -36,7 +36,7 @@ def ai_import_settings_response(session: Session) -> AiImportSettingsResponse:
     return AiImportSettingsResponse(
         auto_summary_enabled=row.auto_summary_enabled,
         auto_score_enabled=row.auto_score_enabled,
-        default_score_template_id=row.default_score_template_id,
+        score_template_ids=list(row.score_template_ids or []),
         trigger_manual_upload=row.trigger_manual_upload,
         trigger_mailbox_import=row.trigger_mailbox_import,
     )
@@ -58,17 +58,21 @@ def update_ai_import_settings(
     actor_user_id: str,
 ) -> AiImportSettingsResponse:
     organization_id = organization_context_id(session)
-    if request.default_score_template_id is not None:
-        template = session.get(ScoreTemplate, request.default_score_template_id)
+    seen: set[str] = set()
+    for template_id in request.score_template_ids:
+        if template_id in seen:
+            raise ValueError("duplicate_score_template")
+        template = session.get(ScoreTemplate, template_id)
         if template is None or template.organization_id != organization_id:
-            raise ValueError("default_score_template_not_found")
-    if request.auto_score_enabled and not request.default_score_template_id:
-        raise ValueError("default_score_template_required")
+            raise ValueError("score_template_not_found")
+        seen.add(template_id)
+    if request.auto_score_enabled and not request.score_template_ids:
+        raise ValueError("score_template_required")
 
     row = _default_row(session)
     row.auto_summary_enabled = request.auto_summary_enabled
     row.auto_score_enabled = request.auto_score_enabled
-    row.default_score_template_id = request.default_score_template_id
+    row.score_template_ids = list(request.score_template_ids)
     row.trigger_manual_upload = request.trigger_manual_upload
     row.trigger_mailbox_import = request.trigger_mailbox_import
     row.updated_by_user_id = actor_user_id

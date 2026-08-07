@@ -1057,25 +1057,25 @@ def _save_completed_ai_facts(
                             resume=saved_resume,
                             settings=settings,
                         )
-                    if (
-                        settings_row.auto_score_enabled
-                        and settings_row.default_score_template_id
-                    ):
-                        try:
-                            enqueue_resume_score_batch(
-                                session,
-                                template_id=settings_row.default_score_template_id,
-                                settings=settings,
-                                resume_id=saved_resume.id,
-                            )
-                        except ScoreServiceError as exc:
-                            # Best-effort: a missing/invalid scoring route must
-                            # not roll back a valid searchable candidate.
-                            logger.warning(
-                                "auto_score_enqueue_skipped resume=%s: %s",
-                                saved_resume.id,
-                                exc,
-                            )
+                    if settings_row.auto_score_enabled:
+                        for template_id in settings_row.score_template_ids:
+                            try:
+                                enqueue_resume_score_batch(
+                                    session,
+                                    template_id=template_id,
+                                    settings=settings,
+                                    resume_id=saved_resume.id,
+                                )
+                            except ScoreServiceError as exc:
+                                # Best-effort: a missing/invalid scoring route
+                                # must not roll back a valid searchable
+                                # candidate.
+                                logger.warning(
+                                    "auto_score_enqueue_skipped resume=%s template=%s: %s",
+                                    saved_resume.id,
+                                    template_id,
+                                    exc,
+                                )
                 job.status = AI_EXTRACTION_COMPLETED
                 job.lease_owner = None
                 job.lease_expires_at = None

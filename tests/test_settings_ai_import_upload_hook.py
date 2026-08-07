@@ -126,7 +126,7 @@ def test_manual_upload_respects_trigger_off(client) -> None:
         json={
             "auto_summary_enabled": True,
             "auto_score_enabled": True,
-            "default_score_template_id": template_id,
+            "score_template_ids": [template_id],
             "trigger_manual_upload": False,
             "trigger_mailbox_import": True,
         },
@@ -143,7 +143,7 @@ def test_manual_upload_respects_automation_off(client) -> None:
         json={
             "auto_summary_enabled": False,
             "auto_score_enabled": False,
-            "default_score_template_id": None,
+            "score_template_ids": [],
             "trigger_manual_upload": True,
             "trigger_mailbox_import": True,
         },

@@ -385,6 +385,7 @@ from app.services.recruiting_agent_service import (
     clear_recruiting_agent_context,
     delete_recruiting_agent_conversation,
     get_recruiting_agent_conversation,
+    list_recruiting_agent_candidate_directory,
     list_recruiting_agent_candidate_references,
     run_recruiting_agent_turn,
     start_recruiting_agent_scoped_profile_search,
@@ -4425,6 +4426,28 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="agent_conversation_not_found",
             ) from exc
+
+    @app.get(
+        "/v1/recruiting-agent/candidate-directory",
+        response_model=RecruitingAgentCandidateReferencePage,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def list_recruiting_agent_candidate_directory_route(
+        query: str | None = Query(default=None, max_length=120),
+        cursor: str | None = Query(default=None, max_length=256),
+        limit: int = Query(default=50, ge=1, le=100),
+        principal: AuthPrincipal = Depends(require_single_admin),
+        session: Session = Depends(get_session),
+    ) -> RecruitingAgentCandidateReferencePage:
+        """List every visible candidate in the workspace for the @ menu."""
+
+        return list_recruiting_agent_candidate_directory(
+            session,
+            organization_id=principal.organization_id,
+            query=query,
+            cursor=cursor,
+            limit=limit,
+        )
 
     @app.post(
         "/v1/recruiting-agent/conversations/context",

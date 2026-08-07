@@ -1685,6 +1685,101 @@ def list_recruiting_agent_candidate_references(
     )
 
 
+def _encode_candidate_directory_cursor(*, name: str, candidate_id: str) -> str:
+    """Opaque positional cursor for one row of the workspace directory."""
+
+    raw = f"{name}:{candidate_id}".encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def _decode_candidate_directory_cursor(value: str) -> tuple[str, str] | None:
+    try:
+        name, _, candidate_id = base64.urlsafe_b64decode(
+            value.encode("ascii")
+        ).decode("utf-8").partition(":")
+        if not candidate_id:
+            return None
+        return name, candidate_id
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+def list_recruiting_agent_candidate_directory(
+    session: Session,
+    *,
+    organization_id: str,
+    query: str | None = None,
+    cursor: str | None = None,
+    limit: int = 50,
+) -> RecruitingAgentCandidateReferencePage:
+    """Suggest @-reference candidates from the whole workspace directory.
+
+    Read-only and PII-safe, same projection as the frozen-scope list but
+    covering every visible resume in the actor's organization.  This is the
+    "everyone" fallback so the @ menu is never empty before a filter is
+    saved.  Ordering is display-name-first (case-insensitive) so the list
+    reads like a directory; every read re-checks resume visibility, so
+    deleted, archived, or not-yet-ready candidates cannot surface here.
+    """
+
+    page_size = max(1, min(int(limit), 100))
+    normalized_name_column = func.lower(func.coalesce(Candidate.display_name, ""))
+    statement = (
+        select(
+            Resume.id.label("resume_id"),
+            Resume.candidate_id,
+            Candidate.display_name,
+        )
+        .join(Candidate, Candidate.id == Resume.candidate_id)
+        .where(
+            Resume.organization_id == organization_id,
+            Resume.is_active.is_(True),
+            Resume.deleted_at.is_(None),
+            Resume.extraction_status == "ready",
+        )
+    )
+    normalized_query = (query or "").strip()
+    if normalized_query:
+        statement = statement.where(
+            normalized_name_column.contains(normalized_query.lower())
+        )
+    if cursor:
+        cursor_position = _decode_candidate_directory_cursor(cursor)
+        if cursor_position is not None:
+            statement = statement.where(
+                tuple_(normalized_name_column, Candidate.id)
+                > tuple_(cursor_position[0], cursor_position[1])
+            )
+    rows = session.execute(
+        statement.order_by(
+            normalized_name_column.asc(),
+            Candidate.id.asc(),
+        ).limit(page_size + 1)
+    ).all()
+
+    has_more = len(rows) > page_size
+    rows = rows[:page_size]
+    items = [
+        RecruitingAgentCandidateReference(
+            candidate_id=row.candidate_id,
+            resume_id=row.resume_id,
+            display_name=row.display_name,
+        )
+        for row in rows
+    ]
+    next_cursor = None
+    if has_more and rows:
+        last = rows[-1]
+        next_cursor = _encode_candidate_directory_cursor(
+            name=(last.display_name or "").lower(),
+            candidate_id=last.candidate_id,
+        )
+    return RecruitingAgentCandidateReferencePage(
+        items=items,
+        next_cursor=next_cursor,
+    )
+
+
 def delete_recruiting_agent_conversation(
     session: Session,
     *,

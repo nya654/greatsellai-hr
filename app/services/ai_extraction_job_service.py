@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -63,6 +64,8 @@ AI_EXTRACTION_RUNNING = "running"
 AI_EXTRACTION_COMPLETED = "completed"
 AI_EXTRACTION_NEEDS_ATTENTION = "needs_attention"
 AI_EXTRACTION_UNAVAILABLE = "unavailable"
+
+logger = logging.getLogger(__name__)
 
 _RETRYABLE_HTTP_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504}
 _NO_KEY_ERROR = "deepseek_api_key_not_configured"
@@ -1065,8 +1068,14 @@ def _save_completed_ai_facts(
                                 settings=settings,
                                 resume_id=saved_resume.id,
                             )
-                        except ScoreServiceError:
-                            pass
+                        except ScoreServiceError as exc:
+                            # Best-effort: a missing/invalid scoring route must
+                            # not roll back a valid searchable candidate.
+                            logger.warning(
+                                "auto_score_enqueue_skipped resume=%s: %s",
+                                saved_resume.id,
+                                exc,
+                            )
                 job.status = AI_EXTRACTION_COMPLETED
                 job.lease_owner = None
                 job.lease_expires_at = None

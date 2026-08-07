@@ -234,13 +234,6 @@ def enqueue_resume_score_batch(
     """
 
     template, _ = _require_scoreable_template(session, template_id=template_id)
-    route_policy_version_id, route_error = _route_pin_for_new_score_batch(
-        session,
-        settings=settings,
-    )
-    if route_error is not None:
-        raise ScoreServiceError(route_error)
-    assert route_policy_version_id is not None
     organization_id = template.organization_id
     existing = _existing_active_batch(
         session,
@@ -248,7 +241,7 @@ def enqueue_resume_score_batch(
         template_version=template.version,
         organization_id=organization_id,
     )
-    if existing is not None:
+    if existing is not None and resume_id is None:
         return _batch_response(existing)
 
     now = _utcnow()
@@ -282,6 +275,67 @@ def enqueue_resume_score_batch(
         for resume_id, snapshot_id, facts_version, quality_flags in snapshot_rows
         if not has_unreliable_source_text(quality_flags)
     ]
+
+    if existing is not None:
+        # A scoped enqueue appends to the already-active batch instead of
+        # silently returning it without the resume.  A resume that is not
+        # currently scoreable contributes no item, exactly like the create
+        # path below, so the extraction-completion hook never raises here.
+        if not snapshots:
+            return _batch_response(existing)
+        snapshot_ids = [snapshot_id for _, snapshot_id, _ in snapshots]
+        cached_by_snapshot: dict[str, str] = {}
+        if snapshot_ids:
+            cached = session.execute(
+                select(ResumeScore.fact_snapshot_id, ResumeScore.id)
+                .where(
+                    ResumeScore.organization_id == organization_id,
+                    ResumeScore.template_id == template.id,
+                    ResumeScore.template_version == template.version,
+                    ResumeScore.fact_snapshot_id.in_(snapshot_ids),
+                    ResumeScore.status.in_(_REUSABLE_SCORE_STATUSES),
+                )
+                .order_by(ResumeScore.created_at.desc(), ResumeScore.id.desc())
+            ).all()
+            for snapshot_id, score_id in cached:
+                if snapshot_id is not None:
+                    cached_by_snapshot.setdefault(snapshot_id, score_id)
+        try:
+            with session.begin_nested():
+                for resume_id, snapshot_id, facts_version in snapshots:
+                    cached_score_id = cached_by_snapshot.get(snapshot_id)
+                    session.add(
+                        ResumeScoreBatchItem(
+                            organization_id=organization_id,
+                            batch_id=existing.id,
+                            resume_id=resume_id,
+                            fact_snapshot_id=snapshot_id,
+                            facts_version=facts_version,
+                            status=ITEM_COMPLETED if cached_score_id else ITEM_QUEUED,
+                            next_attempt_at=None if cached_score_id else now,
+                            resume_score_id=cached_score_id,
+                            was_cached=bool(cached_score_id),
+                            completed_at=now if cached_score_id else None,
+                        )
+                    )
+                session.flush()
+        except IntegrityError:
+            # A concurrent scoped enqueue already appended this resume.
+            return _batch_response(existing)
+        # Recompute the aggregate from actual items.  The new pending item
+        # keeps/returns the batch to a claimable status even if a worker
+        # completed it between the active-batch lookup and this append.
+        _refresh_batch_progress(session, batch=existing, now=now)
+        session.flush()
+        return _batch_response(existing)
+
+    route_policy_version_id, route_error = _route_pin_for_new_score_batch(
+        session,
+        settings=settings,
+    )
+    if route_error is not None:
+        raise ScoreServiceError(route_error)
+    assert route_policy_version_id is not None
 
     batch = ResumeScoreBatch(
         organization_id=organization_id,

@@ -247,3 +247,90 @@ def test_enqueue_score_batch_scoped_to_foreign_resume_is_empty(
             assert response.completed_count == 0
     finally:
         database.dispose()
+
+
+def test_enqueue_score_batch_scoped_resumes_append_to_active_batch(
+    tmp_path: Path,
+) -> None:
+    """Scoped enqueues attach to the active batch instead of silently dropping.
+
+    The auto-score chain enqueues once per extraction completion.  When a
+    scoped enqueue arrives while a batch for the same template is already
+    active, the resume must be appended to that batch rather than ignored.
+    """
+    settings = _settings(tmp_path)
+    database = Database("sqlite://")
+    database.create_all()
+    try:
+        with database.session_factory() as session:
+            organization = Organization(name="Append to active batch org")
+            session.add(organization)
+            session.flush()
+            organization_id = organization.id
+
+            first_resume_id, _ = _seed_ready_resume(
+                session,
+                organization_id=organization_id,
+                label="append-first",
+            )
+            second_resume_id, _ = _seed_ready_resume(
+                session,
+                organization_id=organization_id,
+                label="append-second",
+            )
+
+            with _workspace(session, organization_id):
+                template = _scoreable_template(
+                    session,
+                    name="Append to active batch template",
+                )
+
+                first_response = resume_score_batch_service.enqueue_resume_score_batch(
+                    session,
+                    template_id=template.id,
+                    settings=settings,
+                    resume_id=first_resume_id,
+                )
+                assert first_response.total_count == 1
+                assert first_response.status == "queued"
+                batch_id = first_response.batch_id
+
+                second_response = resume_score_batch_service.enqueue_resume_score_batch(
+                    session,
+                    template_id=template.id,
+                    settings=settings,
+                    resume_id=second_resume_id,
+                )
+                assert second_response.batch_id == batch_id
+                assert second_response.total_count == 2
+                # _refresh_batch_progress flips a batch with pending items to
+                # "running", which is still claimable by the score worker.
+                assert second_response.status == "running"
+
+                items = session.scalars(
+                    select(ResumeScoreBatchItem).where(
+                        ResumeScoreBatchItem.batch_id == batch_id
+                    )
+                ).all()
+                assert {item.resume_id for item in items} == {
+                    first_resume_id,
+                    second_resume_id,
+                }
+                assert {item.status for item in items} == {"queued"}
+
+                third_response = resume_score_batch_service.enqueue_resume_score_batch(
+                    session,
+                    template_id=template.id,
+                    settings=settings,
+                    resume_id=first_resume_id,
+                )
+                assert third_response.batch_id == batch_id
+                assert third_response.total_count == 2
+                items = session.scalars(
+                    select(ResumeScoreBatchItem).where(
+                        ResumeScoreBatchItem.batch_id == batch_id
+                    )
+                ).all()
+                assert len(items) == 2
+    finally:
+        database.dispose()

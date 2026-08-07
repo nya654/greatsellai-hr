@@ -5,8 +5,9 @@ import { BackofficeSelect, type BackofficeSelectOption } from "../../backoffice/
 import type { AiImportSettings, ScoreTemplate } from "../../types";
 
 const SemiSwitch = lazy(() => import("@douyinfe/semi-ui-19/lib/es/switch"));
-const SemiCheckbox = lazy(() => import("@douyinfe/semi-ui-19/lib/es/checkbox"));
-const SemiTypography = lazy(() => import("@douyinfe/semi-ui-19/lib/es/typography"));
+const SemiCheckbox = lazy(() => import("@douyinfe/semi-ui-19/lib/es/checkbox/checkbox"));
+const SemiTitle = lazy(() => import("@douyinfe/semi-ui-19/lib/es/typography/title"));
+const SemiParagraph = lazy(() => import("@douyinfe/semi-ui-19/lib/es/typography/paragraph"));
 const SemiSpace = lazy(() => import("@douyinfe/semi-ui-19/lib/es/space"));
 
 export interface AiImportSettingsPanelProps {
@@ -95,12 +96,12 @@ export function AiImportSettingsPanel({ formatError, notify }: AiImportSettingsP
   return (
     <Suspense fallback={<p>加载设置控件…</p>}>
       <div>
-        <SemiTypography.Title heading={5}>AI 导入处理</SemiTypography.Title>
-        <SemiTypography.Paragraph type="tertiary">
+        <SemiTitle heading={5}>AI 导入处理</SemiTitle>
+        <SemiParagraph type="tertiary">
           开启后，导入的简历将自动运行 AI 提取、总结与评分，会产生对应的模型调用费用。
-        </SemiTypography.Paragraph>
+        </SemiParagraph>
 
-        <SemiSpace direction="vertical" spacing="medium" style={{ marginTop: 20 }}>
+        <SemiSpace vertical spacing="medium" style={{ marginTop: 20 }}>
           <SettingRow
             label="自动生成 AI 总结"
             control={
@@ -145,18 +146,18 @@ export function AiImportSettingsPanel({ formatError, notify }: AiImportSettingsP
           >
             <span>触发来源</span>
             <span style={{ display: "inline-flex", gap: 24 }}>
-              <SemiCheckbox.Checkbox
+              <SemiCheckbox
                 checked={settings.trigger_manual_upload}
                 onChange={(event) => update({ trigger_manual_upload: event.target.checked })}
               >
                 手动上传
-              </SemiCheckbox.Checkbox>
-              <SemiCheckbox.Checkbox
+              </SemiCheckbox>
+              <SemiCheckbox
                 checked={settings.trigger_mailbox_import}
                 onChange={(event) => update({ trigger_mailbox_import: event.target.checked })}
               >
                 邮箱入库
-              </SemiCheckbox.Checkbox>
+              </SemiCheckbox>
             </span>
           </div>
         </SemiSpace>

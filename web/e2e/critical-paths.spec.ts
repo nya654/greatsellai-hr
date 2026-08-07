@@ -3040,7 +3040,7 @@ test.describe("招聘工作台关键路径", () => {
     await page.getByRole("button", { name: "设置", exact: true }).click();
     await expect(page.getByRole("heading", { name: "设置" })).toBeVisible();
     await expect(page.getByRole("button", { name: "设置", exact: true })).toHaveAttribute("aria-current", "page");
-    await expect(page.getByRole("tab", { name: "收件邮箱", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("menuitem", { name: "收件邮箱", exact: true })).toHaveClass(/semi-navigation-item-selected/);
     await expect(page.getByRole("heading", { name: "收件邮箱", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "绑定招聘收件邮箱" })).toBeVisible();
     expect(await gridTrackCount(".settings-layout")).toBe(1);
@@ -3099,18 +3099,17 @@ test.describe("招聘工作台关键路径", () => {
     await expect(page.locator("#mailbox-display-name")).toHaveValue("");
     await expect(page.locator("#imap-address")).toHaveValue("");
     const newFeishuProvider = page.getByRole("radio", { name: /飞书邮箱/ });
-    await expect(newFeishuProvider).toHaveAttribute("aria-checked", "false");
-    await expect(page.locator(".mailbox-provider-option.is-selected")).toHaveCount(0);
+    await expect(newFeishuProvider).not.toBeChecked();
+    await expect(page.locator(".semi-radio-cardRadioGroup_checked")).toHaveCount(0);
     await newFeishuProvider.click();
-    await expect(newFeishuProvider).toHaveAttribute("aria-checked", "true");
-    await expect(newFeishuProvider).toHaveClass(/is-selected/);
-    await expect(newFeishuProvider.getByText("已选择", { exact: true })).toBeVisible();
+    await expect(newFeishuProvider).toBeChecked();
+    await expect(newFeishuProvider.locator("xpath=ancestor::label")).toHaveClass(/semi-radio-cardRadioGroup_checked/);
     page.once("dialog", (dialog) => dialog.accept());
     await page.getByRole("button", { name: "取消新建" }).click();
     await expect(page.getByRole("heading", { name: "E2E 收件通道" })).toBeVisible();
     await page.getByRole("button", { name: "同步此通道" }).click();
     await expect(page.getByText("已加入后台同步队列。")).toBeVisible();
-    await page.getByRole("tab", { name: "候选人数据与保留", exact: true }).click();
+    await page.getByRole("menuitem", { name: "候选人数据与保留", exact: true }).click();
     await expect(page.getByRole("heading", { name: "候选人数据与保留", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "候选人资料保留策略" })).toBeVisible();
     await expect(page.getByRole("button", { name: "刷新记录" })).toBeVisible();
@@ -3159,9 +3158,8 @@ test.describe("招聘工作台关键路径", () => {
 
     const genericProvider = page.getByRole("radio", { name: /通用 IMAP 邮箱/ });
     await genericProvider.click();
-    await expect(genericProvider).toHaveAttribute("aria-checked", "true");
-    await expect(genericProvider).toHaveClass(/is-selected/);
-    await expect(genericProvider.getByText("已选择", { exact: true })).toBeVisible();
+    await expect(genericProvider).toBeChecked();
+    await expect(genericProvider.locator("xpath=ancestor::label")).toHaveClass(/semi-radio-cardRadioGroup_checked/);
     const imapHost = page.locator("#imap-host");
     await expect(imapHost).toBeVisible();
     await expect(imapHost.locator("xpath=..")).toHaveClass(/semi-input-wrapper/);
@@ -3197,25 +3195,21 @@ test.describe("招聘工作台关键路径", () => {
 
     await expect(page).toHaveURL(/#settings\/mailbox$/);
     await expect(page.getByRole("button", { name: "设置", exact: true })).toHaveAttribute("aria-current", "page");
-    await expect(page.getByRole("tab", { name: "收件邮箱", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("menuitem", { name: "收件邮箱", exact: true })).toHaveClass(/semi-navigation-item-selected/);
     await expect(page.getByRole("heading", { name: "收件邮箱", exact: true })).toBeVisible();
 
     await page.reload();
-    await expect(page.getByRole("tab", { name: "收件邮箱", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("menuitem", { name: "收件邮箱", exact: true })).toHaveClass(/semi-navigation-item-selected/);
   });
 
   test("数据设置深链保留标签语义与任务分区", async ({ page }) => {
     await registerAndVerify(page, "settings-data-hash");
     await page.goto("/#settings/data");
 
-    const dataTab = page.getByRole("tab", { name: "候选人数据与保留", exact: true });
+    const dataTab = page.getByRole("menuitem", { name: "候选人数据与保留", exact: true });
     await expect(page).toHaveURL(/#settings\/data$/);
     await expect(page.getByRole("button", { name: "设置", exact: true })).toHaveAttribute("aria-current", "page");
-    await expect(dataTab).toHaveAttribute("aria-selected", "true");
-    await expect(dataTab).toHaveAttribute("id", "settings-tab-data");
-    await expect(dataTab).toHaveAttribute("aria-controls", "settings-panel-data");
-    await expect(page.locator("#settings-panel-data")).toHaveAttribute("role", "tabpanel");
-    await expect(page.locator("#settings-panel-data")).toHaveAttribute("aria-labelledby", "settings-tab-data");
+    await expect(dataTab).toHaveClass(/semi-navigation-item-selected/);
 
     await expect(page.getByRole("tab", { name: "保留策略", exact: true })).toHaveAttribute("aria-selected", "true");
     await page.getByRole("tab", { name: "操作与记录", exact: true }).click();
@@ -3223,7 +3217,7 @@ test.describe("招聘工作台关键路径", () => {
     await expect(page.getByRole("heading", { name: "资料导出", exact: true })).toBeVisible();
 
     await page.reload();
-    await expect(dataTab).toHaveAttribute("aria-selected", "true");
+    await expect(dataTab).toHaveClass(/semi-navigation-item-selected/);
     await expect(page.getByRole("tab", { name: "保留策略", exact: true })).toHaveAttribute("aria-selected", "true");
   });
 

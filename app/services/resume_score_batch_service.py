@@ -222,17 +222,22 @@ def enqueue_resume_score_batch(
     *,
     template_id: str,
     settings: AppSettings,
+    resume_id: str | None = None,
 ) -> ResumeScoreBatchResponse:
-    """Queue all currently scoreable resumes for one fixed score template."""
+    """Queue currently scoreable resumes for one fixed score template.
+
+    When ``resume_id`` is given, the batch contains exactly that one resume
+    item instead of every scoreable resume in the workspace.  If an active
+    batch already exists for the template, a scoreable scoped resume is
+    appended to it as an item (idempotent per resume); a scoped resume that
+    is not scoreable (missing, inactive, or in another workspace) contributes
+    no item.  With no active batch, a non-scoreable scoped resume simply
+    produces today's zero-item completed batch.  Either way a scoped resume
+    never raises here, so callers may safely use it inside a broader
+    extraction transaction.
+    """
 
     template, _ = _require_scoreable_template(session, template_id=template_id)
-    route_policy_version_id, route_error = _route_pin_for_new_score_batch(
-        session,
-        settings=settings,
-    )
-    if route_error is not None:
-        raise ScoreServiceError(route_error)
-    assert route_policy_version_id is not None
     organization_id = template.organization_id
     existing = _existing_active_batch(
         session,
@@ -240,11 +245,11 @@ def enqueue_resume_score_batch(
         template_version=template.version,
         organization_id=organization_id,
     )
-    if existing is not None:
+    if existing is not None and resume_id is None:
         return _batch_response(existing)
 
     now = _utcnow()
-    snapshot_rows = session.execute(
+    snapshot_query = (
         select(
             Resume.id,
             ResumeFactSnapshot.id,
@@ -265,12 +270,87 @@ def enqueue_resume_score_batch(
             ResumeFactSnapshot.organization_id == organization_id,
         )
         .order_by(Resume.created_at.asc(), Resume.id.asc())
-    ).all()
+    )
+    if resume_id is not None:
+        snapshot_query = snapshot_query.where(Resume.id == resume_id)
+    snapshot_rows = session.execute(snapshot_query).all()
     snapshots = [
         (resume_id, snapshot_id, facts_version)
         for resume_id, snapshot_id, facts_version, quality_flags in snapshot_rows
         if not has_unreliable_source_text(quality_flags)
     ]
+
+    if existing is not None:
+        # A scoped enqueue appends to the already-active batch instead of
+        # silently returning it without the resume.  A resume that is not
+        # currently scoreable contributes no item, exactly like the create
+        # path below, so the extraction-completion hook never raises here.
+        if not snapshots:
+            return _batch_response(existing)
+        snapshot_ids = [snapshot_id for _, snapshot_id, _ in snapshots]
+        cached_by_snapshot: dict[str, str] = {}
+        if snapshot_ids:
+            cached = session.execute(
+                select(ResumeScore.fact_snapshot_id, ResumeScore.id)
+                .where(
+                    ResumeScore.organization_id == organization_id,
+                    ResumeScore.template_id == template.id,
+                    ResumeScore.template_version == template.version,
+                    ResumeScore.fact_snapshot_id.in_(snapshot_ids),
+                    ResumeScore.status.in_(_REUSABLE_SCORE_STATUSES),
+                )
+                .order_by(ResumeScore.created_at.desc(), ResumeScore.id.desc())
+            ).all()
+            for snapshot_id, score_id in cached:
+                if snapshot_id is not None:
+                    cached_by_snapshot.setdefault(snapshot_id, score_id)
+        try:
+            with session.begin_nested():
+                for resume_id, snapshot_id, facts_version in snapshots:
+                    cached_score_id = cached_by_snapshot.get(snapshot_id)
+                    session.add(
+                        ResumeScoreBatchItem(
+                            organization_id=organization_id,
+                            batch_id=existing.id,
+                            resume_id=resume_id,
+                            fact_snapshot_id=snapshot_id,
+                            facts_version=facts_version,
+                            status=ITEM_COMPLETED if cached_score_id else ITEM_QUEUED,
+                            next_attempt_at=None if cached_score_id else now,
+                            resume_score_id=cached_score_id,
+                            was_cached=bool(cached_score_id),
+                            completed_at=now if cached_score_id else None,
+                        )
+                    )
+                session.flush()
+        except IntegrityError:
+            # A concurrent scoped enqueue may have already appended this
+            # resume (the per-(batch, resume) unique item constraint).  Only
+            # treat that as an idempotent success; any other integrity
+            # failure must surface rather than silently skipping the resume.
+            already_appended = session.scalar(
+                select(ResumeScoreBatchItem.id).where(
+                    ResumeScoreBatchItem.batch_id == existing.id,
+                    ResumeScoreBatchItem.resume_id == resume_id,
+                )
+            )
+            if already_appended is not None:
+                return _batch_response(existing)
+            raise
+        # Recompute the aggregate from actual items.  The new pending item
+        # keeps/returns the batch to a claimable status even if a worker
+        # completed it between the active-batch lookup and this append.
+        _refresh_batch_progress(session, batch=existing, now=now)
+        session.flush()
+        return _batch_response(existing)
+
+    route_policy_version_id, route_error = _route_pin_for_new_score_batch(
+        session,
+        settings=settings,
+    )
+    if route_error is not None:
+        raise ScoreServiceError(route_error)
+    assert route_policy_version_id is not None
 
     batch = ResumeScoreBatch(
         organization_id=organization_id,
@@ -914,6 +994,9 @@ def _refresh_batch_progress(
     pending = counts.get(ITEM_QUEUED, 0) + counts.get(ITEM_RUNNING, 0)
     if pending:
         batch.status = BATCH_RUNNING
+        # A batch flipped back to running (e.g. a scoped append racing a
+        # worker's terminal transition) must not report a stale completion.
+        batch.completed_at = None
         return
     batch.status = BATCH_PARTIAL if batch.failed_count else BATCH_COMPLETED
     batch.completed_at = now

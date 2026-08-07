@@ -3699,9 +3699,14 @@ def _ingest_attachment(
         resume.ingestion_source_type = "mailbox_attachment"
         resume.source_mailbox_config_id = config.id
         resume.source_mailbox_label_snapshot = config.display_name
-        # The attachment is now durably stored and its source normalization is
-        # queued in the same transaction by `save_pdf_resume`. Do not execute
-        # an untrusted converter on the mailbox worker's IMAP transaction.
+        # Flush the provenance stamp now: the completion path calls
+        # ``session.expire_all()`` before this transaction commits, which would
+        # otherwise reload the resume and revert these unflushed fields to the
+        # column default.  The attachment is durably stored and its source
+        # normalization is queued in the same transaction by ``save_pdf_resume``.
+        # Do not execute an untrusted converter on the mailbox worker's IMAP
+        # transaction.
+        session.flush()
         return resume
     except _AttachmentIngestionFailure:
         raise

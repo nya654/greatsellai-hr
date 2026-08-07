@@ -76,7 +76,12 @@ fi
 docker_cmd=(docker)
 docker version >/dev/null 2>&1 || docker_cmd=(sudo -n docker)
 
-ssh_prod=(-o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known_hosts" -i "$ssh_key" "$host")
+# Keepalive so a silently dropped cross-border (US runner -> China host)
+# connection fails fast instead of hanging the save|gzip|ssh pipeline until the
+# job timeout kills it.
+ssh_prod=(-o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known_hosts" \
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o ConnectTimeout=30 \
+  -i "$ssh_key" "$host")
 
 ssh "${ssh_prod[@]}" true || die "Cannot reach production host $host."
 

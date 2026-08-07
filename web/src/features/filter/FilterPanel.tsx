@@ -29,11 +29,19 @@ export function FilterPanel({
   filterOptions,
   onDraftChange,
   onReset,
+  sectionPreferenceKeys,
 }: {
   draft: FilterDraft;
   filterOptions: FilterOptions;
   onDraftChange: (draft: FilterDraft, timing?: "immediate" | "debounced") => void;
   onReset: () => void;
+  /**
+   * Optional controlled view of which sections stay visible. The settings
+   * preview passes the checkbox selection here so it can reflect the choice
+   * before saving; the filter workbench omits it and keeps fetching the
+   * server-owned preference instead.
+   */
+  sectionPreferenceKeys?: FilterSectionKey[] | null;
 }) {
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [keywordInput, setKeywordInput] = useState("");
@@ -44,6 +52,7 @@ export function FilterPanel({
   >(null);
 
   useEffect(() => {
+    if (sectionPreferenceKeys !== undefined) return;
     let cancelled = false;
     api
       .getFilterSectionPreferences()
@@ -63,10 +72,14 @@ export function FilterPanel({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [sectionPreferenceKeys]);
 
   const visibleSections = new Set<FilterSectionKey>(
-    visibleSectionKeys === null ? ALL_FILTER_SECTION_KEYS : visibleSectionKeys,
+    sectionPreferenceKeys !== undefined
+      ? sectionPreferenceKeys ?? ALL_FILTER_SECTION_KEYS
+      : visibleSectionKeys === null
+        ? ALL_FILTER_SECTION_KEYS
+        : visibleSectionKeys,
   );
   const isSectionVisible = (key: FilterSectionKey) => visibleSections.has(key);
   const hasAnyVisibleSection = ALL_FILTER_SECTION_KEYS.some((key) =>

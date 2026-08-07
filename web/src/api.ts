@@ -25,6 +25,8 @@ import type {
   CandidateResumeVersionsResponse,
   DisplayFieldPreferences,
   FilterOptions,
+  FilterSectionKey,
+  FilterSectionPreferences,
   JobCreate,
   JobDescriptionGenerateInput,
   JobDescriptionGeneration,
@@ -509,6 +511,19 @@ export function createApiClient(options: ApiClientOptions = {}) {
       return request<DisplayFieldPreferences>("/settings/display-fields", {
         method: "PUT",
         body: { display_field_keys: fieldKeys },
+      });
+    },
+
+    getFilterSectionPreferences(): Promise<FilterSectionPreferences> {
+      return request<FilterSectionPreferences>("/settings/filter-sections");
+    },
+
+    updateFilterSectionPreferences(
+      sectionKeys: FilterSectionKey[],
+    ): Promise<FilterSectionPreferences> {
+      return request<FilterSectionPreferences>("/settings/filter-sections", {
+        method: "PUT",
+        body: { filter_section_keys: sectionKeys },
       });
     },
 

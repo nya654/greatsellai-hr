@@ -75,6 +75,8 @@ from app.schemas import (
     AiImportSettingsUpdate,
     DisplayFieldPreferencesResponse,
     DisplayFieldPreferencesUpdate,
+    FilterSectionPreferencesResponse,
+    FilterSectionPreferencesUpdate,
     EmailVerificationComplete,
     EmailVerificationResendResult,
     OrganizationInvitationAccept,
@@ -565,7 +567,9 @@ from app.services.workspace_ai_import_settings_service import (
 )
 from app.services.user_filter_display_preferences_service import (
     display_field_preferences_response,
+    filter_section_preferences_response,
     update_display_field_preferences,
+    update_filter_section_preferences,
 )
 
 
@@ -5905,6 +5909,47 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                 user_id=principal.user.id,
                 organization_id=principal.organization_id,
                 field_keys=payload.display_field_keys,
+            )
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        _commit_or_raise(session)
+        return response
+
+    @app.get(
+        "/v1/settings/filter-sections",
+        response_model=FilterSectionPreferencesResponse,
+    )
+    def get_filter_section_preferences(
+        principal: AuthPrincipal = Depends(require_authenticated_member),
+        session: Session = Depends(get_session),
+    ) -> FilterSectionPreferencesResponse:
+        response = filter_section_preferences_response(
+            session,
+            user_id=principal.user.id,
+            organization_id=principal.organization_id,
+        )
+        _commit_or_raise(session)
+        return response
+
+    @app.put(
+        "/v1/settings/filter-sections",
+        response_model=FilterSectionPreferencesResponse,
+    )
+    def put_filter_section_preferences(
+        payload: FilterSectionPreferencesUpdate,
+        principal: AuthPrincipal = Depends(require_authenticated_member),
+        session: Session = Depends(get_session),
+    ) -> FilterSectionPreferencesResponse:
+        try:
+            response = update_filter_section_preferences(
+                session,
+                user_id=principal.user.id,
+                organization_id=principal.organization_id,
+                section_keys=payload.filter_section_keys,
             )
         except ValueError as exc:
             session.rollback()

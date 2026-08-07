@@ -169,12 +169,13 @@ function agentContextSourceLabel(
 
 function candidateReferenceAsOption(
   reference: RecruitingAgentCandidateReference,
+  source: "working" | "all",
 ): AgentReference {
   return {
     referenceId: `candidate:${reference.candidate_id}`,
     kind: "candidate",
     label: reference.display_name || "候选人",
-    description: "来自当前工作集",
+    description: source === "working" ? "来自当前工作集" : "来自当前工作区",
   };
 }
 
@@ -719,12 +720,20 @@ export function RecruitingAgentPage({
   const autoBoundScopeRequestIdRef = useRef<number | null>(null);
   const completedScopeRequestIdRef = useRef<number | null>(null);
   const [messages, setMessages] = useState<AgentChatMessage[]>(initialAgentMessages);
-  const [candidateReferences, setCandidateReferences] = useState<AgentReference[]>([]);
-  const [referencesLoading, setReferencesLoading] = useState(false);
-  const [referencesCursor, setReferencesCursor] = useState<string | null>(null);
-  const referencesCursorRef = useRef<string | null>(null);
-  const referencesQueryRef = useRef("");
-  const referencesRequestRef = useRef(0);
+  const emptyCandidateSection: {
+    items: AgentReference[];
+    nextCursor: string | null;
+    loading: boolean;
+  } = { items: [], nextCursor: null, loading: false };
+  const [candidateSections, setCandidateSections] = useState<{
+    working: typeof emptyCandidateSection;
+    all: typeof emptyCandidateSection;
+  }>({ working: emptyCandidateSection, all: emptyCandidateSection });
+  const workingSectionCursorRef = useRef<string | null>(null);
+  const workingSectionQueryRef = useRef("");
+  const allSectionCursorRef = useRef<string | null>(null);
+  const allSectionQueryRef = useRef("");
+  const sectionRequestRef = useRef<{ working: number; all: number }>({ working: 0, all: 0 });
   const isBindingScope = bindingScopeRequestId !== null;
   const interactionPending = loading || isRestoring || isBindingScope;
 
@@ -1143,56 +1152,94 @@ export function RecruitingAgentPage({
     [conversation?.active_context.candidate_set_source],
   );
 
-  const fetchCandidateReferences = useCallback(async ({
-    cursor,
-    query,
-  }: {
-    cursor?: string | null;
-    query?: string;
-  }) => {
+  const fetchCandidateSection = useCallback(async (
+    scope: "working" | "all",
+    {
+      cursor,
+      query,
+    }: { cursor?: string | null; query?: string },
+  ) => {
     const conversationId = conversation?.conversation_id;
-    if (!conversationId || !hasCandidateScope) return;
-    const nextQuery = query ?? referencesQueryRef.current;
-    const nextCursor = cursor ?? referencesCursorRef.current;
-    const requestSequence = ++referencesRequestRef.current;
-    setReferencesLoading(true);
+    if (scope === "working" && (!conversationId || !hasCandidateScope)) return;
+    const cursorRef = scope === "working" ? workingSectionCursorRef : allSectionCursorRef;
+    const queryRef = scope === "working" ? workingSectionQueryRef : allSectionQueryRef;
+    const requestSequence = ++sectionRequestRef.current[scope];
+    const nextQuery = query ?? queryRef.current;
+    const nextCursor = cursor ?? cursorRef.current;
+    setCandidateSections((sections) => ({
+      ...sections,
+      [scope]: { ...sections[scope], loading: true },
+    }));
     try {
-      const page = await api.listRecruitingAgentCandidateReferences(
-        conversationId,
-        { query: nextQuery, cursor: nextCursor, limit: 50 },
-      );
-      if (requestSequence !== referencesRequestRef.current) return;
-      referencesQueryRef.current = nextQuery;
-      referencesCursorRef.current = page.next_cursor;
-      setReferencesCursor(page.next_cursor);
-      setCandidateReferences((current) => {
-        if (nextCursor) return [...current, ...page.items.map(candidateReferenceAsOption)];
-        return page.items.map(candidateReferenceAsOption);
+      const page = scope === "working"
+        ? await api.listRecruitingAgentCandidateReferences(conversationId as string, {
+            query: nextQuery,
+            cursor: nextCursor,
+            limit: 50,
+          })
+        : await api.listRecruitingAgentCandidateDirectory({
+            query: nextQuery,
+            cursor: nextCursor,
+            limit: 50,
+          });
+      if (requestSequence !== sectionRequestRef.current[scope]) return;
+      queryRef.current = nextQuery;
+      cursorRef.current = page.next_cursor;
+      setCandidateSections((sections) => {
+        const current = sections[scope];
+        const items = nextCursor
+          ? [...current.items, ...page.items.map((item) => candidateReferenceAsOption(item, scope))]
+          : page.items.map((item) => candidateReferenceAsOption(item, scope));
+        return { ...sections, [scope]: { items, nextCursor: page.next_cursor, loading: false } };
       });
     } catch {
-      if (requestSequence !== referencesRequestRef.current) return;
-      referencesCursorRef.current = null;
-      setReferencesCursor(null);
-      setCandidateReferences((current) => (nextCursor ? current : []));
-    } finally {
-      if (requestSequence === referencesRequestRef.current) setReferencesLoading(false);
+      if (requestSequence !== sectionRequestRef.current[scope]) return;
+      cursorRef.current = null;
+      setCandidateSections((sections) => ({
+        ...sections,
+        [scope]: {
+          ...sections[scope],
+          items: nextCursor ? sections[scope].items : [],
+          nextCursor: null,
+          loading: false,
+        },
+      }));
     }
   }, [conversation?.conversation_id, hasCandidateScope]);
 
   const handleOpenCandidateReferences = useCallback(() => {
-    referencesQueryRef.current = "";
-    referencesCursorRef.current = null;
-    void fetchCandidateReferences({ query: "", cursor: null });
-  }, [fetchCandidateReferences]);
+    workingSectionQueryRef.current = "";
+    allSectionQueryRef.current = "";
+    workingSectionCursorRef.current = null;
+    allSectionCursorRef.current = null;
+    if (hasCandidateScope) void fetchCandidateSection("working", { query: "", cursor: null });
+    void fetchCandidateSection("all", { query: "", cursor: null });
+  }, [fetchCandidateSection, hasCandidateScope]);
 
   const handleSearchCandidateReferences = useCallback((query: string) => {
-    void fetchCandidateReferences({ query, cursor: null });
-  }, [fetchCandidateReferences]);
+    if (hasCandidateScope) void fetchCandidateSection("working", { query, cursor: null });
+    void fetchCandidateSection("all", { query, cursor: null });
+  }, [fetchCandidateSection, hasCandidateScope]);
 
   const handleLoadMoreCandidateReferences = useCallback(() => {
-    if (referencesLoading || !referencesCursorRef.current) return;
-    void fetchCandidateReferences({});
-  }, [fetchCandidateReferences, referencesLoading]);
+    if (!candidateSections.all.loading && candidateSections.all.nextCursor) {
+      void fetchCandidateSection("all", {});
+    }
+    if (
+      hasCandidateScope
+      && !candidateSections.working.loading
+      && candidateSections.working.nextCursor
+    ) {
+      void fetchCandidateSection("working", {});
+    }
+  }, [
+    candidateSections.all.loading,
+    candidateSections.all.nextCursor,
+    candidateSections.working.loading,
+    candidateSections.working.nextCursor,
+    fetchCandidateSection,
+    hasCandidateScope,
+  ]);
 
   const candidateScopeKey = useMemo(() => {
     const reference = conversation?.active_context.input_references?.find(
@@ -1202,19 +1249,15 @@ export function RecruitingAgentPage({
   }, [conversation?.active_context.input_references]);
 
   useEffect(() => {
-    referencesQueryRef.current = "";
-    referencesCursorRef.current = null;
-    setReferencesCursor(null);
-    setCandidateReferences([]);
-    if (!active || !conversation || !hasCandidateScope) return;
-    void fetchCandidateReferences({ query: "", cursor: null });
-  }, [
-    active,
-    candidateScopeKey,
-    conversation?.conversation_id,
-    fetchCandidateReferences,
-    hasCandidateScope,
-  ]);
+    workingSectionQueryRef.current = "";
+    allSectionQueryRef.current = "";
+    workingSectionCursorRef.current = null;
+    allSectionCursorRef.current = null;
+    setCandidateSections({
+      working: { items: [], nextCursor: null, loading: false },
+      all: { items: [], nextCursor: null, loading: false },
+    });
+  }, [active, candidateScopeKey, conversation?.conversation_id]);
 
   const applyInputReference = async (reference: AgentReference) => {
     if (interactionPending || reference.kind === "filter") return;
@@ -1728,8 +1771,11 @@ export function RecruitingAgentPage({
         )}
       </div>
       <AgentComposer
+        allCandidateReferences={candidateSections.all.items}
         availableReferences={availableInputReferences}
-        candidateReferences={candidateReferences}
+        candidateReferencesLoading={
+          candidateSections.working.loading || candidateSections.all.loading
+        }
         disabled={interactionPending}
         generating={isGenerating}
         hasWorkingSet={hasCandidateScope}
@@ -1742,8 +1788,8 @@ export function RecruitingAgentPage({
         onSelectReference={(reference) => void applyInputReference(reference)}
         onSubmit={(message) => void send(message)}
         references={activeInputReferences}
-        referencesLoading={referencesLoading}
         value={input}
+        workingCandidateReferences={candidateSections.working.items}
       />
       {referenceError && <p className="agent-reference-status" role="status">{referenceError}</p>}
     </section>

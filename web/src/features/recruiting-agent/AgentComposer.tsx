@@ -55,9 +55,11 @@ interface AgentComposerProps {
   references: AgentReference[];
   availableReferences: AgentReference[];
   /** Server-fetched candidates from the active working scope (paged). */
-  candidateReferences: AgentReference[];
-  /** True while a candidate page is loading from the server. */
-  referencesLoading: boolean;
+  workingCandidateReferences: AgentReference[];
+  /** Server-fetched directory of every visible candidate (paged). */
+  allCandidateReferences: AgentReference[];
+  /** True while any candidate page is loading from the server. */
+  candidateReferencesLoading: boolean;
   /** True when the conversation has an active working scope. */
   hasWorkingSet: boolean;
   disabled: boolean;
@@ -67,11 +69,11 @@ interface AgentComposerProps {
   onRemoveReference: (referenceId: string) => void;
   onSelectReference: (reference: AgentReference) => void;
   onSubmit: (message: string) => void;
-  /** Reset and load the first candidate page when the @ menu opens. */
+  /** Reset and load the first candidate pages when the @ menu opens. */
   onOpenReferences: () => void;
-  /** Append the next candidate page (called near the list bottom). */
+  /** Append the next candidate pages (called near the list bottom). */
   onLoadMoreReferences: () => void;
-  /** Debounced server-side name search over the working scope. */
+  /** Debounced server-side name search over both candidate lists. */
   onSearchReferences: (query: string) => void;
 }
 
@@ -115,8 +117,9 @@ export function AgentComposer({
   value,
   references,
   availableReferences,
-  candidateReferences,
-  referencesLoading,
+  workingCandidateReferences,
+  allCandidateReferences,
+  candidateReferencesLoading,
   hasWorkingSet,
   disabled,
   generating,
@@ -151,27 +154,38 @@ export function AgentComposer({
     )),
     [availableReferences, query, selectedIds],
   );
-  const candidateOptions = useMemo(() => {
-    const options: AgentReference[] = [];
+  const candidateSectionOptions = useMemo(() => {
+    const working: AgentReference[] = [];
+    const all: AgentReference[] = [];
     const seen = new Set<string>();
-    // Turn candidates stay local-first so a name already shown in this chat
-    // still resolves without a server round-trip.
-    localMatches.forEach((reference) => {
-      if (reference.kind !== "candidate" || seen.has(reference.referenceId)) return;
+    const consider = (reference: AgentReference, target: AgentReference[]) => {
+      if (reference.kind !== "candidate") return;
+      if (seen.has(reference.referenceId)) return;
+      if (selectedIds.has(reference.referenceId)) return;
+      if (!referenceMatchesQuery(reference, query)) return;
       seen.add(reference.referenceId);
-      options.push(reference);
-    });
+      target.push(reference);
+    };
+    // Turn candidates stay local-first so a name already shown in this chat
+    // still resolves without a server round-trip.  With a saved scope they
+    // belong to the working-set section; without one they fold into the
+    // directory so the @ menu is never empty.
+    localMatches.forEach((reference) => consider(reference, hasWorkingSet ? working : all));
     if (hasWorkingSet) {
-      candidateReferences.forEach((reference) => {
-        if (selectedIds.has(reference.referenceId)) return;
-        if (seen.has(reference.referenceId)) return;
-        if (!referenceMatchesQuery(reference, query)) return;
-        seen.add(reference.referenceId);
-        options.push(reference);
-      });
+      workingCandidateReferences.forEach((reference) => consider(reference, working));
     }
-    return options;
-  }, [candidateReferences, hasWorkingSet, localMatches, query, selectedIds]);
+    // The directory lists everyone else: anything already shown in the
+    // working-set section stays out so each person appears exactly once.
+    allCandidateReferences.forEach((reference) => consider(reference, all));
+    return { working, all };
+  }, [
+    allCandidateReferences,
+    hasWorkingSet,
+    localMatches,
+    query,
+    selectedIds,
+    workingCandidateReferences,
+  ]);
   const jobOptions = useMemo(
     () => localMatches.filter((reference) => reference.kind === "job"),
     [localMatches],
@@ -181,8 +195,13 @@ export function AgentComposer({
     [localMatches],
   );
   const options = useMemo(
-    () => [...jobOptions, ...profileOptions, ...candidateOptions],
-    [candidateOptions, jobOptions, profileOptions],
+    () => [
+      ...jobOptions,
+      ...profileOptions,
+      ...candidateSectionOptions.working,
+      ...candidateSectionOptions.all,
+    ],
+    [candidateSectionOptions.all, candidateSectionOptions.working, jobOptions, profileOptions],
   );
   const activeOptionId = options[activeIndex]
     ? `${menuId}-option-${activeIndex}`
@@ -292,16 +311,16 @@ export function AgentComposer({
     if (activeIndex >= options.length) setActiveIndex(Math.max(0, options.length - 1));
   }, [activeIndex, options.length]);
 
-  // Debounce working-scope name search so each keystroke becomes one
-  // server query that replaces the paged candidate list.
+  // Debounce candidate name search so each keystroke becomes one server
+  // query that replaces the paged candidate lists.
   useEffect(() => {
-    if (!hasWorkingSet || !menuOpen) return undefined;
+    if (!menuOpen) return undefined;
     const handle = window.setTimeout(() => onSearchReferences(query), 300);
     return () => window.clearTimeout(handle);
-  }, [hasWorkingSet, menuOpen, onSearchReferences, query]);
+  }, [menuOpen, onSearchReferences, query]);
 
   const handleMenuListScroll = (event: ReactUIEvent<HTMLDivElement>) => {
-    if (!hasWorkingSet || referencesLoading) return;
+    if (candidateReferencesLoading) return;
     const element = event.currentTarget;
     if (element.scrollHeight - element.scrollTop - element.clientHeight < 32) {
       onLoadMoreReferences();
@@ -359,7 +378,7 @@ export function AgentComposer({
     </button>
   );
 
-  const candidateSectionTitle = hasWorkingSet ? "候选人（工作集）" : "候选人";
+  const candidateSectionOffset = jobOptions.length + profileOptions.length;
 
   const handleInputKeyDownCapture = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (inputLocked) {
@@ -528,18 +547,31 @@ export function AgentComposer({
                 ))}
               </>
             )}
-            {candidateOptions.length > 0 && (
+            {candidateSectionOptions.working.length > 0 && (
               <>
-                <h4 className="agent-reference-menu-section-title">{candidateSectionTitle}</h4>
-                {candidateOptions.map((reference, index) => (
-                  renderOption(reference, jobOptions.length + profileOptions.length + index)
+                <h4 className="agent-reference-menu-section-title">候选人（工作集）</h4>
+                {candidateSectionOptions.working.map((reference, index) => (
+                  renderOption(reference, candidateSectionOffset + index)
                 ))}
               </>
             )}
-            {hasWorkingSet && referencesLoading && (
+            {candidateSectionOptions.all.length > 0 && (
+              <>
+                <h4 className="agent-reference-menu-section-title">全部候选人</h4>
+                {candidateSectionOptions.all.map((reference, index) => (
+                  renderOption(
+                    reference,
+                    candidateSectionOffset
+                      + candidateSectionOptions.working.length
+                      + index,
+                  )
+                ))}
+              </>
+            )}
+            {candidateReferencesLoading && (
               <p className="agent-reference-menu-loading" role="status">正在加载候选人…</p>
             )}
-            {options.length === 0 && !(hasWorkingSet && referencesLoading) && (
+            {options.length === 0 && !candidateReferencesLoading && (
               <p className="agent-reference-menu-empty">当前没有可引用的内容。</p>
             )}
           </div>

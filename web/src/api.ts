@@ -497,7 +497,7 @@ export function createApiClient(options: ApiClientOptions = {}) {
     updateAiImportSettings(input: AiImportSettings): Promise<AiImportSettings> {
       return request<AiImportSettings>("/settings/ai-import", {
         method: "PUT",
-        body: JSON.stringify(input),
+        body: input,
       });
     },
 
@@ -508,7 +508,7 @@ export function createApiClient(options: ApiClientOptions = {}) {
     updateDisplayFieldPreferences(fieldKeys: string[]): Promise<DisplayFieldPreferences> {
       return request<DisplayFieldPreferences>("/settings/display-fields", {
         method: "PUT",
-        body: JSON.stringify({ display_field_keys: fieldKeys }),
+        body: { display_field_keys: fieldKeys },
       });
     },
 

@@ -1846,3 +1846,18 @@ button {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Candidate data settings layout: full-width main column with a slim
+   audit/cleanup column on wide screens, single column below 64rem. */
+.candidate-data-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(18rem, 22rem);
+  gap: var(--space-xl);
+  align-items: start;
+}
+
+@media (max-width: 64rem) {
+  .candidate-data-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

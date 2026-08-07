@@ -1,5 +1,6 @@
 import { lazy, Suspense } from "react";
 import { Icon, type IconName } from "../../icons";
+import SemiNavigation from "@douyinfe/semi-ui-19/lib/es/navigation";
 import { CandidateDataLifecyclePage } from "../candidate-data/CandidateDataLifecyclePage";
 import { MailboxPage } from "../mailbox/MailboxPage";
 import { AiImportSettingsPanel } from "./AiImportSettingsPanel";
@@ -8,7 +9,6 @@ import type { WorkspaceSettingsSection } from "../workspace-shell/workspace-navi
 
 const SemiLayout = lazy(() => import("@douyinfe/semi-ui-19/lib/es/layout"));
 const SemiSider = lazy(() => import("@douyinfe/semi-ui-19/lib/es/layout/Sider"));
-const SemiNavigation = lazy(() => import("@douyinfe/semi-ui-19/lib/es/navigation"));
 const SemiTag = lazy(() => import("@douyinfe/semi-ui-19/lib/es/tag"));
 const SemiTitle = lazy(() => import("@douyinfe/semi-ui-19/lib/es/typography/title"));
 const SemiParagraph = lazy(() => import("@douyinfe/semi-ui-19/lib/es/typography/paragraph"));
@@ -92,23 +92,27 @@ export function WorkspaceSettingsPage({
         </SemiParagraph>
       </div>
       <Suspense fallback={<p>加载设置…</p>}>
-        <SemiLayout style={{ marginTop: 24 }}>
+        <SemiLayout className="settings-layout" style={{ marginTop: 24 }}>
           <SemiSider
             aria-label="设置分类"
             style={{ flexShrink: 0, width: 260 }}
           >
             <SemiNavigation
-              items={items.map((item) => ({
-                icon: <Icon name={item.icon} size={16} />,
-                itemKey: item.key,
-                text: item.label,
-              }))}
               onSelect={(data) =>
                 onSelectSection(data.itemKey as WorkspaceSettingsSection)
               }
               selectedKeys={[currentSection]}
               style={{ height: "100%" }}
-            />
+            >
+              {items.map((item) => (
+                <SemiNavigation.Item
+                  icon={<Icon name={item.icon} size={16} />}
+                  itemKey={item.key}
+                  key={item.key}
+                  text={item.label}
+                />
+              ))}
+            </SemiNavigation>
           </SemiSider>
           <div style={{ flex: 1, minWidth: 0, padding: "0 32px 32px" }}>
             {currentSection === "mailbox" && (

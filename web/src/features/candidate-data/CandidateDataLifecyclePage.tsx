@@ -106,12 +106,7 @@ function candidateDataAuditActionLabel(event: CandidateDataAuditEvent): string {
 
 const mainColumnStyle = { display: "grid", gap: "var(--space-md)", minWidth: 0 };
 const sideColumnStyle = { display: "grid", gap: "var(--space-md)", minWidth: 0 };
-const fullLayoutStyle = {
-  display: "grid",
-  gridTemplateColumns: "minmax(0, 1fr) minmax(18rem, 22rem)",
-  gap: "var(--space-xl)",
-  alignItems: "start",
-};
+const fullLayoutStyle = { gap: "var(--space-xl)", alignItems: "start" };
 
 export function CandidateDataLifecyclePage({
   formatError,
@@ -654,7 +649,7 @@ export function CandidateDataLifecyclePage({
   );
 
   const activityLayout = (
-    <div style={fullLayoutStyle}>
+    <div className="candidate-data-layout" style={fullLayoutStyle}>
       <div style={mainColumnStyle}>
         {recoverySection}
         {exportSection}
@@ -667,7 +662,7 @@ export function CandidateDataLifecyclePage({
   );
 
   const standaloneLayout = (
-    <div style={fullLayoutStyle}>
+    <div className="candidate-data-layout" style={fullLayoutStyle}>
       <div style={mainColumnStyle}>
         {retentionSection}
         {recoverySection}

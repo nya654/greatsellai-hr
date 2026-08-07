@@ -1,4 +1,5 @@
 import type {
+  AiImportSettings,
   AuthLoginInput,
   AuthRegistrationInput,
   AuthSession,
@@ -22,6 +23,7 @@ import type {
   CandidateSearchRequest,
   CandidateSearchResponse,
   CandidateResumeVersionsResponse,
+  DisplayFieldPreferences,
   FilterOptions,
   JobCreate,
   JobDescriptionGenerateInput,
@@ -486,6 +488,28 @@ export function createApiClient(options: ApiClientOptions = {}) {
 
     listMailboxRetentionRuns(mailboxId: string): Promise<MailboxRetentionRuns> {
       return request<MailboxRetentionRuns>(`/mailboxes/${resourcePath(mailboxId)}/retention/runs`);
+    },
+
+    getAiImportSettings(): Promise<AiImportSettings> {
+      return request<AiImportSettings>("/settings/ai-import");
+    },
+
+    updateAiImportSettings(input: AiImportSettings): Promise<AiImportSettings> {
+      return request<AiImportSettings>("/settings/ai-import", {
+        method: "PUT",
+        body: JSON.stringify(input),
+      });
+    },
+
+    getDisplayFieldPreferences(): Promise<DisplayFieldPreferences> {
+      return request<DisplayFieldPreferences>("/settings/display-fields");
+    },
+
+    updateDisplayFieldPreferences(fieldKeys: string[]): Promise<DisplayFieldPreferences> {
+      return request<DisplayFieldPreferences>("/settings/display-fields", {
+        method: "PUT",
+        body: JSON.stringify({ display_field_keys: fieldKeys }),
+      });
     },
 
     runRecruitingAgentTurn(input: RecruitingAgentTurnInput): Promise<RecruitingAgentTurn> {

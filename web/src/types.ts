@@ -2043,3 +2043,17 @@ export interface JobMatch {
   model_name: string | null;
   created_at: string;
 }
+
+/** Workspace-wide AI import behaviour, matching the backend `AiImportSettingsResponse`. */
+export interface AiImportSettings {
+  auto_summary_enabled: boolean;
+  auto_score_enabled: boolean;
+  default_score_template_id: string | null;
+  trigger_manual_upload: boolean;
+  trigger_mailbox_import: boolean;
+}
+
+/** The recruiter-facing candidate-table columns this workspace prefers. */
+export interface DisplayFieldPreferences {
+  display_field_keys: string[];
+}

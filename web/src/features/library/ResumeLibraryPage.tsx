@@ -12,6 +12,7 @@ import {
   AI_STATUS_POLL_INTERVAL_MS,
   aiExtractionIsInProgress,
   aiSummaryIsInProgress,
+  scoreTaskIsInProgress,
 } from "../../backoffice/utils/ai-extraction";
 import { formatLibraryDate } from "../../backoffice/utils/formatters";
 import {
@@ -429,7 +430,8 @@ export function ResumeLibraryPage({
       !library?.items.some((item) =>
         aiExtractionIsInProgress(item.ai_extraction_status) ||
         aiExtractionIsInProgress(item.candidate_name_extraction_status) ||
-        aiSummaryIsInProgress(item.ai_summary_status),
+        aiSummaryIsInProgress(item.ai_summary_status) ||
+        scoreTaskIsInProgress(item.score_task_state),
       )
     ) {
       return undefined;
@@ -756,6 +758,20 @@ export function ResumeLibraryPage({
                           <span className="library-quality-copy">
                             请使用候选人的当前版本
                           </span>
+                        ) : scoreTaskIsInProgress(item.score_task_state) ? (
+                          <div
+                            className="library-score-activity"
+                            role="status"
+                            aria-label="正在生成 AI 评分"
+                          >
+                            <span
+                              className="library-score-activity-dot"
+                              aria-hidden="true"
+                            />
+                            <span className="library-score-activity-copy">
+                              评分生成中…
+                            </span>
+                          </div>
                         ) : item.score_total !== null ? (
                           <div
                             className="library-score"

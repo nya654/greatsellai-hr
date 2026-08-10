@@ -15,3 +15,10 @@ export function aiSummaryIsInProgress(
 ): boolean {
   return status === "queued" || status === "running";
 }
+
+/** The automatic score for this library row is still queued or running. */
+export function scoreTaskIsInProgress(
+  state: "none" | "queued" | "running" | undefined,
+): boolean {
+  return state === "queued" || state === "running";
+}

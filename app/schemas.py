@@ -462,6 +462,55 @@ class PlatformDashboardResponse(ApiModel):
     ai_cost_unavailable_runs: int
 
 
+class AnnouncementResponse(ApiModel):
+    """One system announcement as served to admin and workspace clients."""
+
+    announcement_id: str
+    title: str
+    body: str
+    is_published: bool
+    published_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AnnouncementUpsert(ApiModel):
+    """Shared create/update payload: title + plain-text body + audit reason."""
+
+    title: str = Field(min_length=1, max_length=200)
+    body: str = Field(min_length=1, max_length=5000)
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("title", "body", "reason")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value_must_not_be_blank")
+        return normalized
+
+
+class AnnouncementPublish(ApiModel):
+    """Optional audit reason for the low-risk publish/unpublish toggles."""
+
+    reason: str | None = Field(default=None, min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_optional_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
+class AnnouncementInboxResponse(ApiModel):
+    """Active announcements plus the signed-in user's unread count."""
+
+    items: list[AnnouncementResponse] = Field(default_factory=list)
+    unread_count: int = Field(ge=0)
+
+
 class PlatformRuntimeWorkerResponse(ApiModel):
     """Content-free health of one recent worker process.
 

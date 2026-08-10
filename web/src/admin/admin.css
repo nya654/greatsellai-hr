@@ -1459,6 +1459,38 @@
   width: 100%;
 }
 
+.admin-announcement-span-2 {
+  grid-column: 1 / -1;
+}
+
+.admin-announcement-actions {
+  display: grid;
+  gap: 0.375rem;
+  padding-top: 1.125rem;
+  border-top: 1px solid var(--line);
+}
+
+.admin-announcement-actions > p {
+  margin: 0 0 0.5rem;
+  color: var(--ink-soft);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.admin-announcement-actions .button {
+  justify-self: start;
+}
+
+.admin-announcement-delete-heading {
+  margin-top: 1rem;
+}
+
+.admin-announcement-actions .button-danger-ghost.is-confirm {
+  color: #fff;
+  background: var(--red);
+  border-color: var(--red);
+}
+
 .admin-toggle-group,
 .admin-feature-flags {
   display: grid;

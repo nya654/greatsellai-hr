@@ -9,8 +9,10 @@ from app.models import (
     Resume,
     ResumeAiExtractionJob,
     ResumeDocumentExtractionJob,
+    ResumeScoreBatchItem,
 )
 from app.services.resume_service import reconcile_legacy_completed_ai_resumes
+from app.tenant_scope import bypass_organization_scope
 from test_filter_mvp_contract import _save_ready_resume
 from test_score_service import _fake_score_provider, _template_payload
 from test_summary_service import _fake_summary_provider
@@ -85,6 +87,7 @@ def test_resume_library_returns_current_ai_summary_preview_and_score(
         "score_status",
         "score_template_name",
         "score_created_at",
+        "score_task_state",
     }
     assert item["resume_id"] == resume_id
     assert item["candidate_id"] == candidate_id
@@ -119,6 +122,7 @@ def test_resume_library_returns_current_ai_summary_preview_and_score(
     assert item["score_status"] == "succeeded"
     assert item["score_template_name"] == "Backend Engineer"
     assert item["score_created_at"] == score.json()["created_at"]
+    assert item["score_task_state"] == "none"
 
 
 def test_resume_library_honors_page_size_and_page_boundaries(ai_client) -> None:
@@ -388,3 +392,84 @@ def test_legacy_completed_ai_extraction_is_automatically_activated(ai_client) ->
     assert detail.status_code == 200, detail.text
     assert detail.json()["extraction_status"] == "ready"
     assert detail.json()["is_active"] is True
+
+
+def test_resume_library_reports_queued_score_task_state(ai_client) -> None:
+    _, resume_id = _save_ready_resume(
+        ai_client,
+        source_text="教育经历 清华大学 计算机 本科。工作经历 Acme Python Engineer。技能 Python SQL",
+    )
+    template = ai_client.post("/v1/score-templates", json=_template_payload())
+    assert template.status_code == 200, template.text
+    batch = ai_client.post(
+        f"/v1/score-templates/{template.json()['template_id']}/score-all"
+    )
+    assert batch.status_code == 200, batch.text
+    assert batch.json()["total_count"] == 1
+
+    response = ai_client.get("/v1/resume-library")
+    assert response.status_code == 200, response.text
+    item = response.json()["items"][0]
+    assert item["resume_id"] == resume_id
+    assert item["score_task_state"] == "queued"
+    # 尚无完成的评分行，静态评分字段保持为空。
+    assert item["score_total"] is None
+
+
+def test_resume_library_score_task_state_becomes_running_then_none(ai_client) -> None:
+    _, resume_id = _save_ready_resume(
+        ai_client,
+        source_text="教育经历 清华大学 计算机 本科。工作经历 Acme Python Engineer。技能 Python SQL",
+    )
+    template = ai_client.post("/v1/score-templates", json=_template_payload())
+    assert template.status_code == 200, template.text
+    batch = ai_client.post(
+        f"/v1/score-templates/{template.json()['template_id']}/score-all"
+    )
+    assert batch.status_code == 200, batch.text
+    batch_id = batch.json()["batch_id"]
+
+    database = ai_client.app.state.database
+    with database.session_factory() as session:
+        with bypass_organization_scope(session):
+            item = session.scalar(
+                select(ResumeScoreBatchItem).where(
+                    ResumeScoreBatchItem.batch_id == batch_id
+                )
+            )
+            assert item is not None
+            item.status = "running"
+            session.commit()
+
+    running = ai_client.get("/v1/resume-library")
+    assert running.status_code == 200, running.text
+    row = running.json()["items"][0]
+    assert row["resume_id"] == resume_id
+    assert row["score_task_state"] == "running"
+
+    with database.session_factory() as session:
+        with bypass_organization_scope(session):
+            item = session.scalar(
+                select(ResumeScoreBatchItem).where(
+                    ResumeScoreBatchItem.batch_id == batch_id
+                )
+            )
+            assert item is not None
+            item.status = "succeeded"
+            session.commit()
+
+    finished = ai_client.get("/v1/resume-library")
+    assert finished.status_code == 200, finished.text
+    assert finished.json()["items"][0]["score_task_state"] == "none"
+
+
+def test_resume_library_score_task_state_none_without_active_batch(ai_client) -> None:
+    _, resume_id = _save_ready_resume(
+        ai_client,
+        source_text="教育经历 清华大学 计算机 本科。工作经历 Acme Python Engineer。技能 Python SQL",
+    )
+    response = ai_client.get("/v1/resume-library")
+    assert response.status_code == 200, response.text
+    item = response.json()["items"][0]
+    assert item["resume_id"] == resume_id
+    assert item["score_task_state"] == "none"

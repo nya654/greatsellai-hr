@@ -6,7 +6,14 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models import Resume, ResumeEducation, ResumeScore, ResumeSummary
+from app.models import (
+    Resume,
+    ResumeEducation,
+    ResumeScore,
+    ResumeScoreBatch,
+    ResumeScoreBatchItem,
+    ResumeSummary,
+)
 from app.schemas import (
     ResumeAnalysisWaitEstimate as ResumeAnalysisWaitEstimateResponse,
     ResumeLibraryItem,
@@ -32,7 +39,42 @@ _SUMMARY_SECTION_ORDER = (
 # Keep review-needed AI scores visible in the recruiter library.  They remain
 # clearly labelled by their status and are never an automatic hiring decision.
 _CURRENT_SCORE_STATUSES = {"succeeded", "needs_review", "overridden"}
+# A row's score is "in progress" while an active batch item owns it.  Both
+# the batch and the item must be non-terminal for the derivation to fire.
+_IN_PROGRESS_SCORE_STATUSES = ("queued", "running")
 _PREVIEW_MAX_CHARS = 220
+
+
+def _active_score_task_states(
+    session: Session,
+    resume_ids: list[str],
+) -> dict[str, str]:
+    """Map resume_id -> 'queued' | 'running' from active batch items.
+
+    Runs under the session's tenant scope (``with_loader_criteria``), so a
+    foreign workspace's batch can never surface here.  When a resume appears
+    in several active batches, ``running`` wins over ``queued``.
+    """
+
+    if not resume_ids:
+        return {}
+    rows = session.execute(
+        select(ResumeScoreBatchItem.resume_id, ResumeScoreBatchItem.status)
+        .join(
+            ResumeScoreBatch,
+            ResumeScoreBatch.id == ResumeScoreBatchItem.batch_id,
+        )
+        .where(
+            ResumeScoreBatchItem.resume_id.in_(resume_ids),
+            ResumeScoreBatchItem.status.in_(_IN_PROGRESS_SCORE_STATUSES),
+            ResumeScoreBatch.status.in_(_IN_PROGRESS_SCORE_STATUSES),
+        )
+    ).all()
+    state_by_resume: dict[str, str] = {}
+    for resume_id, item_status in rows:
+        if item_status == "running" or resume_id not in state_by_resume:
+            state_by_resume[resume_id] = item_status
+    return state_by_resume
 
 
 def _isoformat(value: datetime) -> str:
@@ -171,6 +213,10 @@ def list_resume_library(
         session,
         resumes=resumes,
     )
+    score_task_states = _active_score_task_states(
+        session,
+        resume_ids=[resume.id for resume in resumes],
+    )
     items: list[ResumeLibraryItem] = []
     for resume in resumes:
         highest_education = _highest_education(resume)
@@ -236,6 +282,7 @@ def list_resume_library(
                 score_status=score.status if score else None,
                 score_template_name=score.template.name if score and score.template else None,
                 score_created_at=_isoformat(score.created_at) if score else None,
+                score_task_state=score_task_states.get(resume.id, "none"),
             )
         )
     return ResumeLibraryResponse(

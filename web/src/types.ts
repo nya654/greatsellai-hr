@@ -1496,6 +1496,7 @@ export interface ResumeLibraryItem {
   score_status: string | null;
   score_template_name: string | null;
   score_created_at: string | null;
+  score_task_state: "none" | "queued" | "running";
 }
 
 export interface ResumeLibraryResponse {

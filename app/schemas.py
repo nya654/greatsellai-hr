@@ -3014,6 +3014,9 @@ class ResumeLibraryItem(ApiModel):
     # prose.
     graduation_month: Month | None = None
     employment_months: int = 0
+    # Combined tenure across formal employment and internships, matching the
+    # tenure basis shown in initial screening ("工作年限" includes internships).
+    employment_or_internship_months: int = 0
     education_school: str | None = None
     highest_degree: DegreeLevel | None = None
     summary_preview: str | None = None

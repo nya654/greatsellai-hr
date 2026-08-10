@@ -219,6 +219,7 @@ def list_resume_library(
                     highest_education.end_month if highest_education is not None else None
                 ),
                 employment_months=resume.employment_months,
+                employment_or_internship_months=resume.employment_or_internship_months,
                 education_school=(
                     highest_education.school_name_raw
                     if highest_education is not None

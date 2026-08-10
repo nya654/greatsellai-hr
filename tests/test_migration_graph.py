@@ -11,6 +11,8 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from app.models import (
+    Announcement,
+    AnnouncementRead,
     CandidateFavorite,
     CandidateNameExtractionJob,
     DocumentExtractionOcrDailyMetric,
@@ -43,7 +45,7 @@ from app.models import (
 def test_alembic_history_has_one_canonical_head() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert script.get_heads() == ["20260806_0063"]
+    assert script.get_heads() == ["20260806_0064"]
 
 
 def test_migration_revision_identifiers_are_unique() -> None:
@@ -241,6 +243,16 @@ def test_workspace_ai_import_settings_ddl_identifiers_fit_postgresql() -> None:
     CreateTable(WorkspaceAiImportSettings.__table__).compile(dialect=dialect)
     for index in WorkspaceAiImportSettings.__table__.indexes:
         CreateIndex(index).compile(dialect=dialect)
+
+
+def test_announcement_ddl_identifiers_fit_postgresql() -> None:
+    """Announcement indexes and constraints must fit PostgreSQL's 63-byte limit."""
+
+    dialect = postgresql.dialect()
+    for table in (Announcement.__table__, AnnouncementRead.__table__):
+        CreateTable(table).compile(dialect=dialect)
+        for index in table.indexes:
+            CreateIndex(index).compile(dialect=dialect)
 
 
 def test_user_filter_display_preferences_ddl_identifiers_fit_postgresql() -> None:

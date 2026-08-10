@@ -7,6 +7,7 @@ export type AdminView =
   | "organizations"
   | "users"
   | "feedback"
+  | "announcements"
   | "plans"
   | "ai"
   | "runtime"
@@ -264,6 +265,18 @@ export interface AuditQuery {
   created_at_to?: string;
   limit?: number;
   offset?: number;
+}
+
+/** Shared create/update payload for platform announcements. */
+export interface PlatformAnnouncementUpsertInput {
+  title: string;
+  body: string;
+  reason: string;
+}
+
+/** Optional audit reason for publish/unpublish/delete toggles. */
+export interface PlatformAnnouncementPublishInput {
+  reason?: string;
 }
 
 export interface ProductPlan {

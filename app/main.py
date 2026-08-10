@@ -40,6 +40,7 @@ from app.config import AppSettings
 from app.database import Database, get_session
 from app.filter_options import filter_options_payload
 from app.models import (
+    Announcement,
     Candidate,
     MailboxConfig,
     MailboxOAuthConnectIntent,
@@ -55,6 +56,10 @@ from app.observability import (
     log_exception_event,
 )
 from app.schemas import (
+    AnnouncementInboxResponse,
+    AnnouncementPublish,
+    AnnouncementResponse,
+    AnnouncementUpsert,
     AuthLogin,
     AuthRegistration,
     AuthSession,
@@ -305,6 +310,16 @@ from app.services.ai_usage_reporting_service import (
     list_platform_ai_run_summaries,
     summarize_platform_ai_usage,
     summarize_platform_ai_usage_trend,
+)
+from app.services.announcement_service import (
+    AnnouncementNotFoundError,
+    announcement_inbox,
+    create_announcement,
+    delete_announcement,
+    list_announcements,
+    mark_all_announcements_read,
+    set_announcement_published,
+    update_announcement,
 )
 from app.services.platform_admin_service import (
     PlatformAdminServiceError,
@@ -1079,6 +1094,29 @@ def _raise_platform_admin_service_error(exc: PlatformAdminServiceError) -> None:
     else:
         response_status = status.HTTP_422_UNPROCESSABLE_CONTENT
     raise HTTPException(status_code=response_status, detail=code) from exc
+
+
+def _announcement_error_http_exception(exc: AnnouncementNotFoundError) -> HTTPException:
+    code = str(exc)
+    if code == "announcement_not_found":
+        response_status = status.HTTP_404_NOT_FOUND
+    else:
+        response_status = status.HTTP_422_UNPROCESSABLE_CONTENT
+    return HTTPException(status_code=response_status, detail=code)
+
+
+def _announcement_snapshot(announcement: Announcement) -> dict:
+    if announcement is None:
+        return {}
+    return {
+        "announcement_id": announcement.id,
+        "title": announcement.title,
+        "body": announcement.body,
+        "is_published": announcement.is_published,
+        "published_at": (
+            announcement.published_at.isoformat() if announcement.published_at else None
+        ),
+    }
 
 
 def _mailbox_error_http_exception(exc: MailboxImportError) -> HTTPException:
@@ -2990,6 +3028,191 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
             )
         except PlatformAdminServiceError as exc:
             _raise_platform_admin_service_error(exc)
+
+    @app.get("/v1/platform/announcements", response_model=list[AnnouncementResponse])
+    def get_platform_announcements(
+        include_unpublished: bool = Query(default=False),
+        _: AuthPrincipal = Depends(require_platform_admin),
+        session: Session = Depends(get_session),
+    ) -> list[AnnouncementResponse]:
+        return list_announcements(
+            session,
+            include_unpublished=include_unpublished,
+        )
+
+    @app.post(
+        "/v1/platform/announcements",
+        response_model=AnnouncementResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_platform_announcement(
+        payload: AnnouncementUpsert,
+        principal: AuthPrincipal = Depends(require_platform_admin),
+        session: Session = Depends(get_session),
+    ) -> AnnouncementResponse:
+        response = create_announcement(
+            session,
+            title=payload.title,
+            body=payload.body,
+            actor_user_id=principal.user.id,
+        )
+        record_platform_audit_event(
+            session,
+            actor_user_id=principal.user.id,
+            action="announcement.created",
+            target_type="announcement",
+            target_id=response.announcement_id,
+            reason=payload.reason,
+            before_state={},
+            after_state=_announcement_snapshot(
+                session.get(Announcement, response.announcement_id)
+            ),
+            request_id=current_request_id(),
+        )
+        _commit_or_raise(session)
+        return response
+
+    @app.put(
+        "/v1/platform/announcements/{announcement_id}",
+        response_model=AnnouncementResponse,
+    )
+    def update_platform_announcement(
+        announcement_id: str,
+        payload: AnnouncementUpsert,
+        principal: AuthPrincipal = Depends(require_platform_admin),
+        session: Session = Depends(get_session),
+    ) -> AnnouncementResponse:
+        try:
+            announcement = session.get(Announcement, announcement_id)
+            before = _announcement_snapshot(announcement)
+            response = update_announcement(
+                session,
+                announcement_id=announcement_id,
+                title=payload.title,
+                body=payload.body,
+            )
+            record_platform_audit_event(
+                session,
+                actor_user_id=principal.user.id,
+                action="announcement.updated",
+                target_type="announcement",
+                target_id=announcement_id,
+                reason=payload.reason,
+                before_state=before,
+                after_state=_announcement_snapshot(
+                    session.get(Announcement, announcement_id)
+                ),
+                request_id=current_request_id(),
+            )
+            _commit_or_raise(session)
+            return response
+        except AnnouncementNotFoundError as exc:
+            session.rollback()
+            raise _announcement_error_http_exception(exc) from exc
+
+    @app.post(
+        "/v1/platform/announcements/{announcement_id}/publish",
+        response_model=AnnouncementResponse,
+    )
+    def publish_platform_announcement(
+        announcement_id: str,
+        payload: AnnouncementPublish | None = None,
+        principal: AuthPrincipal = Depends(require_platform_admin),
+        session: Session = Depends(get_session),
+    ) -> AnnouncementResponse:
+        try:
+            announcement = session.get(Announcement, announcement_id)
+            before = _announcement_snapshot(announcement)
+            response = set_announcement_published(
+                session,
+                announcement_id=announcement_id,
+                published=True,
+            )
+            record_platform_audit_event(
+                session,
+                actor_user_id=principal.user.id,
+                action="announcement.published",
+                target_type="announcement",
+                target_id=announcement_id,
+                reason=(payload.reason if payload else None) or "announcement_published",
+                before_state=before,
+                after_state=_announcement_snapshot(
+                    session.get(Announcement, announcement_id)
+                ),
+                request_id=current_request_id(),
+            )
+            _commit_or_raise(session)
+            return response
+        except AnnouncementNotFoundError as exc:
+            session.rollback()
+            raise _announcement_error_http_exception(exc) from exc
+
+    @app.post(
+        "/v1/platform/announcements/{announcement_id}/unpublish",
+        response_model=AnnouncementResponse,
+    )
+    def unpublish_platform_announcement(
+        announcement_id: str,
+        payload: AnnouncementPublish | None = None,
+        principal: AuthPrincipal = Depends(require_platform_admin),
+        session: Session = Depends(get_session),
+    ) -> AnnouncementResponse:
+        try:
+            announcement = session.get(Announcement, announcement_id)
+            before = _announcement_snapshot(announcement)
+            response = set_announcement_published(
+                session,
+                announcement_id=announcement_id,
+                published=False,
+            )
+            record_platform_audit_event(
+                session,
+                actor_user_id=principal.user.id,
+                action="announcement.unpublished",
+                target_type="announcement",
+                target_id=announcement_id,
+                reason=(payload.reason if payload else None) or "announcement_unpublished",
+                before_state=before,
+                after_state=_announcement_snapshot(
+                    session.get(Announcement, announcement_id)
+                ),
+                request_id=current_request_id(),
+            )
+            _commit_or_raise(session)
+            return response
+        except AnnouncementNotFoundError as exc:
+            session.rollback()
+            raise _announcement_error_http_exception(exc) from exc
+
+    @app.delete(
+        "/v1/platform/announcements/{announcement_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    def delete_platform_announcement(
+        announcement_id: str,
+        payload: AnnouncementPublish | None = None,
+        principal: AuthPrincipal = Depends(require_platform_admin),
+        session: Session = Depends(get_session),
+    ) -> None:
+        try:
+            announcement = session.get(Announcement, announcement_id)
+            before = _announcement_snapshot(announcement)
+            delete_announcement(session, announcement_id=announcement_id)
+            record_platform_audit_event(
+                session,
+                actor_user_id=principal.user.id,
+                action="announcement.deleted",
+                target_type="announcement",
+                target_id=announcement_id,
+                reason=(payload.reason if payload else None) or "announcement_deleted",
+                before_state=before,
+                after_state={},
+                request_id=current_request_id(),
+            )
+            _commit_or_raise(session)
+        except AnnouncementNotFoundError as exc:
+            session.rollback()
+            raise _announcement_error_http_exception(exc) from exc
 
     @app.get("/v1/platform/plans", response_model=list[ProductPlanResponse])
     def get_platform_plans(
@@ -5932,6 +6155,22 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
             user_id=principal.user.id,
             organization_id=principal.organization_id,
         )
+        _commit_or_raise(session)
+        return response
+
+    @app.get("/v1/announcements", response_model=AnnouncementInboxResponse)
+    def get_announcement_inbox(
+        principal: AuthPrincipal = Depends(require_authenticated_member),
+        session: Session = Depends(get_session),
+    ) -> AnnouncementInboxResponse:
+        return announcement_inbox(session, user_id=principal.user.id)
+
+    @app.post("/v1/announcements/read", response_model=AnnouncementInboxResponse)
+    def post_announcements_read(
+        principal: AuthPrincipal = Depends(require_authenticated_member),
+        session: Session = Depends(get_session),
+    ) -> AnnouncementInboxResponse:
+        response = mark_all_announcements_read(session, user_id=principal.user.id)
         _commit_or_raise(session)
         return response
 

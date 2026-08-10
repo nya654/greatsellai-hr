@@ -13,6 +13,7 @@ import { AdminOverviewPage } from "./pages/AdminOverviewPage";
 import { AdminOrganizationsPage } from "./pages/AdminOrganizationsPage";
 import { AdminFeedbackPage } from "./pages/AdminFeedbackPage";
 import { AdminRuntimePage } from "./pages/AdminRuntimePage";
+import { AdminAnnouncementsPage } from "./pages/AdminAnnouncementsPage";
 import {
   AdminAiPage,
   AdminAuditPage,
@@ -32,6 +33,7 @@ const navigation: Array<{
   { view: "organizations", label: "工作区", description: "套餐、试用与成员", icon: "briefcase", group: "客户" },
   { view: "users", label: "用户", description: "身份与账号状态", icon: "user", group: "客户" },
   { view: "feedback", label: "用户反馈", description: "原始反馈与奖励", icon: "document", group: "运营" },
+  { view: "announcements", label: "公告管理", description: "系统公告与发布", icon: "bell", group: "运营" },
   { view: "plans", label: "套餐与试用", description: "价格与功能范围", icon: "layers", group: "运营" },
   { view: "ai", label: "AI 运营", description: "运行、用量与配置", icon: "spark", group: "运营" },
   { view: "runtime", label: "运行诊断", description: "服务、Worker 与队列", icon: "activity", group: "治理" },
@@ -48,6 +50,7 @@ const viewPaths: Record<AdminView, string> = {
   organizations: `${platformBasePath}/organizations`,
   users: `${platformBasePath}/users`,
   feedback: `${platformBasePath}/feedback`,
+  announcements: `${platformBasePath}/announcements`,
   plans: `${platformBasePath}/plans`,
   ai: `${platformBasePath}/ai`,
   runtime: `${platformBasePath}/runtime`,
@@ -59,6 +62,7 @@ function viewFromPath(pathname = window.location.pathname): AdminView {
   if (segment === "organizations") return "organizations";
   if (segment === "users") return "users";
   if (segment === "feedback") return "feedback";
+  if (segment === "announcements") return "announcements";
   if (segment === "plans") return "plans";
   if (segment === "ai") return "ai";
   if (segment === "runtime") return "runtime";
@@ -313,6 +317,8 @@ export default function AdminApp() {
             <AdminUsersPage />
           ) : view === "feedback" ? (
             <AdminFeedbackPage />
+          ) : view === "announcements" ? (
+            <AdminAnnouncementsPage />
           ) : view === "plans" ? (
             <AdminPlansPage />
           ) : view === "ai" ? (

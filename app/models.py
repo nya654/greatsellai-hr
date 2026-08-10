@@ -268,6 +268,85 @@ class UserAccount(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    announcement_reads: Mapped[list["AnnouncementRead"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+
+class Announcement(Base):
+    """A platform-wide, manually published system announcement.
+
+    Announcements are deliberately global and never organization-scoped: every
+    signed-in user sees the same active set in the topbar bell.  Per-user read
+    state lives in :class:`AnnouncementRead` so one person acknowledging a
+    notice never hides it from anyone else.
+    """
+
+    __tablename__ = "announcements"
+    __table_args__ = (
+        Index(
+            "ix_announcements_published_created",
+            "is_published",
+            "published_at",
+            "created_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    title: Mapped[str] = mapped_column(String(200))
+    body: Mapped[str] = mapped_column(Text)
+    is_published: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("user_accounts.id"),
+        nullable=True,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+    reads: Mapped[list["AnnouncementRead"]] = relationship(
+        back_populates="announcement",
+        cascade="all, delete-orphan",
+    )
+
+
+class AnnouncementRead(Base):
+    """One signed-in user's acknowledgment of one announcement."""
+
+    __tablename__ = "announcement_reads"
+    __table_args__ = (
+        UniqueConstraint(
+            "announcement_id",
+            "user_id",
+            name="uq_announcement_read_user",
+        ),
+        Index(
+            "ix_announcement_reads_user_created",
+            "user_id",
+            "read_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    announcement_id: Mapped[str] = mapped_column(
+        ForeignKey("announcements.id", ondelete="CASCADE"),
+        index=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_accounts.id", ondelete="CASCADE"),
+        index=True,
+    )
+    read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    announcement: Mapped[Announcement] = relationship(back_populates="reads")
+    user: Mapped[UserAccount] = relationship(back_populates="announcement_reads")
 
 
 class PlatformAuditEvent(Base):

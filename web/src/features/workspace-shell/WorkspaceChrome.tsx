@@ -11,6 +11,7 @@ import type {
   WorkspaceView,
 } from "./workspace-navigation-types";
 import { workspaceNavigationGroups } from "./workspace-navigation";
+import { AnnouncementBell } from "./AnnouncementBell";
 
 export type { WorkspaceNavigationView } from "./workspace-navigation-types";
 
@@ -220,6 +221,7 @@ export function Topbar({
         >
           <span className="topbar-action-label">上传简历</span>
         </BackofficeButton>
+        <AnnouncementBell />
         <AccountMenu
           canManageSettings={canManageSettings}
           onOpen={onAccountMenuOpen}

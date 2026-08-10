@@ -1,4 +1,4 @@
-import type { AuthSession } from "../types";
+import type { Announcement, AuthSession } from "../types";
 import type {
   AiModelProfileCreateInput,
   AiModelProfile,
@@ -14,6 +14,8 @@ import type {
   AiUsageTrendQuery,
   AuditQuery,
   OrganizationQuery,
+  PlatformAnnouncementPublishInput,
+  PlatformAnnouncementUpsertInput,
   PlatformAuditPage,
   PlatformDashboard,
   PlatformRuntimeOverview,
@@ -173,6 +175,35 @@ export const adminApi = {
     }),
   listAuditEvents: (query: AuditQuery = {}) =>
     request<PlatformAuditPage>(`/platform/audit-events${queryString(query)}`),
+  listAnnouncements: (includeUnpublished = true) =>
+    request<Announcement[]>(
+      `/platform/announcements${includeUnpublished ? "?include_unpublished=true" : ""}`,
+    ),
+  createAnnouncement: (input: PlatformAnnouncementUpsertInput) =>
+    request<Announcement>("/platform/announcements", {
+      method: "POST",
+      body: body(input),
+    }),
+  updateAnnouncement: (announcementId: string, input: PlatformAnnouncementUpsertInput) =>
+    request<Announcement>(`/platform/announcements/${encodeURIComponent(announcementId)}`, {
+      method: "PUT",
+      body: body(input),
+    }),
+  publishAnnouncement: (announcementId: string, reason?: string) =>
+    request<Announcement>(`/platform/announcements/${encodeURIComponent(announcementId)}/publish`, {
+      method: "POST",
+      body: body({ reason } as PlatformAnnouncementPublishInput),
+    }),
+  unpublishAnnouncement: (announcementId: string, reason?: string) =>
+    request<Announcement>(`/platform/announcements/${encodeURIComponent(announcementId)}/unpublish`, {
+      method: "POST",
+      body: body({ reason } as PlatformAnnouncementPublishInput),
+    }),
+  deleteAnnouncement: (announcementId: string, reason?: string) =>
+    request<void>(`/platform/announcements/${encodeURIComponent(announcementId)}`, {
+      method: "DELETE",
+      body: body({ reason } as PlatformAnnouncementPublishInput),
+    }),
   listWorkspaceFeedback: (query: WorkspaceFeedbackQuery = {}) =>
     request<PlatformWorkspaceFeedbackPage>(`/platform/workspace-feedback${queryString(query)}`),
   listPlans: () => request<ProductPlan[]>("/platform/plans"),
@@ -238,6 +269,7 @@ export function adminErrorMessage(error: unknown) {
       duplicate_ai_fallback_category: "同一种回退原因不能重复选择。",
       value_must_not_be_blank: "请填写必填信息，不能只输入空格。",
       platform_audit_reason_required: "请填写本次变更原因，便于平台审计。",
+      announcement_not_found: "没有找到这条公告，它可能已被删除。",
     };
     const message = (error.code && messages[error.code]) || error.message;
     return error.requestId ? `${message} 请求编号：${error.requestId}` : message;

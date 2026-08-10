@@ -2086,3 +2086,20 @@ export type FilterSectionKey =
 export interface FilterSectionPreferences {
   filter_section_keys: FilterSectionKey[];
 }
+
+/** One platform-wide system announcement served to the workspace bell. */
+export interface Announcement {
+  announcement_id: string;
+  title: string;
+  body: string;
+  is_published: boolean;
+  published_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Active announcements plus the signed-in user's unread count. */
+export interface AnnouncementInbox {
+  items: Announcement[];
+  unread_count: number;
+}

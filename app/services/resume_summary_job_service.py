@@ -216,6 +216,73 @@ def enqueue_resume_summary_job(
     return job
 
 
+def request_resume_summary_job(
+    session: Session,
+    *,
+    resume: Resume,
+    settings: AppSettings,
+) -> ResumeSummaryJob | None:
+    """Requeue the current-facts automatic summary after a terminal failure.
+
+    This is the retry counterpart to ``enqueue_resume_summary_job``: a
+    failed/unavailable job may be deliberately re-queued, mirroring
+    ``request_resume_ai_extraction``.  An already queued/running job is left
+    untouched (idempotent), and a resume that is no longer summary-eligible
+    returns ``None`` instead of raising.
+    """
+
+    if (
+        resume.extraction_status != "ready"
+        or not resume.is_active
+        or has_unreliable_source_text(resume.quality_flags)
+    ):
+        return None
+    snapshot = session.scalar(
+        select(ResumeFactSnapshot).where(
+            ResumeFactSnapshot.resume_id == resume.id,
+            ResumeFactSnapshot.organization_id == resume.organization_id,
+            ResumeFactSnapshot.facts_version == resume.facts_version,
+        )
+    )
+    if snapshot is None:
+        return None
+
+    existing = session.scalar(
+        select(ResumeSummaryJob).where(
+            ResumeSummaryJob.resume_id == resume.id,
+            ResumeSummaryJob.facts_version == resume.facts_version,
+        )
+    )
+    if existing is None:
+        return enqueue_resume_summary_job(session, resume=resume, settings=settings)
+    if existing.status in {SUMMARY_JOB_QUEUED, SUMMARY_JOB_RUNNING}:
+        return existing
+    if existing.status == SUMMARY_JOB_SUCCEEDED:
+        return existing
+
+    now = _utcnow()
+    route_policy_version_id, availability_error = _route_pin_for_new_summary_job(
+        session,
+        settings=settings,
+    )
+    existing.status = (
+        SUMMARY_JOB_QUEUED if availability_error is None else SUMMARY_JOB_UNAVAILABLE
+    )
+    existing.attempt_count = 0
+    existing.max_attempts = max(1, settings.ai_extraction_job_max_attempts)
+    existing.ai_route_policy_version_id = route_policy_version_id
+    existing.next_attempt_at = now if availability_error is None else None
+    existing.lease_owner = None
+    existing.lease_expires_at = None
+    existing.last_error = availability_error
+    existing.summary_id = None
+    existing.requested_at = now
+    existing.started_at = None
+    existing.completed_at = None
+    session.flush()
+    return existing
+
+
 def run_resume_summary_worker_once(
     database: Database,
     *,
@@ -837,6 +904,7 @@ __all__ = [
     "ClaimedResumeSummaryJob",
     "ResumeSummaryJobError",
     "enqueue_resume_summary_job",
+    "request_resume_summary_job",
     "run_resume_summary_worker_once",
     "summary_generation_state",
 ]

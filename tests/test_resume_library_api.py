@@ -87,6 +87,8 @@ def test_resume_library_returns_current_ai_summary_preview_and_score(
         "score_status",
         "score_template_name",
         "score_created_at",
+        "latest_score_status",
+        "score_retryable",
         "score_task_state",
     }
     assert item["resume_id"] == resume_id

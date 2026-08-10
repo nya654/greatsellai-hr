@@ -228,7 +228,7 @@ class AppSettings:
     # direct peer is explicitly configured as a trusted proxy.
     registration_rate_limit_global_limit: int = 20
     registration_rate_limit_global_window_seconds: int = 60 * 60
-    registration_rate_limit_client_limit: int = 3
+    registration_rate_limit_client_limit: int = 5
     registration_rate_limit_client_window_seconds: int = 15 * 60
     registration_rate_limit_email_limit: int = 3
     registration_rate_limit_email_window_seconds: int = 24 * 60 * 60

@@ -3025,6 +3025,10 @@ class ResumeLibraryItem(ApiModel):
     score_status: str | None = None
     score_template_name: str | None = None
     score_created_at: str | None = None
+    # Derived, never persisted: whether an active batch item is generating this
+    # row's score right now.  Lets the library animate "评分生成中" while the
+    # worker runs, without waiting for a completed score row.
+    score_task_state: Literal["none", "queued", "running"] = "none"
 
 
 class ResumeLibraryResponse(ApiModel):

@@ -1,5 +1,7 @@
 # 简历筛选 V3
 
+> **仓库迁移记录（2026-08-10）**：原 `greatsellai/greatsellai-hr` 随账号封禁而不可用，本仓库已迁移至 `nya654/greatsellai-hr`，完整 git 历史、分支与 129 个发布 tag 全部保留；staging/production 的 CI 配置（environments、secrets、vars）已在新仓库重建。
+
 这是一个独立重写项目。旧系统和旧的 resume_text 不会被导入为 V3 的可筛选事实。
 
 - [产品需求文档](docs/PRD.md)

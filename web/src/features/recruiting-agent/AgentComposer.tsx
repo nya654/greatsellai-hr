@@ -372,9 +372,10 @@ export function AgentComposer({
       <Icon name={referenceIcon(reference)} size={16} />
       <span>
         <strong>{reference.label}</strong>
-        {reference.description && <small>{reference.description}</small>}
+        {reference.kind !== "candidate" && reference.description && (
+          <small>{reference.description}</small>
+        )}
       </span>
-      <em>{referenceKindLabel[reference.kind]}</em>
     </button>
   );
 

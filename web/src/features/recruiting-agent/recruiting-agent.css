@@ -2023,11 +2023,11 @@
 
 .backoffice-ui-root .agent-reference-menu-list > button {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   width: 100%;
   gap: 0.5rem;
   align-items: center;
-  padding: 0.5rem;
+  padding: 0.375rem 0.5rem;
   color: var(--ink-soft);
   text-align: left;
   background: transparent;
@@ -2063,7 +2063,6 @@
 }
 
 .backoffice-ui-root .agent-reference-menu-list small,
-.backoffice-ui-root .agent-reference-menu-list em,
 .backoffice-ui-root .agent-reference-menu-empty {
   color: var(--ink-muted);
   font-size: 0.625rem;

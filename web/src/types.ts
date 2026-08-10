@@ -1486,6 +1486,8 @@ export interface ResumeLibraryItem {
   /** Structured, source-backed facts shown beneath the candidate name. */
   graduation_month: string | null;
   employment_months: number;
+  /** Combined formal + internship tenure; basis for the "工作年限" shown on cards. */
+  employment_or_internship_months: number;
   education_school: string | null;
   highest_degree: DegreeLevel | null;
   summary_preview: string | null;
@@ -1497,6 +1499,7 @@ export interface ResumeLibraryItem {
   /** Durable score attempt state; only failed attempts are one-click retryable. */
   latest_score_status: string | null;
   score_retryable: boolean;
+  score_task_state: "none" | "queued" | "running";
 }
 
 /** Mutually exclusive resume-library status tabs; null means "no filter". */

@@ -169,13 +169,11 @@ function agentContextSourceLabel(
 
 function candidateReferenceAsOption(
   reference: RecruitingAgentCandidateReference,
-  source: "working" | "all",
 ): AgentReference {
   return {
     referenceId: `candidate:${reference.candidate_id}`,
     kind: "candidate",
     label: reference.display_name || "候选人",
-    description: source === "working" ? "来自当前工作集" : "来自当前工作区",
   };
 }
 
@@ -1188,8 +1186,8 @@ export function RecruitingAgentPage({
       setCandidateSections((sections) => {
         const current = sections[scope];
         const items = nextCursor
-          ? [...current.items, ...page.items.map((item) => candidateReferenceAsOption(item, scope))]
-          : page.items.map((item) => candidateReferenceAsOption(item, scope));
+          ? [...current.items, ...page.items.map((item) => candidateReferenceAsOption(item))]
+          : page.items.map((item) => candidateReferenceAsOption(item));
         return { ...sections, [scope]: { items, nextCursor: page.next_cursor, loading: false } };
       });
     } catch {

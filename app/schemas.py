@@ -3014,6 +3014,9 @@ class ResumeLibraryItem(ApiModel):
     # prose.
     graduation_month: Month | None = None
     employment_months: int = 0
+    # Combined tenure across formal employment and internships, matching the
+    # tenure basis shown in initial screening ("工作年限" includes internships).
+    employment_or_internship_months: int = 0
     education_school: str | None = None
     highest_degree: DegreeLevel | None = None
     summary_preview: str | None = None
@@ -3027,6 +3030,10 @@ class ResumeLibraryItem(ApiModel):
     # failed and can be retried".
     latest_score_status: str | None = None
     score_retryable: bool = False
+    # Derived, never persisted: whether an active batch item is generating this
+    # row's score right now.  Lets the library animate "评分生成中" while the
+    # worker runs, without waiting for a completed score row.
+    score_task_state: Literal["none", "queued", "running"] = "none"
 
 
 class ResumeLibraryResponse(ApiModel):

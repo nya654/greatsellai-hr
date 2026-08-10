@@ -330,9 +330,50 @@
   }
 }
 
+.backoffice-ui-root .resume-library-page .library-score-activity {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: #4338ca;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.backoffice-ui-root .resume-library-page .library-score-activity-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  flex: none;
+  background: linear-gradient(135deg, #2563eb 0%, #7c3aed 48%, #d946ef 100%);
+  background-size: 180% 180%;
+  border-radius: 9999px;
+  box-shadow: 0 0 6px rgb(79 70 229 / 0.45);
+  animation:
+    library-ai-orb-gradient 2.4s ease-in-out infinite,
+    library-score-activity-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes library-score-activity-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.45;
+    transform: scale(0.72);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .backoffice-ui-root .resume-library-page .library-ai-activity.is-running .library-ai-orb,
   .backoffice-ui-root .resume-library-page .library-ai-activity.is-running .library-ai-orb::after {
+    animation: none;
+  }
+
+  .backoffice-ui-root .resume-library-page .library-score-activity-dot {
     animation: none;
   }
 }

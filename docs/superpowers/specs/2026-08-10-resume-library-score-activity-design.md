@@ -53,9 +53,12 @@ score_task_state: "none" | "queued" | "running"
   2. 否则维持现状：分数 / 尚无通用评分 / 完成提取后可评分。
 - **重新评分**：已有分数且正在重新评分时，运行期间用动画盖住旧分数（旧分已过期，
   显示旧分反而误导）。生成完成自动落新分数。
-- **轮询**：现有自动刷新条件（`AI_STATUS_POLL_INTERVAL_MS` = 2500ms，仅在 AI 提取/总结
-  进行中时轮询）追加"存在 `score_task_state` 为 queued/running 的行"，使评分完成时分数
-  自动落下来。
+- **轮询（整页单请求，不是逐行）**：现有自动刷新本就是一次 `listResumeLibrary(page, pageSize)`
+  每 `AI_STATUS_POLL_INTERVAL_MS`（2500ms）—— 不是按行轮询。本次只把该刷新条件追加
+  "存在 `score_task_state` 为 queued/running 的行"，**请求数不变：每 tick 仍只发 1 个
+  页面请求**，动画只是这份响应的纯渲染，不各自触发请求。条件命中任一进行中行才开定时器，
+  全部结束即停。该接口只读数据库，不触碰 AI 评分队列，不会消耗评分算力。且条件只看**当前页**
+  的行：若进行中的评分都在其他页，当前页不轮询，请求数天然 ≤1/2.5s。
 - **动画**：新增轻量圆点类，复用 `library-ai-orb-gradient` / `library-ai-orb-shine`
   关键帧的脉动语言（圆点呼吸 + 微光），并遵守 `prefers-reduced-motion` 降级为静态
   （与现有 `.library-ai-activity` 一致）。

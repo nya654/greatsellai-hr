@@ -76,6 +76,7 @@ def test_resume_library_returns_current_ai_summary_preview_and_score(
         "quality_flags",
         "graduation_month",
         "employment_months",
+        "employment_or_internship_months",
         "education_school",
         "highest_degree",
         "summary_preview",
@@ -107,6 +108,7 @@ def test_resume_library_returns_current_ai_summary_preview_and_score(
     assert item["quality_flags"] == []
     assert item["graduation_month"] is None
     assert item["employment_months"] == 0
+    assert item["employment_or_internship_months"] == 0
     assert item["education_school"] == "清华大学"
     assert item["highest_degree"] == "bachelor"
     assert item["summary_preview"] == "Backend-oriented candidate."
@@ -323,6 +325,7 @@ def test_resume_library_exposes_source_backed_candidate_profile_fields(ai_client
         assert len(resume.educations) == 1
         resume.educations[0].end_month = "2026-06"
         resume.employment_months = 30
+        resume.employment_or_internship_months = 36
         session.commit()
 
     response = ai_client.get("/v1/resume-library")
@@ -330,6 +333,7 @@ def test_resume_library_exposes_source_backed_candidate_profile_fields(ai_client
     item = response.json()["items"][0]
     assert item["graduation_month"] == "2026-06"
     assert item["employment_months"] == 30
+    assert item["employment_or_internship_months"] == 36
     assert item["education_school"] == "清华大学"
     assert item["highest_degree"] == "bachelor"
 

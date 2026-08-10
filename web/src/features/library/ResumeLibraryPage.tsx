@@ -316,11 +316,11 @@ function graduationProfileLabel(graduationMonth: string | null): string {
   return `${graduationYear}年毕业`;
 }
 
-function formalWorkExperienceLabel(months: number): string {
+function workExperienceLabel(months: number): string {
   const normalizedMonths = Number.isFinite(months)
     ? Math.max(0, Math.trunc(months))
     : 0;
-  if (normalizedMonths === 0) return "暂无正式工作经验";
+  if (normalizedMonths === 0) return "暂无工作经验";
   return `${formatDuration(normalizedMonths)}工作经验`;
 }
 
@@ -330,7 +330,7 @@ function candidateProfileText(item: ResumeLibraryItem): string {
     item.graduation_month ||
       item.education_school?.trim() ||
       (degree && degree !== "unknown") ||
-      item.employment_months > 0,
+      item.employment_or_internship_months > 0,
   );
   if (!hasProfileFacts) {
     return item.ai_extraction_status === "queued" ||
@@ -341,7 +341,7 @@ function candidateProfileText(item: ResumeLibraryItem): string {
 
   return [
     graduationProfileLabel(item.graduation_month),
-    formalWorkExperienceLabel(item.employment_months),
+    workExperienceLabel(item.employment_or_internship_months),
     item.education_school?.trim() || "学校待核实",
     degree && degree !== "unknown" ? degreeLabels[degree] : "学历待核实",
   ].join(" · ");

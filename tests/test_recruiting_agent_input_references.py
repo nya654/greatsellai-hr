@@ -81,11 +81,11 @@ def _seed_current_profile(client: TestClient) -> tuple[str, str]:
             clear_organization_context(session)
 
 
-def test_candidate_scope_returns_only_opaque_generic_reference(
+def test_candidate_scope_chip_carries_display_name_but_not_identifiers(
     ai_client: TestClient,
     monkeypatch,
 ) -> None:
-    """A composer candidate bind never returns its browser input or source text."""
+    """A composer candidate bind surfaces the picked person's display name, but never raw identifiers."""
 
     candidate_id, resume_id = _save_ready_agent_resume(ai_client)
     database = ai_client.app.state.database
@@ -113,7 +113,9 @@ def test_candidate_scope_returns_only_opaque_generic_reference(
     assert payload["active_context"]["candidate_set_source"] == "candidate"
     assert payload["active_context"]["candidate_count"] == 1
     reference = _reference_by_kind(payload, "candidate")
-    assert reference["label"] == "候选人"
+    # The one explicitly picked candidate is the person in focus: the chip
+    # carries their display name so the Agent knows who is being discussed.
+    assert reference["label"] == "测试候选人"
     assert reference["reference_id"] not in {candidate_id, resume_id}
     serialized = json.dumps(payload, ensure_ascii=False)
     assert candidate_id not in serialized
@@ -393,3 +395,82 @@ def test_agent_turn_rejects_candidate_resume_text_and_history_fields(
     assert ("body", "resume_id") in locations
     assert ("body", "resume_text") in locations
     assert ("body", "chat_history") in locations
+
+
+def test_candidate_scope_resume_read_skips_confirm_and_selection_markers(
+    ai_client: TestClient,
+    monkeypatch,
+) -> None:
+    """A composer-picked single candidate is readable without markers or a name.
+
+    The recruiter already chose this exact person in the composer, so a bare
+    follow-up like "介绍一下他" may resolve the one candidate in focus without
+    re-confirming a resume read or re-selecting among several people.
+    """
+
+    candidate_id, resume_id = _save_ready_agent_resume(ai_client)
+    bound = ai_client.post(
+        "/v1/recruiting-agent/conversations/candidate-scope",
+        json={"candidate_id": candidate_id},
+    )
+    assert bound.status_code == 200, bound.text
+    bound_payload = bound.json()
+    assert bound_payload["active_context"]["candidate_set_source"] == "candidate"
+    assert bound_payload["active_context"]["candidate_count"] == 1
+    assert _reference_by_kind(bound_payload, "candidate")["label"] == "测试候选人"
+
+    calls = 0
+    captured: dict[str, object] = {}
+
+    def fake_completion(*, settings, messages, tools_enabled=True):
+        nonlocal calls
+        del settings
+        calls += 1
+        if calls == 1:
+            assert tools_enabled is True
+            return {
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "read-scoped-candidate",
+                        "type": "function",
+                        "function": {
+                            "name": "read_candidate_resume_content",
+                            "arguments": json.dumps({}),
+                        },
+                    }
+                ],
+            }
+        assert calls == 2
+        assert tools_enabled is False
+        captured["tool_payload"] = json.loads(messages[-1]["content"])
+        return {"content": "已阅读这位候选人的简历正文。"}
+
+    monkeypatch.setattr(
+        "app.services.recruiting_agent_service._model_completion",
+        fake_completion,
+    )
+
+    response = ai_client.post(
+        "/v1/recruiting-agent/turns",
+        json={
+            # No "简历" marker, no name, no ordinal: the picked person is scope.
+            "message": "介绍一下他。",
+            "conversation_id": bound_payload["conversation_id"],
+            "context_version": bound_payload["context_version"],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    turn_payload = response.json()
+    assert turn_payload["intent"] == "read_resume_content"
+    assert [item["tool"] for item in turn_payload["tool_trace"]] == ["完整简历原文"]
+    tool_payload = captured["tool_payload"]
+    assert isinstance(tool_payload, dict)
+    assert tool_payload["candidate_name"] == "测试候选人"
+    assert tool_payload["page_count"] == 1
+    assert "北京大学" in tool_payload["resume_pages"][0]["text"]
+    serialized = json.dumps(turn_payload, ensure_ascii=False)
+    assert candidate_id not in serialized
+    assert resume_id not in serialized
+    assert "北京大学" not in serialized

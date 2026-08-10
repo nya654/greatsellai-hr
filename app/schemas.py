@@ -1708,13 +1708,14 @@ class RecruitingAgentInputReference(ApiModel):
 
     ``reference_id`` is intentionally an opaque database identifier.  It is
     never a candidate ID, resume ID, resume excerpt, or a browser-provided
-    source of truth.  Labels are deliberately generic so a reference chip
-    cannot reveal a candidate's name or other personal data.
+    source of truth.  Labels stay generic except for a single explicitly
+    chosen candidate, whose display name the composer already shows and the
+    Agent needs in order to know which person is in focus.
     """
 
     reference_id: str = Field(min_length=1, max_length=64)
     kind: Literal["candidate", "job", "filter", "talent_profile"]
-    label: Literal["候选人", "关联 JD", "当前筛选", "人才画像"]
+    label: str = Field(min_length=1, max_length=120)
 
 
 class RecruitingAgentCandidateReference(ApiModel):

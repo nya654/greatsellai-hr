@@ -1248,6 +1248,7 @@ def _candidate_set_resume_ids(
 
 def _active_context_input_references(
     *,
+    session: Session,
     candidate_set: RecruitingAgentCandidateSet | None,
     job: ResolvedJob | None,
     active_profile: TalentSearchProfileResponse | None,
@@ -1256,18 +1257,24 @@ def _active_context_input_references(
 
     The browser uses these only to render the state that the server has
     already bound to this conversation.  Candidate and resume identifiers
-    stay inside the candidate-set tables; labels deliberately avoid names,
-    raw JD/profile text, and any source excerpts.
+    stay inside the candidate-set tables; labels avoid raw JD/profile text
+    and any source excerpts.  The one exception is a single explicitly chosen
+    candidate: the composer already shows that person, so the chip carries
+    their display name so the Agent knows which candidate is in focus.
     """
 
     references: list[RecruitingAgentInputReference] = []
     if candidate_set is not None:
         if candidate_set.source_kind == _CONTEXT_SOURCE_CANDIDATE:
+            display_name = _candidate_scope_single_display_name(
+                session,
+                candidate_set=candidate_set,
+            )
             references.append(
                 RecruitingAgentInputReference(
                     reference_id=candidate_set.id,
                     kind="candidate",
-                    label="候选人",
+                    label=display_name or "候选人",
                 )
             )
         elif candidate_set.source_kind == _CONTEXT_SOURCE_CANDIDATE_FILTER:
@@ -1328,6 +1335,7 @@ def _conversation_context(
         active_job_title=(saved_job.title if saved_job is not None else None),
         active_talent_profile=_active_talent_profile_summary(active_profile),
         input_references=_active_context_input_references(
+            session=session,
             candidate_set=candidate_set,
             job=saved_job,
             active_profile=active_profile,
@@ -3564,6 +3572,53 @@ def _resume_content_tool_error(message: str) -> ToolRun:
     )
 
 
+def _candidate_scope_is_explicit_single(
+    session: Session,
+    *,
+    conversation: RecruitingAgentConversation,
+) -> bool:
+    """Whether the active scope is the one candidate the recruiter picked.
+
+    A composer ``bind_candidate_scope`` freezes exactly one server-validated
+    candidate.  For that scope the Agent already knows which person is being
+    discussed, so the read-resume tool can skip the re-naming guard.
+    """
+
+    candidate_set = _active_candidate_set(session, conversation=conversation)
+    if candidate_set is None or candidate_set.source_kind != _CONTEXT_SOURCE_CANDIDATE:
+        return False
+    return len(_candidate_set_resume_ids(session, candidate_set=candidate_set)) == 1
+
+
+def _candidate_scope_single_display_name(
+    session: Session,
+    *,
+    candidate_set: RecruitingAgentCandidateSet | None,
+) -> str | None:
+    """Return the visible name of the one explicitly chosen candidate.
+
+    The name only resolves from the conversation-owned candidate scope, never
+    from a browser-supplied identifier.  Multi-candidate or filter scopes have
+    no single name and return ``None``.
+    """
+
+    if (
+        candidate_set is None
+        or candidate_set.source_kind != _CONTEXT_SOURCE_CANDIDATE
+    ):
+        return None
+    resume_ids = _candidate_set_resume_ids(session, candidate_set=candidate_set)
+    if len(resume_ids) != 1:
+        return None
+    resume = session.get(Resume, resume_ids[0])
+    if resume is None or resume.candidate is None:
+        return None
+    name = resume.candidate.display_name
+    if not isinstance(name, str) or not name.strip():
+        return None
+    return name.strip()
+
+
 def _read_candidate_resume_content(
     session: Session,
     *,
@@ -3582,37 +3637,6 @@ def _read_candidate_resume_content(
         arguments,
         allowed={"candidate_name", "candidate_position"},
     )
-    if not _explicitly_requests_resume_content(user_message):
-        return _resume_content_tool_error(
-            "请在本次请求中明确说明要查看某位候选人的完整简历，未读取任何原文。"
-        )
-
-    raw_name = values.get("candidate_name")
-    candidate_name = (
-        raw_name.strip()
-        if isinstance(raw_name, str) and raw_name.strip() and len(raw_name.strip()) <= 120
-        else None
-    )
-    raw_position = values.get("candidate_position")
-    candidate_position = (
-        raw_position
-        if isinstance(raw_position, int) and not isinstance(raw_position, bool)
-        else None
-    )
-    if "candidate_name" in values and candidate_name is None:
-        return _resume_content_tool_error(
-            "候选人姓名无效，未读取任何简历原文。"
-        )
-    if "candidate_position" in values and candidate_position is None:
-        return _resume_content_tool_error(
-            "候选人序号无效，未读取任何简历原文。"
-        )
-    if candidate_name is not None and candidate_position is not None:
-        return _resume_content_tool_error(
-            "请使用当前结果中唯一的候选人姓名或序号指定一份简历，未读取任何原文。"
-        )
-    if candidate_position is not None and not 1 <= candidate_position <= 100:
-        return _resume_content_tool_error("候选人序号无效，未读取任何原文。")
 
     candidate_set = _active_candidate_set(session, conversation=conversation)
     resume_ids = _candidate_set_resume_ids(session, candidate_set=candidate_set)
@@ -3630,59 +3654,97 @@ def _read_candidate_resume_content(
         )
     ).all()
     by_id = {resume.id: resume for resume in resumes}
-    if candidate_position is not None:
-        if candidate_position > len(resume_ids):
-            return _resume_content_tool_error(
-                "该候选人序号不在当前会话的结果范围内，未读取任何原文。"
-            )
-        if not _message_explicitly_selects_candidate_position(
-            user_message,
-            candidate_position=candidate_position,
-        ):
-            return _resume_content_tool_error(
-                "请在本次请求中明确指定要查看的候选人序号，未读取任何原文。"
-            )
-        # Preserve the result list's stored ordinal. If this exact row later
-        # becomes unreliable, fail closed instead of silently shifting the
-        # request to the next candidate.
-        resume = by_id.get(resume_ids[candidate_position - 1])
-    elif candidate_name is not None:
-        assert candidate_name is not None
-        normalized_name = _normalized_candidate_reference(candidate_name)
-        matches = [
-            resume
-            for resume_id in resume_ids
-            if (resume := by_id.get(resume_id)) is not None
-            if resume.candidate is not None
-            and resume.candidate.display_name is not None
-            and _normalized_candidate_reference(resume.candidate.display_name)
-            == normalized_name
-        ]
-        if not matches:
-            return _resume_content_tool_error(
-                "当前会话的候选人范围内未找到该姓名，未读取其他候选人的简历。"
-            )
-        if len(matches) > 1:
-            return _resume_content_tool_error(
-                "当前结果中存在同名候选人，请使用候选人序号指定要查看的简历。"
-            )
-        resume = matches[0]
-        if not _message_explicitly_selects_candidate_name(
-            user_message,
-            candidate_name=candidate_name,
-        ):
-            return _resume_content_tool_error(
-                "请在本次请求中明确写出要查看的候选人姓名，未读取任何原文。"
-            )
-    elif len(resume_ids) == 1:
-        # A one-person scope is already an unambiguous, server-owned
-        # selection. This supports a natural "查看这份完整简历" follow-up
-        # without allowing the model to choose among multiple people.
+
+    if _candidate_scope_is_explicit_single(session, conversation=conversation):
+        # The recruiter already picked this exact person in the composer. The
+        # scope is server-owned and one-of-one, so the re-naming guard does not
+        # apply: the read targets the one candidate in focus.
         resume = by_id.get(resume_ids[0])
     else:
-        return _resume_content_tool_error(
-            "当前结果包含多位候选人，请在本次请求中明确指定姓名或序号，未读取任何原文。"
+        if not _explicitly_requests_resume_content(user_message):
+            return _resume_content_tool_error(
+                "请在本次请求中明确说明要查看某位候选人的完整简历，未读取任何原文。"
+            )
+
+        raw_name = values.get("candidate_name")
+        candidate_name = (
+            raw_name.strip()
+            if isinstance(raw_name, str) and raw_name.strip() and len(raw_name.strip()) <= 120
+            else None
         )
+        raw_position = values.get("candidate_position")
+        candidate_position = (
+            raw_position
+            if isinstance(raw_position, int) and not isinstance(raw_position, bool)
+            else None
+        )
+        if "candidate_name" in values and candidate_name is None:
+            return _resume_content_tool_error(
+                "候选人姓名无效，未读取任何简历原文。"
+            )
+        if "candidate_position" in values and candidate_position is None:
+            return _resume_content_tool_error(
+                "候选人序号无效，未读取任何简历原文。"
+            )
+        if candidate_name is not None and candidate_position is not None:
+            return _resume_content_tool_error(
+                "请使用当前结果中唯一的候选人姓名或序号指定一份简历，未读取任何原文。"
+            )
+        if candidate_position is not None and not 1 <= candidate_position <= 100:
+            return _resume_content_tool_error("候选人序号无效，未读取任何原文。")
+        if candidate_position is not None:
+            if candidate_position > len(resume_ids):
+                return _resume_content_tool_error(
+                    "该候选人序号不在当前会话的结果范围内，未读取任何原文。"
+                )
+            if not _message_explicitly_selects_candidate_position(
+                user_message,
+                candidate_position=candidate_position,
+            ):
+                return _resume_content_tool_error(
+                    "请在本次请求中明确指定要查看的候选人序号，未读取任何原文。"
+                )
+            # Preserve the result list's stored ordinal. If this exact row later
+            # becomes unreliable, fail closed instead of silently shifting the
+            # request to the next candidate.
+            resume = by_id.get(resume_ids[candidate_position - 1])
+        elif candidate_name is not None:
+            assert candidate_name is not None
+            normalized_name = _normalized_candidate_reference(candidate_name)
+            matches = [
+                resume
+                for resume_id in resume_ids
+                if (resume := by_id.get(resume_id)) is not None
+                if resume.candidate is not None
+                and resume.candidate.display_name is not None
+                and _normalized_candidate_reference(resume.candidate.display_name)
+                == normalized_name
+            ]
+            if not matches:
+                return _resume_content_tool_error(
+                    "当前会话的候选人范围内未找到该姓名，未读取其他候选人的简历。"
+                )
+            if len(matches) > 1:
+                return _resume_content_tool_error(
+                    "当前结果中存在同名候选人，请使用候选人序号指定要查看的简历。"
+                )
+            resume = matches[0]
+            if not _message_explicitly_selects_candidate_name(
+                user_message,
+                candidate_name=candidate_name,
+            ):
+                return _resume_content_tool_error(
+                    "请在本次请求中明确写出要查看的候选人姓名，未读取任何原文。"
+                )
+        elif len(resume_ids) == 1:
+            # A one-person scope is already an unambiguous, server-owned
+            # selection. This supports a natural "查看这份完整简历" follow-up
+            # without allowing the model to choose among multiple people.
+            resume = by_id.get(resume_ids[0])
+        else:
+            return _resume_content_tool_error(
+                "当前结果包含多位候选人，请在本次请求中明确指定姓名或序号，未读取任何原文。"
+            )
 
     if resume is None:
         return _resume_content_tool_error(

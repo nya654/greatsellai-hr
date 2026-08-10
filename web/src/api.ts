@@ -1,5 +1,6 @@
 import type {
   AiImportSettings,
+  AnnouncementInbox,
   AuthLoginInput,
   AuthRegistrationInput,
   AuthSession,
@@ -516,6 +517,16 @@ export function createApiClient(options: ApiClientOptions = {}) {
 
     getFilterSectionPreferences(): Promise<FilterSectionPreferences> {
       return request<FilterSectionPreferences>("/settings/filter-sections");
+    },
+
+    getAnnouncementInbox(): Promise<AnnouncementInbox> {
+      return request<AnnouncementInbox>("/announcements");
+    },
+
+    markAnnouncementsRead(): Promise<AnnouncementInbox> {
+      return request<AnnouncementInbox>("/announcements/read", {
+        method: "POST",
+      });
     },
 
     updateFilterSectionPreferences(

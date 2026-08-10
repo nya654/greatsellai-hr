@@ -1494,6 +1494,36 @@ export interface ResumeLibraryItem {
   score_status: string | null;
   score_template_name: string | null;
   score_created_at: string | null;
+  /** Durable score attempt state; only failed attempts are one-click retryable. */
+  latest_score_status: string | null;
+  score_retryable: boolean;
+}
+
+/** Mutually exclusive resume-library status tabs; null means "no filter". */
+export type ResumeLibraryStatusFilter =
+  | "processing"
+  | "attention"
+  | "unscored"
+  | "summary_pending";
+
+export interface ResumeRetryQueuedItem {
+  resume_id: string;
+  actions: string[];
+}
+
+export interface ResumeRetrySkippedItem {
+  resume_id: string;
+  reason: string;
+}
+
+export interface ResumeSingleRetryResponse {
+  queued: string[];
+  skipped: string[];
+}
+
+export interface ResumeBatchRetryResponse {
+  queued: ResumeRetryQueuedItem[];
+  skipped: ResumeRetrySkippedItem[];
 }
 
 export interface ResumeLibraryResponse {

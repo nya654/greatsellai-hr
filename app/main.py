@@ -198,6 +198,9 @@ from app.schemas import (
     ResumeReviewQueueItem,
     ResumeReviewQueueResponse,
     ResumeLibraryResponse,
+    ResumeBatchRetryRequest,
+    ResumeBatchRetryResponse,
+    ResumeSingleRetryResponse,
     ResumeLanguageCredentialResponse,
     ResumeScholarshipResponse,
     ResumeSkillResponse,
@@ -377,6 +380,11 @@ from app.services.saved_filter_service import (
 )
 from app.services.search_service import SearchValidationError, search_candidates
 from app.services.resume_library_service import list_resume_library
+from app.services.resume_retry_service import (
+    SKIP_NO_FAILED_STEP,
+    ResumeRetryDispatch,
+    retry_resume_failed,
+)
 from app.services.candidate_favorite_service import (
     CandidateFavoriteNotFoundError,
     candidate_favorite_state,
@@ -6614,6 +6622,10 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         page: Annotated[int, Query(ge=1)] = 1,
         page_size: Annotated[int, Query(ge=1, le=100)] = 50,
         mailbox_id: str | None = Query(default=None, min_length=1, max_length=64),
+        status_filter: Literal[
+            "processing", "attention", "unscored", "summary_pending"
+        ]
+        | None = Query(default=None),
         principal: AuthPrincipal = Depends(require_single_admin),
         session: Session = Depends(get_session),
     ) -> ResumeLibraryResponse:
@@ -6630,7 +6642,75 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
             page_size=page_size,
             mailbox_config_id=mailbox_id,
             viewer_user_id=principal.user.id,
+            status_filter=status_filter,
         )
+
+    @app.post(
+        "/v1/resumes/{resume_id}/retry-failed",
+        response_model=ResumeSingleRetryResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def post_resume_retry_failed(
+        resume_id: str,
+        session: Session = Depends(get_session),
+    ) -> ResumeSingleRetryResponse:
+        resume = session.scalar(select(Resume).where(Resume.id == resume_id))
+        if resume is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="resume_not_found",
+            )
+        dispatch = retry_resume_failed(session, resume=resume, settings=settings)
+        _commit_or_raise(session)
+        return ResumeSingleRetryResponse(
+            queued=list(dispatch.actions),
+            skipped=list(dispatch.skip_reasons)
+            or ([SKIP_NO_FAILED_STEP] if not dispatch.actions else []),
+        )
+
+    @app.post(
+        "/v1/resumes/retry-failed",
+        response_model=ResumeBatchRetryResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def post_resumes_retry_failed(
+        payload: ResumeBatchRetryRequest,
+        session: Session = Depends(get_session),
+    ) -> ResumeBatchRetryResponse:
+        resumes = session.scalars(
+            select(Resume).where(Resume.id.in_(payload.resume_ids))
+        ).all()
+        by_id = {resume.id: resume for resume in resumes}
+        missing = [resume_id for resume_id in payload.resume_ids if resume_id not in by_id]
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="resume_not_found",
+            )
+        queued: list[dict[str, object]] = []
+        skipped: list[dict[str, object]] = []
+        for resume_id in payload.resume_ids:
+            resume = by_id[resume_id]
+            dispatch = retry_resume_failed(
+                session,
+                resume=resume,
+                settings=settings,
+            )
+            if dispatch.actions:
+                queued.append(
+                    {"resume_id": resume_id, "actions": list(dispatch.actions)}
+                )
+            else:
+                skipped.append(
+                    {
+                        "resume_id": resume_id,
+                        "reason": dispatch.skip_reasons[0]
+                        if dispatch.skip_reasons
+                        else SKIP_NO_FAILED_STEP,
+                    }
+                )
+        _commit_or_raise(session)
+        return ResumeBatchRetryResponse(queued=queued, skipped=skipped)
 
     @app.post(
         "/v1/saved-filters",

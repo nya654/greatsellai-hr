@@ -4964,9 +4964,21 @@ def _execute_agent_tools(state: _RecruitingAgentGraphState) -> dict[str, Any]:
         # one response, make that sequence deterministic as well: materialize
         # the just-produced server result before a scoped tool can read it.
         force_active_scope = False
-        if pending_search_resume_ids is not None and _tool_consumes_pending_search_scope(
-            user_message=state["payload"].message,
-            tool_name=name,
+        # A composer-picked single candidate is the standing focus. An Agent
+        # search may refresh the visible cards, but it must not replace the
+        # one person HR chose, or the resume-read tool would lose that scope
+        # and its confirm-free single-candidate read along with it.
+        keep_explicit_candidate_scope = _candidate_scope_is_explicit_single(
+            state["session"],
+            conversation=state["conversation"],
+        )
+        if (
+            not keep_explicit_candidate_scope
+            and pending_search_resume_ids is not None
+            and _tool_consumes_pending_search_scope(
+                user_message=state["payload"].message,
+                tool_name=name,
+            )
         ):
             _replace_active_candidate_set(
                 state["session"],
@@ -5093,7 +5105,15 @@ def _finalize_graph_turn(state: _RecruitingAgentGraphState) -> dict[str, Any]:
     )
     conversation = state["conversation"]
     pending_search_resume_ids = state.get("pending_search_resume_ids")
-    if pending_search_resume_ids is not None:
+    # Persist the latest search scope across turns -- unless HR explicitly
+    # picked one candidate in the composer. That person stays the focus even
+    # when the Agent searched during the turn, so a bare follow-up ("介绍一下
+    # 他") can still read the chosen resume without re-confirmation.
+    keep_explicit_candidate_scope = _candidate_scope_is_explicit_single(
+        state["session"],
+        conversation=conversation,
+    )
+    if pending_search_resume_ids is not None and not keep_explicit_candidate_scope:
         _replace_active_candidate_set(
             state["session"],
             conversation=conversation,

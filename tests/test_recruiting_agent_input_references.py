@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.models import (
     RecruitingAgentCandidateSet,
     RecruitingAgentCandidateSetItem,
+    RecruitingAgentConversation,
     Resume,
     TalentSearchProfile,
     TalentSearchProfileRevision,
@@ -428,9 +429,19 @@ def test_candidate_scope_resume_read_skips_confirm_and_selection_markers(
         calls += 1
         if calls == 1:
             assert tools_enabled is True
+            # A real model usually searches first even when one person is in
+            # focus. That search must not replace the composer-picked scope.
             return {
                 "content": None,
                 "tool_calls": [
+                    {
+                        "id": "search-in-turn",
+                        "type": "function",
+                        "function": {
+                            "name": "search_candidates",
+                            "arguments": json.dumps({}),
+                        },
+                    },
                     {
                         "id": "read-scoped-candidate",
                         "type": "function",
@@ -438,7 +449,7 @@ def test_candidate_scope_resume_read_skips_confirm_and_selection_markers(
                             "name": "read_candidate_resume_content",
                             "arguments": json.dumps({}),
                         },
-                    }
+                    },
                 ],
             }
         assert calls == 2
@@ -464,13 +475,37 @@ def test_candidate_scope_resume_read_skips_confirm_and_selection_markers(
     assert response.status_code == 200, response.text
     turn_payload = response.json()
     assert turn_payload["intent"] == "read_resume_content"
-    assert [item["tool"] for item in turn_payload["tool_trace"]] == ["完整简历原文"]
+    assert [item["tool"] for item in turn_payload["tool_trace"]] == [
+        "简历筛选",
+        "完整简历原文",
+    ]
     tool_payload = captured["tool_payload"]
     assert isinstance(tool_payload, dict)
     assert tool_payload["candidate_name"] == "测试候选人"
     assert tool_payload["page_count"] == 1
     assert "北京大学" in tool_payload["resume_pages"][0]["text"]
+    # The turn response may carry search cards (which legitimately expose
+    # opaque candidate/resume IDs so HR can bind them), but never the resume
+    # body itself: the source text stays server-side until a read is requested.
     serialized = json.dumps(turn_payload, ensure_ascii=False)
-    assert candidate_id not in serialized
-    assert resume_id not in serialized
     assert "北京大学" not in serialized
+    assert "教育经历" not in serialized
+
+    # The in-turn search refreshed the cards but must not have replaced the
+    # composer-picked scope, otherwise the next bare follow-up would ask to
+    # confirm the read all over again.
+    database = ai_client.app.state.database
+    with database.session_factory() as session:
+        with bypass_organization_scope(session):
+            conversation = session.get(
+                RecruitingAgentConversation,
+                bound_payload["conversation_id"],
+            )
+            assert conversation is not None
+            assert conversation.active_candidate_set_id is not None
+            candidate_set = session.get(
+                RecruitingAgentCandidateSet,
+                conversation.active_candidate_set_id,
+            )
+            assert candidate_set is not None
+            assert candidate_set.source_kind == "candidate"

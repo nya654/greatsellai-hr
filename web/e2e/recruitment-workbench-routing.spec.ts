@@ -112,7 +112,9 @@ test("职位管理将同一岗位的 JD 版本归为一个岗位", async ({ page
     "必须掌握 Python\n具备后端经验",
   );
 
-  await page.getByRole("button", { name: "基于此新建版本" }).click();
+  await page.getByRole("button", { name: "直接修改该岗位" }).click();
   await expect(jobSelector).toContainText(`最新 v${revised.version}`);
-  await expect(page.getByText(/正在基于当前岗位创建新版本。/)).toBeVisible();
+  await expect(
+    page.getByText(/正在修改当前岗位，内容将保存为该岗位的新版本/),
+  ).toBeVisible();
 });

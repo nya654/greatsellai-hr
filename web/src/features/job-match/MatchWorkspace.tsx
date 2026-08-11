@@ -27,6 +27,7 @@ import "./job-match.css";
 
 type ToastKind = "success" | "error";
 type JobWorkspaceMode = "create" | "view";
+type AuthoringSeed = "blank" | "from-version" | "same-job";
 export type MatchWorkspaceSurface = "jobs" | "matching";
 
 /**
@@ -88,6 +89,7 @@ export function MatchWorkspace({
   const [generatedRequirements, setGeneratedRequirements] =
     useState<JobRequirements | null>(null);
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const [authoringSeed, setAuthoringSeed] = useState<AuthoringSeed>("blank");
   const [jobWorkspaceMode, setJobWorkspaceMode] =
     useState<JobWorkspaceMode>("create");
   const [jobVersion, setJobVersion] = useState<JobVersion | null>(null);
@@ -133,6 +135,7 @@ export function MatchWorkspace({
     setEditedGeneratedJd(false);
     setGeneratedRequirements(null);
     setGenerationError(null);
+    setAuthoringSeed("blank");
   };
   const selectJobVersion = (next: JobVersion, syncRoute = true) => {
     resetJobAuthoring();
@@ -156,10 +159,14 @@ export function MatchWorkspace({
     enterNewJobDraft();
     onCreateNewJob?.();
   };
-  const beginNextJobVersion = () => {
+  const beginJobAuthoring = (
+    nextVersioningJobId: string | null,
+    seed: AuthoringSeed,
+  ) => {
     if (!jobVersion) return;
     setJobWorkspaceMode("create");
-    setVersioningJobId(jobVersion.job_id);
+    setVersioningJobId(nextVersioningJobId);
+    setAuthoringSeed(seed);
     setTitle(jobVersion.title);
     setJobBrief(jobVersion.raw_text);
     setJdText("");
@@ -168,6 +175,9 @@ export function MatchWorkspace({
     setGenerationError(null);
     setMatchBatch(null);
     setBatchItems([]);
+  };
+  const beginNextJobVersion = () => {
+    beginJobAuthoring(jobVersion?.job_id ?? null, "same-job");
   };
   const requirementsAreReady = (requirements: JobRequirements | null) =>
     Boolean(
@@ -620,11 +630,31 @@ export function MatchWorkspace({
                     {isJobManagement && (
                       <button
                         className="button button-ghost"
-                        onClick={beginNextJobVersion}
+                        onClick={beginNewJob}
                         type="button"
                       >
                         <Icon name="plus" size={15} />
-                        基于此新建版本
+                        完全新建
+                      </button>
+                    )}
+                    {isJobManagement && (
+                      <button
+                        className="button button-ghost"
+                        onClick={() => beginJobAuthoring(null, "from-version")}
+                        type="button"
+                      >
+                        <Icon name="document" size={15} />
+                        基于此版本新建岗位
+                      </button>
+                    )}
+                    {isJobManagement && (
+                      <button
+                        className="button button-ghost"
+                        onClick={beginNextJobVersion}
+                        type="button"
+                      >
+                        <Icon name="pencil" size={15} />
+                        直接修改该岗位
                       </button>
                     )}
                     {isJobManagement && !jobIsOriginal && onOpenMatching && (
@@ -675,9 +705,11 @@ export function MatchWorkspace({
               </div>
             ) : isJobManagement ? (
               <>
-                {versioningJobId && (
+                {authoringSeed !== "blank" && (
                   <p className="version-context" role="status">
-                    正在基于当前岗位创建新版本。原版本和已有匹配结果会完整保留。
+                    {authoringSeed === "same-job"
+                      ? "正在修改当前岗位，内容将保存为该岗位的新版本；原版本和已有匹配结果会完整保留。"
+                      : "正在基于当前岗位的 JD 新建一个独立岗位，原岗位保持不变。"}
                   </p>
                 )}
                 <div className="jd-publish-guide" role="note">

@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useState,
@@ -12,12 +13,16 @@ import type {
   JobMatchRequirementResult,
   JobRequirements,
   JobVersion,
+  ScoreLeaderboard as ScoreLeaderboardData,
+  ScoreTemplate,
 } from "../../types";
 import { Icon } from "../../icons";
 import { BackofficeButton } from "../../backoffice/ui/BackofficeButton";
 import { BackofficeProgress } from "../../backoffice/ui/BackofficeProgress";
 import { BackofficeSelect } from "../../backoffice/ui/BackofficeSelect";
+import { AI_STATUS_POLL_INTERVAL_MS } from "../../backoffice/utils/ai-extraction";
 import { useJobMatchBatchPolling } from "./useJobMatchBatchPolling";
+import { ScoreLeaderboard } from "./ScoreLeaderboard";
 import "./job-match.css";
 
 type ToastKind = "success" | "error";
@@ -93,6 +98,15 @@ export function MatchWorkspace({
   const [batchItems, setBatchItems] = useState<JobMatchBatchItem[]>([]);
   const [jobMatches, setJobMatches] = useState<JobMatch[]>([]);
   const [matchesLoading, setMatchesLoading] = useState(false);
+  const [scoreTemplates, setScoreTemplates] = useState<ScoreTemplate[]>([]);
+  const [scoreTemplateId, setScoreTemplateId] = useState("");
+  const [scoreLeaderboard, setScoreLeaderboard] =
+    useState<ScoreLeaderboardData | null>(null);
+  const [scoreLeaderboardLoading, setScoreLeaderboardLoading] = useState(false);
+  const selectedScoreTemplate = useMemo(
+    () => scoreTemplates.find((item) => item.template_id === scoreTemplateId) ?? null,
+    [scoreTemplates, scoreTemplateId],
+  );
   const latestConfirmedJobs = useMemo(
     () => latestConfirmedVersionPerJob(confirmedJobVersions),
     [confirmedJobVersions],
@@ -337,9 +351,11 @@ export function MatchWorkspace({
     try {
       const response = await api.enqueueAllJobMatches(
         jobVersion.job_version_id,
+        scoreTemplateId || undefined,
       );
       setMatchBatch(response);
       setBatchItems([]);
+      void fetchScoreLeaderboard();
       notify(
         "success",
         `已将 ${response.total_count} 份简历加入岗位评估队列。`,
@@ -350,6 +366,77 @@ export function MatchWorkspace({
       setLoading(false);
     }
   };
+  useEffect(() => {
+    if (mode !== "matching") return;
+    let cancelled = false;
+    void api
+      .listScoreTemplates()
+      .then((templates) => {
+        if (cancelled) return;
+        setScoreTemplates(templates);
+        setScoreTemplateId((current) =>
+          current && templates.some((item) => item.template_id === current)
+            ? current
+            : (templates[0]?.template_id ?? ""),
+        );
+      })
+      .catch(() => {
+        // 评分模板加载失败不阻塞匹配；无模板时评分表会显示提示。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mode]);
+
+  const fetchScoreLeaderboard = useCallback(() => {
+    if (
+      mode !== "matching" ||
+      !jobVersion ||
+      jobVersion.status !== "confirmed" ||
+      !jobVersion.requirements.length ||
+      !scoreTemplateId
+    ) {
+      setScoreLeaderboard(null);
+      return;
+    }
+    setScoreLeaderboardLoading(true);
+    void api
+      .listJobVersionScoreLeaderboard(jobVersion.job_version_id, scoreTemplateId)
+      .then((board) => setScoreLeaderboard(board))
+      .catch((error) => notify("error", formatError(error)))
+      .finally(() => setScoreLeaderboardLoading(false));
+  }, [jobVersion, mode, notify, formatError, scoreTemplateId]);
+
+  useEffect(() => {
+    const board = scoreLeaderboard;
+    const active =
+      board?.batch?.status === "queued" ||
+      board?.batch?.status === "running" ||
+      (board?.items.some(
+        (item) =>
+          item.score_task_state === "queued" ||
+          item.score_task_state === "running",
+      ) ?? false);
+    if (!active) return;
+    const timer = window.setInterval(() => {
+      void fetchScoreLeaderboard();
+    }, AI_STATUS_POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [fetchScoreLeaderboard, scoreLeaderboard]);
+
+  // 岗位/模板就绪后先拉一次评分榜；切模板也会因依赖变化重新拉取。
+  useEffect(() => {
+    if (
+      mode !== "matching" ||
+      !jobVersion ||
+      jobVersion.status !== "confirmed" ||
+      !jobVersion.requirements.length ||
+      !scoreTemplateId
+    ) {
+      return;
+    }
+    void fetchScoreLeaderboard();
+  }, [fetchScoreLeaderboard, jobVersion, mode, scoreTemplateId]);
   useJobMatchBatchPolling({
     batchId: matchBatch?.batch_id,
     onBatch: setMatchBatch,
@@ -486,6 +573,32 @@ export function MatchWorkspace({
                         : ""
                     }
                   />
+                </div>
+              </div>
+            )}
+            {isMatching && (
+              <div className="score-template-switcher">
+                <div>
+                  <span className="field-label">通用评分模板</span>
+                  <p>发起岗位评估时，会自动为同一批候选人按此模板补分。</p>
+                </div>
+                <div className="score-template-select">
+                  {scoreTemplates.length ? (
+                    <BackofficeSelect
+                      ariaLabel="选择通用评分模板"
+                      id="score-template-selector"
+                      onChange={(value) => setScoreTemplateId(value)}
+                      options={scoreTemplates.map((template) => ({
+                        label: template.name,
+                        value: template.template_id,
+                      }))}
+                      value={scoreTemplateId}
+                    />
+                  ) : (
+                    <p className="score-template-hint">
+                      尚未创建评分模板，去评分工作区创建模板后即可自动补分。
+                    </p>
+                  )}
                 </div>
               </div>
             )}
@@ -812,11 +925,18 @@ export function MatchWorkspace({
             <MatchBatchDetails batch={matchBatch} items={batchItems} />
           )}
           {isMatching && jobCanMatch && (
-            <MatchLeaderboard
-              loading={matchesLoading}
-              matches={jobMatches}
-              onOpenResume={onOpenMatchedResume}
-            />
+            <div className="score-loop-tables">
+              <MatchLeaderboard
+                loading={matchesLoading}
+                matches={jobMatches}
+                onOpenResume={onOpenMatchedResume}
+              />
+              <ScoreLeaderboard
+                board={scoreLeaderboard ?? { items: [], batch: null }}
+                loading={scoreLeaderboardLoading}
+                templateName={selectedScoreTemplate?.name ?? null}
+              />
+            </div>
           )}
         </div>
       </div>

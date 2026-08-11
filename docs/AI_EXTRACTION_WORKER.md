@@ -68,7 +68,7 @@ Worker 不会按用户或工作区创建常驻容器。生产使用一个共享 
 可选运行参数：
 
 - `RESUME_V3_WORKER_CONCURRENCY`：worker 容器内的子进程数，默认 `1`。大于 `1` 只允许 PostgreSQL，且必须关闭 worker 自建表和院校播种，迁移与播种先由 `migrate` 服务完成。
-- `RESUME_V3_WORKER_DATABASE_POOL_SIZE`、`RESUME_V3_WORKER_DATABASE_MAX_OVERFLOW`：每个子进程的独立数据库连接池，默认 `1`、`0`。总预算上限为 `32` 个连接，避免扩容时挤占 API 连接。
+- `RESUME_V3_WORKER_DATABASE_POOL_SIZE`、`RESUME_V3_WORKER_DATABASE_MAX_OVERFLOW`：每个子进程的独立数据库连接池，默认 `2`、`0`。连接池不能低于 `2`：JD 匹配会保持业务 session 打开，同时 AI 网关在同一引擎上开启第二个持久账本 session，单连接会导致所有真实（非缓存）JD 匹配项在连接池等待上停滞。总预算上限为 `32` 个连接，避免扩容时挤占 API 连接。
 - `RESUME_V3_WORKER_WORKSPACE_LANE_LEASE_SECONDS`：工作区重任务槽位的最短租约，默认 `210` 秒。具体任务租约更长时自动取更长值；邮箱任务在 IMAP 心跳时续期。
 
-建议先在 staging 以 `1` 验证，再在生产从 `2` 开始观察“在线 / 已配置”进程数、队列等待时间和数据库连接数。不要使用 `docker compose --scale worker`，现有发布恢复流程按一个 worker 容器设计；本功能通过容器内部的受控子进程扩容。
+建议先在 staging 以 `2` 验证，再在生产从 `2` 开始观察“在线 / 已配置”进程数、队列等待时间和数据库连接数。不要使用 `docker compose --scale worker`，现有发布恢复流程按一个 worker 容器设计；本功能通过容器内部的受控子进程扩容。

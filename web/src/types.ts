@@ -1527,6 +1527,8 @@ export interface ResumeSingleRetryResponse {
 export interface ResumeBatchRetryResponse {
   queued: ResumeRetryQueuedItem[];
   skipped: ResumeRetrySkippedItem[];
+  queued_count: number;
+  skipped_count: number;
 }
 
 export interface ResumeLibraryResponse {

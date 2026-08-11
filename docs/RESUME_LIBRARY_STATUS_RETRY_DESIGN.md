@@ -44,9 +44,10 @@
 
 对应后端列表 API 新增 `status_filter` 参数（四档映射成后端过滤条件，见下）。
 
-### 勾选批量重试
+### 勾选批量重试 / 全选整库
 
 - 列表行加勾选框（多选）；勾选 ≥1 项时，顶部/操作区出现「重试所选 (N)」按钮。
+- 表头 checkbox = **全选整个简历库**（跨页、忽略状态/来源筛选）：勾选后按钮变为「重试全部 (N)」（N = 全库总数），走 `{ all: true }` 批量端点；行勾选框在全选模式下全部选中且禁用。
 - 点击后调批量重试端点，toast 反馈「已重试 N 份 / 跳过 M 份（含原因）」，随后刷新列表。
 
 ### 行内单条重试
@@ -71,14 +72,18 @@ POST /v1/resumes/{resume_id}/retry-failed
 
 ```
 POST /v1/resumes/retry-failed
-body: { resume_ids: [uuid, ...] }
+body: { resume_ids: [uuid, ...] }   # 指定勾选的简历
+  或  { all: true }                 # 整个简历库（忽略状态/来源筛选）
 → 200 {
   queued: [{ resume_id, actions: [...] }],
   skipped: [{ resume_id, reason: string }],
+  queued_count: N,
+  skipped_count: M,
 }
 ```
 
-- `resume_ids` 由前端从勾选结果传入（「当前筛选视图」语义由前端保证）。
+- `resume_ids` 与 `all` **二选一**（同时传或都不传 → 422）；`resume_ids` 上限 100。
+- `all: true` 时后端按工作区 org 作用域拉全库逐份分派（无失败/缺失环节的简历计为 skipped）。
 - 单条/批量共用同一**分派器**（见下），批量逐份收集 queued / skipped 统计。
 - 权限：沿用现有 `require_single_admin`；服务层校验 workspace / 存在性。
 
@@ -103,16 +108,17 @@ body: { resume_ids: [uuid, ...] }
 |---|---|---|
 | `extraction_status == "failed"` | 文档重新解析 | `request_resume_document_extraction` |
 | `ai_extraction_status in {needs_attention, unavailable, failed}` 且未 active | AI 提取重排 | `request_resume_ai_extraction` |
-| `ai_summary_status in {failed, unavailable}` 且 `is_active and extraction_status == "ready"` | 总结重排 | `POST /resumes/{id}/summaries` 的服务函数 |
-| 评分异常（`score_status` 非 `succeeded`/`overridden` 且曾评分） | 沿用最近模板重跑 | 新增 `retry_resume_score`（见下） |
+| `ai_summary_status in {failed, unavailable}` 或从未总结（`None`），且 `is_active and extraction_status == "ready"` | 总结（重排/首次） | `request_resume_summary_job` |
+| 评分异常（最近一次评分尝试 failed） | 沿用最近模板重跑 | `enqueue_resume_score_batch(template_id=原模板)` |
+| 从未评分（无任何评分尝试）且当前可评分 | 首次评分：用工作区自动评分模板（`WorkspaceAiImportSettings.score_template_ids`）逐模板入队 | `enqueue_resume_score_batch` |
 
 已排队（`queued`/`running`）的流程跳过（不重复入队）。
 
-## 评分重试机制（新增）
+## 评分重试机制
 
-- `retry_resume_score(session, *, resume_id, template_id)`：取简历最近一条 `ResumeScore.template_id`；用该模板**当前版本** + 简历当前 fact snapshot 入队。
-- 批量重试时按 `template_id` 分组，每组 `enqueue_resume_score_batch` 建一个 `ResumeScoreBatch`（复用现有 worker，无需新跑分逻辑）。
-- **边界**：从未评分（`score_status == null`）→ 跳过（reason `never_scored`，非重试，走补评分）；模板已归档 → 跳过（`template_archived`）。
+- 失败评分重跑：简历最近一次**评分尝试**（`ResumeScoreBatchItem`）失败时，沿用该尝试模板当前版本 + 简历当前 fact snapshot 入队（`enqueue_resume_score_batch(template_id=原模板, resume_id=...)`）。
+- 首次评分（补评分）：从未有任何评分尝试的简历，若当前可评分（active + ready + 可靠源文本 + 有 fact snapshot），用工作区自动评分模板（`WorkspaceAiImportSettings.score_template_ids`）逐模板入队。
+- **边界**：工作区未配置自动评分模板 → 跳过（`no_score_template`）；模板已归档 → 跳过（`template_archived`）。
 
 ## 跳过原因（返回给前端）
 
@@ -120,9 +126,10 @@ body: { resume_ids: [uuid, ...] }
 |---|---|
 | `active_resume_immutable` | 已完成简历不可重排（文档/AI 提取） |
 | `job_already_running` | 对应流程正在排队/运行 |
-| `never_scored` | 从未评分（非重试语义） |
+| `no_score_template` | 工作区未配置自动评分模板，无法补首次评分 |
 | `template_archived` | 评分模板已归档 |
-| `no_failed_step` | 该简历当前无失败/异常项 |
+| `resume_not_scoreable` | 简历当前不可评分（失败评分无法重跑） |
+| `no_failed_step` | 该简历当前无失败/缺失项 |
 
 ## 测试计划
 
@@ -138,5 +145,4 @@ body: { resume_ids: [uuid, ...] }
 ## 明确不做
 
 - 候选人名字提取**不**做独立重试入口（失败时通常伴随 AI 提取重排/文档重解析；如需可后续单列）。
-- **不做**「从未评分」补评分入口（那是评分页的首次评分语义，不是重试）。
 - **不做**重试任务中心/逐份进度页（超出现有需求，先靠列表轮询）。

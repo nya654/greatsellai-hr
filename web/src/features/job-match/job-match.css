@@ -483,3 +483,110 @@
     }
 
 }
+
+.backoffice-ui-root .job-match-workspace .score-leaderboard {
+  /* 与左表高度独立，避免 grid 拉伸被空态撑高 */
+  align-self: start;
+}
+
+.backoffice-ui-root .job-match-workspace .score-activity {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: #4338ca;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.backoffice-ui-root .job-match-workspace .score-activity-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  flex: none;
+  background: linear-gradient(135deg, #2563eb 0%, #7c3aed 48%, #d946ef 100%);
+  background-size: 180% 180%;
+  border-radius: 9999px;
+  box-shadow: 0 0 6px rgb(79 70 229 / 0.45);
+  animation:
+    score-ai-orb-gradient 2.4s ease-in-out infinite,
+    score-activity-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes score-ai-orb-gradient {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+@keyframes score-activity-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.45;
+    transform: scale(0.72);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .backoffice-ui-root .job-match-workspace .score-activity-dot {
+    animation: none;
+  }
+}
+
+.backoffice-ui-root .job-match-workspace .score-number {
+  color: #4338ca;
+  font-size: 0.875rem;
+}
+
+.backoffice-ui-root .job-match-workspace .score-muted {
+  color: var(--ink-muted);
+  font-size: 0.8125rem;
+}
+
+.backoffice-ui-root .job-match-workspace .score-loop-tables {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-lg);
+  align-items: start;
+}
+
+@media (max-width: 1080px) {
+  .backoffice-ui-root .job-match-workspace .score-loop-tables {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.backoffice-ui-root .job-match-workspace .score-template-switcher {
+  display: flex;
+  gap: var(--space-md);
+  align-items: end;
+  justify-content: space-between;
+  padding: 0 0 var(--space-md);
+  margin: 0 0 var(--space-lg);
+  border-bottom: 1px solid var(--line);
+}
+
+.backoffice-ui-root .job-match-workspace .score-template-switcher p {
+  margin: 0.3rem 0 0;
+  color: var(--ink-muted);
+  font-size: 0.8125rem;
+}
+
+.backoffice-ui-root .job-match-workspace .score-template-select {
+  flex: 0 1 22rem;
+}
+
+.backoffice-ui-root .job-match-workspace .score-template-hint {
+  color: var(--ink-muted);
+  font-size: 0.8125rem;
+}

@@ -3848,6 +3848,24 @@ class JobMatchBatchResponse(ApiModel):
     last_error: str | None
 
 
+class JobMatchBatchEnqueue(ApiModel):
+    score_template_id: str | None = None
+
+
+class ScoreLeaderboardItem(ApiModel):
+    resume_id: str
+    candidate_id: str
+    candidate_display_name: str | None
+    score_total: float | None
+    score_status: str | None
+    score_task_state: Literal["none", "queued", "running"] = "none"
+
+
+class ScoreLeaderboardResponse(ApiModel):
+    items: list[ScoreLeaderboardItem]
+    batch: ResumeScoreBatchResponse | None = None
+
+
 class JobMatchBatchItemResponse(ApiModel):
     item_id: str
     resume_id: str

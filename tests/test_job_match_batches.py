@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects import postgresql
 
 from app.models import (
@@ -290,3 +290,64 @@ def test_refresh_never_marks_a_batch_completed_while_an_appended_item_is_queued(
         assert batch.total_count == 2
         assert batch.completed_count == 1
         assert batch.completed_at is None
+
+
+def test_job_match_batch_with_score_template_id_also_enqueues_score_batch(
+    ai_client,
+) -> None:
+    from app.models import ResumeScoreBatch
+    from test_resume_score_batches import _template_payload
+
+    source_text = "教育经历 清华大学 计算机 工作经历 Acme Python Engineer 技能 Python SQL"
+    _, first_resume_id = _save_ready_resume(ai_client, source_text=source_text)
+    _, second_resume_id = _save_ready_resume(ai_client, source_text=source_text)
+    job = _create_job(
+        ai_client,
+        requirements=JobRequirements(must_have=["Python experience"]),
+    )
+    job_version_id = str(job["job_version_id"])
+    template = ai_client.post("/v1/score-templates", json=_template_payload())
+    assert template.status_code == 200, template.text
+    template_id = template.json()["template_id"]
+    database = ai_client.app.state.database
+
+    with database.session_factory() as session:
+        match_response = job_match_batch_service.enqueue_job_version_match_batch(
+            session,
+            job_version_id=job_version_id,
+            settings=ai_client.app.state.settings,
+            score_template_id=template_id,
+        )
+        assert match_response.total_count == 2
+        score_batch = session.scalar(
+            select(ResumeScoreBatch).where(
+                ResumeScoreBatch.template_id == template_id,
+                ResumeScoreBatch.status == "queued",
+            )
+        )
+        assert score_batch is not None
+        assert score_batch.total_count == 2
+
+
+def test_job_match_batch_without_score_template_id_skips_score_batch(
+    ai_client,
+) -> None:
+    from app.models import ResumeScoreBatch
+
+    source_text = "教育经历 清华大学 计算机 工作经历 Acme Python Engineer 技能 Python SQL"
+    _, first_resume_id = _save_ready_resume(ai_client, source_text=source_text)
+    job = _create_job(
+        ai_client,
+        requirements=JobRequirements(must_have=["Python experience"]),
+    )
+    job_version_id = str(job["job_version_id"])
+    database = ai_client.app.state.database
+
+    with database.session_factory() as session:
+        match_response = job_match_batch_service.enqueue_job_version_match_batch(
+            session,
+            job_version_id=job_version_id,
+            settings=ai_client.app.state.settings,
+        )
+        assert match_response.total_count == 1
+        assert session.scalar(select(func.count(ResumeScoreBatch.id))) == 0

@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1180" viewBox="0 0 1280 1180" font-family="Microsoft YaHei, PingFang SC, Helvetica Neue, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+
+  <!-- background -->
+  <rect width="1280" height="1180" fill="#f8fafc"/>
+  <text x="1280" y="40" text-anchor="end" font-size="15" fill="#94a3b8">智能匹配 × 通用评分 · 闭环设计</text>
+
+  <!-- root -->
+  <rect x="20" y="580" width="230" height="88" rx="14" fill="#1e3a8a"/>
+  <text x="135" y="616" text-anchor="middle" font-size="18" font-weight="700" fill="#ffffff">智能匹配 + 评分闭环</text>
+  <text x="135" y="640" text-anchor="middle" font-size="12" fill="#c7d2fe">不止 JD 匹配 · 带通用评分</text>
+
+  <!-- ============ Branch 1 目标 (#2563eb) ============ -->
+  <g stroke="#2563eb" stroke-width="2" fill="none">
+    <path d="M 250 624 C 285 624, 285 125, 320 125"/>
+    <path d="M 490 125 L 535 125"/>
+    <path d="M 535 51 L 535 194"/>
+    <path d="M 535 75 L 580 75"/>
+    <path d="M 535 170 L 580 170"/>
+  </g>
+  <rect x="320" y="103" width="180" height="44" rx="22" fill="#2563eb"/>
+  <text x="410" y="130" text-anchor="middle" font-size="14" font-weight="700" fill="#ffffff">目标</text>
+  <g stroke="#2563eb" stroke-width="2" fill="#2563eb"><circle cx="584" cy="75" r="4"/><circle cx="584" cy="170" r="4"/></g>
+  <rect x="580" y="51" width="560" height="48" rx="8" fill="#eff6ff"/>
+  <text x="600" y="72" font-size="13" font-weight="700" fill="#1e293b">匹配界面不止 JD 匹配</text>
+  <text x="600" y="90" font-size="11" fill="#64748b">智能匹配 = JD 匹配度 + 通用评分</text>
+  <rect x="580" y="146" width="560" height="48" rx="8" fill="#eff6ff"/>
+  <text x="600" y="167" font-size="13" font-weight="700" fill="#1e293b">带通用评分</text>
+  <text x="600" y="185" font-size="11" fill="#64748b">通用评分作为独立信号入榜</text>
+
+  <!-- ============ Branch 2 榜单展示 (#7c3aed) ============ -->
+  <g stroke="#7c3aed" stroke-width="2" fill="none">
+    <path d="M 250 624 C 285 624, 285 285, 320 285"/>
+    <path d="M 490 285 L 535 285"/>
+    <path d="M 535 211 L 535 469"/>
+    <path d="M 535 235 L 580 235"/>
+    <path d="M 535 305 L 580 305"/>
+    <path d="M 535 375 L 580 375"/>
+    <path d="M 535 445 L 580 445"/>
+  </g>
+  <rect x="320" y="263" width="180" height="44" rx="22" fill="#7c3aed"/>
+  <text x="410" y="290" text-anchor="middle" font-size="14" font-weight="700" fill="#ffffff">榜单展示 · 两列独立信号</text>
+  <g stroke="#7c3aed" stroke-width="2" fill="#7c3aed"><circle cx="584" cy="235" r="4"/><circle cx="584" cy="305" r="4"/><circle cx="584" cy="375" r="4"/><circle cx="584" cy="445" r="4"/></g>
+  <rect x="580" y="211" width="560" height="48" rx="8" fill="#f5f3ff"/>
+  <text x="600" y="232" font-size="13" font-weight="700" fill="#1e293b">JD 匹配度（现有）</text>
+  <text x="600" y="250" font-size="11" fill="#64748b">主维度，保留现有分档 / 硬条件</text>
+  <rect x="580" y="281" width="560" height="48" rx="8" fill="#f5f3ff"/>
+  <text x="600" y="302" font-size="13" font-weight="700" fill="#1e293b">通用评分（新增）</text>
+  <text x="600" y="320" font-size="11" fill="#64748b">0-100 通用分，粗筛信号</text>
+  <rect x="580" y="351" width="560" height="48" rx="8" fill="#f5f3ff"/>
+  <text x="600" y="372" font-size="13" font-weight="700" fill="#1e293b">不合并 · 不加权 · 无综合分</text>
+  <text x="600" y="390" font-size="11" fill="#64748b">两条信号独立并列，各自为凭</text>
+  <rect x="580" y="421" width="560" height="48" rx="8" fill="#f5f3ff"/>
+  <text x="600" y="442" font-size="13" font-weight="700" fill="#1e293b">排序可切换</text>
+  <text x="600" y="460" font-size="11" fill="#64748b">主序分档→匹配度，另可按评分排</text>
+
+  <!-- ============ Branch 3 闭环 (#0d9488) ============ -->
+  <g stroke="#0d9488" stroke-width="2" fill="none">
+    <path d="M 250 624 C 285 624, 285 560, 320 560"/>
+    <path d="M 490 560 L 535 560"/>
+    <path d="M 535 496 L 535 754"/>
+    <path d="M 535 520 L 580 520"/>
+    <path d="M 535 590 L 580 590"/>
+    <path d="M 535 660 L 580 660"/>
+    <path d="M 535 730 L 580 730"/>
+  </g>
+  <rect x="320" y="538" width="180" height="44" rx="22" fill="#0d9488"/>
+  <text x="410" y="565" text-anchor="middle" font-size="14" font-weight="700" fill="#ffffff">闭环 · 匹配时自动补分</text>
+  <g stroke="#0d9488" stroke-width="2" fill="#0d9488"><circle cx="584" cy="520" r="4"/><circle cx="584" cy="590" r="4"/><circle cx="584" cy="660" r="4"/><circle cx="584" cy="730" r="4"/></g>
+  <rect x="580" y="496" width="560" height="48" rx="8" fill="#ecfeff"/>
+  <text x="600" y="517" font-size="13" font-weight="700" fill="#1e293b">评分模板选择器</text>
+  <text x="600" y="535" font-size="11" fill="#64748b">顶部可选，默认工作区最新模板</text>
+  <rect x="580" y="566" width="560" height="48" rx="8" fill="#ecfeff"/>
+  <text x="600" y="587" font-size="13" font-weight="700" fill="#1e293b">match-all 带 score_template_id</text>
+  <text x="600" y="605" font-size="11" fill="#64748b">后端顺带入队通用评分批次</text>
+  <rect x="580" y="636" width="560" height="48" rx="8" fill="#ecfeff"/>
+  <text x="600" y="657" font-size="13" font-weight="700" fill="#1e293b">同一批候选人自动补分</text>
+  <text x="600" y="675" font-size="11" fill="#64748b">复用现有评分批次队列，无新表</text>
+  <rect x="580" y="706" width="560" height="48" rx="8" fill="#ecfeff"/>
+  <text x="600" y="727" font-size="13" font-weight="700" fill="#1e293b">生成中动画 → 自动落分</text>
+  <text x="600" y="745" font-size="11" fill="#64748b">复用脉动圆点动画语言</text>
+
+  <!-- ============ Branch 4 数据 (#d97706) ============ -->
+  <g stroke="#d97706" stroke-width="2" fill="none">
+    <path d="M 250 624 C 285 624, 285 840, 320 840"/>
+    <path d="M 490 840 L 535 840"/>
+    <path d="M 535 781 L 535 969"/>
+    <path d="M 535 805 L 580 805"/>
+    <path d="M 535 875 L 580 875"/>
+    <path d="M 535 945 L 580 945"/>
+  </g>
+  <rect x="320" y="818" width="180" height="44" rx="22" fill="#d97706"/>
+  <text x="410" y="845" text-anchor="middle" font-size="14" font-weight="700" fill="#ffffff">数据 · 共享派生</text>
+  <g stroke="#d97706" stroke-width="2" fill="#d97706"><circle cx="584" cy="805" r="4"/><circle cx="584" cy="875" r="4"/><circle cx="584" cy="945" r="4"/></g>
+  <rect x="580" y="781" width="560" height="48" rx="8" fill="#fffbeb"/>
+  <text x="600" y="802" font-size="13" font-weight="700" fill="#1e293b">每项附分数三项</text>
+  <text x="600" y="820" font-size="11" fill="#64748b">score_total / score_status / score_task_state</text>
+  <rect x="580" y="851" width="560" height="48" rx="8" fill="#fffbeb"/>
+  <text x="600" y="872" font-size="13" font-weight="700" fill="#1e293b">helper 与简历库共享</text>
+  <text x="600" y="890" font-size="11" fill="#64748b">不复制两份派生逻辑</text>
+  <rect x="580" y="921" width="560" height="48" rx="8" fill="#fffbeb"/>
+  <text x="600" y="942" font-size="13" font-weight="700" fill="#1e293b">无模板时禁用评分列</text>
+  <text x="600" y="960" font-size="11" fill="#64748b">提示去评分工作区创建模板</text>
+
+  <!-- ============ Branch 5 非目标 (#64748b) ============ -->
+  <g stroke="#64748b" stroke-width="2" fill="none">
+    <path d="M 250 624 C 285 624, 285 1060, 320 1060"/>
+    <path d="M 490 1060 L 535 1060"/>
+    <path d="M 535 996 L 535 1114"/>
+    <path d="M 535 1020 L 580 1020"/>
+    <path d="M 535 1090 L 580 1090"/>
+  </g>
+  <rect x="320" y="1038" width="180" height="44" rx="22" fill="#64748b"/>
+  <text x="410" y="1065" text-anchor="middle" font-size="14" font-weight="700" fill="#ffffff">非目标（YAGNI）</text>
+  <g stroke="#64748b" stroke-width="2" fill="#64748b"><circle cx="584" cy="1020" r="4"/><circle cx="584" cy="1090" r="4"/></g>
+  <rect x="580" y="996" width="560" height="48" rx="8" fill="#f8fafc"/>
+  <text x="600" y="1017" font-size="13" font-weight="700" fill="#1e293b">无权重 · 无综合分</text>
+  <text x="600" y="1035" font-size="11" fill="#64748b">已拍板：两个维度分开展示</text>
+  <rect x="580" y="1066" width="560" height="48" rx="8" fill="#f8fafc"/>
+  <text x="600" y="1087" font-size="13" font-weight="700" fill="#1e293b">无新表 · 无迁移</text>
+  <text x="600" y="1105" font-size="11" fill="#64748b">只加可选请求参数与派生字段</text>
+</svg>

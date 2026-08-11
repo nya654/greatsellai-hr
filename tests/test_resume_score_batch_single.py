@@ -393,3 +393,99 @@ def test_enqueue_score_batch_scoped_unknown_resume_while_active_batch_returns_ex
                 assert items[0].resume_id == scoreable_resume_id
     finally:
         database.dispose()
+
+
+def test_enqueue_score_batch_scoped_to_resume_subset(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    database = Database("sqlite://")
+    database.create_all()
+    try:
+        with database.session_factory() as session:
+            organization = Organization(name="Subset score batch org")
+            session.add(organization)
+            session.flush()
+            organization_id = organization.id
+            first_resume_id, _ = _seed_ready_resume(
+                session, organization_id=organization_id, label="subset-one"
+            )
+            second_resume_id, _ = _seed_ready_resume(
+                session, organization_id=organization_id, label="subset-two"
+            )
+            third_resume_id, _ = _seed_ready_resume(
+                session, organization_id=organization_id, label="subset-three"
+            )
+            with _workspace(session, organization_id):
+                template = _scoreable_template(session, name="Subset template")
+
+                response = resume_score_batch_service.enqueue_resume_score_batch(
+                    session,
+                    template_id=template.id,
+                    settings=settings,
+                    resume_ids=[first_resume_id, second_resume_id],
+                )
+
+                assert response.status == "queued"
+                assert response.total_count == 2
+                items = session.scalars(
+                    select(ResumeScoreBatchItem).where(
+                        ResumeScoreBatchItem.batch_id == response.batch_id
+                    )
+                ).all()
+                assert {item.resume_id for item in items} == {
+                    first_resume_id,
+                    second_resume_id,
+                }
+                assert third_resume_id not in {item.resume_id for item in items}
+    finally:
+        database.dispose()
+
+
+def test_score_batch_resume_subset_appends_to_active_batch_idempotently(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    database = Database("sqlite://")
+    database.create_all()
+    try:
+        with database.session_factory() as session:
+            organization = Organization(name="Subset append score batch org")
+            session.add(organization)
+            session.flush()
+            organization_id = organization.id
+            first_resume_id, _ = _seed_ready_resume(
+                session, organization_id=organization_id, label="append-one"
+            )
+            second_resume_id, _ = _seed_ready_resume(
+                session, organization_id=organization_id, label="append-two"
+            )
+            with _workspace(session, organization_id):
+                template = _scoreable_template(session, name="Append template")
+
+                first = resume_score_batch_service.enqueue_resume_score_batch(
+                    session,
+                    template_id=template.id,
+                    settings=settings,
+                    resume_ids=[first_resume_id],
+                )
+                assert first.total_count == 1
+
+                second = resume_score_batch_service.enqueue_resume_score_batch(
+                    session,
+                    template_id=template.id,
+                    settings=settings,
+                    resume_ids=[first_resume_id, second_resume_id],
+                )
+                assert second.batch_id == first.batch_id
+                assert second.total_count == 2
+
+                # 重复入队同一子集：按 (batch, resume) 唯一约束幂等，不产生重复项。
+                third = resume_score_batch_service.enqueue_resume_score_batch(
+                    session,
+                    template_id=template.id,
+                    settings=settings,
+                    resume_ids=[first_resume_id],
+                )
+                assert third.batch_id == first.batch_id
+                assert third.total_count == 2
+    finally:
+        database.dispose()

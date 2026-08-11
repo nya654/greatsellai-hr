@@ -10,8 +10,23 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.config import AppSettings
 from app.database import Database
-from app.models import Job, JobMatch, JobMatchBatch, JobMatchBatchItem, JobVersion, Resume, ResumeFactSnapshot
-from app.schemas import JobMatchBatchItemResponse, JobMatchBatchResponse, JobMatchCreate
+from app.models import (
+    Candidate,
+    Job,
+    JobMatch,
+    JobMatchBatch,
+    JobMatchBatchItem,
+    JobVersion,
+    Resume,
+    ResumeFactSnapshot,
+)
+from app.schemas import (
+    JobMatchBatchItemResponse,
+    JobMatchBatchResponse,
+    JobMatchCreate,
+    ScoreLeaderboardItem,
+    ScoreLeaderboardResponse,
+)
 from app.tenant_scope import clear_organization_context, set_organization_context
 from app.services.ai_gateway_service import (
     AiGatewayError,
@@ -26,6 +41,16 @@ from app.services.job_service import (
     run_job_match,
 )
 from app.services.resume_eligibility import has_unreliable_source_text
+from app.services.resume_library_service import (
+    active_score_task_states,
+    latest_current_scores_by_template,
+)
+from app.services.resume_score_batch_service import (
+    _batch_response as _score_batch_response,
+    _existing_active_batch,
+    _require_scoreable_template,
+    enqueue_resume_score_batch,
+)
 from app.services.workspace_background_lane_service import (
     acquire_workspace_background_lane,
     fair_available_workspace_ids,
@@ -308,8 +333,14 @@ def enqueue_job_version_match_batch(
     settings: AppSettings,
     resume_ids: Sequence[str] | None = None,
     allow_internal_job: bool = False,
+    score_template_id: str | None = None,
 ) -> JobMatchBatchResponse:
-    """Persist one full N×M side of the matrix without calling the model in HTTP."""
+    """Persist one full N×M side of the matrix without calling the model in HTTP.
+
+    When ``score_template_id`` is given, the same eligible candidates that
+    this call enqueues for matching are also enqueued for general scoring with
+    that template, closing the match→score loop in one request.
+    """
 
     # Serialize both “find active batch” and “create a new batch” by the
     # current JD version. Locking only an already-existing batch leaves a race
@@ -382,6 +413,13 @@ def enqueue_job_version_match_batch(
             snapshots=snapshots,
             now=_utcnow(),
         )
+        if score_template_id is not None and snapshots:
+            enqueue_resume_score_batch(
+                session,
+                template_id=score_template_id,
+                settings=settings,
+                resume_ids=[snapshot[0] for snapshot in snapshots],
+            )
         return _batch_response(existing)
 
     # A queued/retried batch must keep the same approved route even if the
@@ -443,6 +481,13 @@ def enqueue_job_version_match_batch(
         batch.status = BATCH_COMPLETED
         batch.completed_at = now
     session.flush()
+    if score_template_id is not None and snapshots:
+        enqueue_resume_score_batch(
+            session,
+            template_id=score_template_id,
+            settings=settings,
+            resume_ids=[snapshot[0] for snapshot in snapshots],
+        )
     return _batch_response(batch)
 
 
@@ -1132,6 +1177,96 @@ def _refresh_batch_progress(session: Session, *, batch: JobMatchBatch, now: date
         batch.last_error = None
 
 
+def list_job_version_score_leaderboard(
+    session: Session,
+    *,
+    job_version_id: str,
+    template_id: str,
+) -> ScoreLeaderboardResponse:
+    """Return the JD-matched candidates' general scores for one template.
+
+    Derives the leaderboard from the same eligible snapshot scope as
+    the JD match batch (current, tenant-visible, ready resumés), then overlays
+    the latest current-facts score per resumé plus any active score-batch task
+    state, so the UI can show scored rows, unscored rows, and in-flight rows
+    in one table while a ``score-all`` batch is still generating.
+    """
+
+    job_version = session.scalar(
+        select(JobVersion)
+        .join(Job, Job.id == JobVersion.job_id)
+        .where(JobVersion.id == job_version_id, Job.kind == "job")
+    )
+    if job_version is None:
+        raise JobVersionNotFoundError("job_version_not_found")
+    template, _ = _require_scoreable_template(session, template_id=template_id)
+    snapshots = _eligible_batch_snapshots(
+        session,
+        organization_id=job_version.organization_id,
+        resume_ids=None,
+    )
+    resume_ids = [resume_id for resume_id, _, _ in snapshots]
+    facts_version_by_resume = {
+        resume_id: facts_version for resume_id, _, facts_version in snapshots
+    }
+    scores_by_resume = latest_current_scores_by_template(
+        session,
+        resume_ids=resume_ids,
+        template_id=template.id,
+    )
+    task_states = active_score_task_states(
+        session,
+        resume_ids,
+        template_id=template.id,
+    )
+    candidates_by_resume: dict[str, tuple[str, str | None]] = {}
+    if resume_ids:
+        candidates_by_resume = {
+            resume_id: (candidate_id, display_name)
+            for resume_id, candidate_id, display_name in session.execute(
+                select(Resume.id, Resume.candidate_id, Candidate.display_name)
+                .join(Candidate, Candidate.id == Resume.candidate_id)
+                .where(Resume.id.in_(resume_ids))
+            ).all()
+        }
+    items = []
+    for resume_id in resume_ids:
+        score = scores_by_resume.get(resume_id)
+        if (
+            score is not None
+            and score.facts_version != facts_version_by_resume.get(resume_id)
+        ):
+            score = None
+        candidate_id, display_name = candidates_by_resume.get(resume_id, ("", None))
+        items.append(
+            ScoreLeaderboardItem(
+                resume_id=resume_id,
+                candidate_id=candidate_id,
+                candidate_display_name=display_name,
+                score_total=score.total_score if score is not None else None,
+                score_status=score.status if score is not None else None,
+                score_task_state=task_states.get(resume_id, "none"),
+            )
+        )
+    items.sort(
+        key=lambda item: (
+            item.score_total is None,
+            -(item.score_total or 0.0),
+            item.candidate_display_name or "",
+        )
+    )
+    batch = _existing_active_batch(
+        session,
+        template_id=template.id,
+        template_version=template.version,
+        organization_id=template.organization_id,
+    )
+    return ScoreLeaderboardResponse(
+        items=items,
+        batch=_score_batch_response(batch) if batch is not None else None,
+    )
+
+
 __all__ = [
     "BATCH_COMPLETED",
     "BATCH_PARTIAL",
@@ -1139,5 +1274,6 @@ __all__ = [
     "BATCH_RUNNING",
     "enqueue_job_version_match_batch",
     "get_job_match_batch",
+    "list_job_version_score_leaderboard",
     "run_job_match_batch_worker_once",
 ]

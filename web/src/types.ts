@@ -1757,6 +1757,20 @@ export interface ResumeScoreBatchItem {
   updated_at: string;
 }
 
+export interface ScoreLeaderboardItem {
+  resume_id: string;
+  candidate_id: string;
+  candidate_display_name: string | null;
+  score_total: number | null;
+  score_status: "succeeded" | "needs_review" | "overridden" | null;
+  score_task_state: "none" | "queued" | "running";
+}
+
+export interface ScoreLeaderboard {
+  items: ScoreLeaderboardItem[];
+  batch: ResumeScoreBatch | null;
+}
+
 export interface ResumeScoreOverride {
   raw_score: number;
   reason: string;

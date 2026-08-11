@@ -223,18 +223,20 @@ def enqueue_resume_score_batch(
     template_id: str,
     settings: AppSettings,
     resume_id: str | None = None,
+    resume_ids: list[str] | None = None,
 ) -> ResumeScoreBatchResponse:
     """Queue currently scoreable resumes for one fixed score template.
 
     When ``resume_id`` is given, the batch contains exactly that one resume
-    item instead of every scoreable resume in the workspace.  If an active
-    batch already exists for the template, a scoreable scoped resume is
-    appended to it as an item (idempotent per resume); a scoped resume that
-    is not scoreable (missing, inactive, or in another workspace) contributes
-    no item.  With no active batch, a non-scoreable scoped resume simply
-    produces today's zero-item completed batch.  Either way a scoped resume
-    never raises here, so callers may safely use it inside a broader
-    extraction transaction.
+    item instead of every scoreable resume in the workspace.  When
+    ``resume_ids`` is given, the batch contains only the scoreable resumes
+    within that subset.  If an active batch already exists for the template,
+    a scoreable scoped resume is appended to it as an item (idempotent per
+    resume); a scoped resume that is not scoreable (missing, inactive, or in
+    another workspace) contributes no item.  With no active batch, a
+    non-scoreable scoped resume simply produces today's zero-item completed
+    batch.  Either way a scoped resume never raises here, so callers may
+    safely use it inside a broader extraction transaction.
     """
 
     template, _ = _require_scoreable_template(session, template_id=template_id)
@@ -245,7 +247,7 @@ def enqueue_resume_score_batch(
         template_version=template.version,
         organization_id=organization_id,
     )
-    if existing is not None and resume_id is None:
+    if existing is not None and resume_id is None and resume_ids is None:
         return _batch_response(existing)
 
     now = _utcnow()
@@ -273,6 +275,8 @@ def enqueue_resume_score_batch(
     )
     if resume_id is not None:
         snapshot_query = snapshot_query.where(Resume.id == resume_id)
+    elif resume_ids is not None:
+        snapshot_query = snapshot_query.where(Resume.id.in_(resume_ids))
     snapshot_rows = session.execute(snapshot_query).all()
     snapshots = [
         (resume_id, snapshot_id, facts_version)
@@ -285,6 +289,28 @@ def enqueue_resume_score_batch(
         # silently returning it without the resume.  A resume that is not
         # currently scoreable contributes no item, exactly like the create
         # path below, so the extraction-completion hook never raises here.
+        if resume_ids is not None:
+            # A multi-row subset must not collide with items already appended
+            # to this batch: the single flush below is atomic, so a mix of
+            # appended and fresh resumes would fail the whole INSERT on the
+            # per-(batch, resume) unique constraint, and the IntegrityError
+            # fallback can only inspect one resume id.  Drop the already-
+            # appended ids up front; nothing new left means idempotent return.
+            already_appended_ids = set(
+                session.scalars(
+                    select(ResumeScoreBatchItem.resume_id).where(
+                        ResumeScoreBatchItem.batch_id == existing.id
+                    )
+                ).all()
+            )
+            if already_appended_ids:
+                snapshots = [
+                    (resume_id, snapshot_id, facts_version)
+                    for resume_id, snapshot_id, facts_version in snapshots
+                    if resume_id not in already_appended_ids
+                ]
+                if not snapshots:
+                    return _batch_response(existing)
         if not snapshots:
             return _batch_response(existing)
         snapshot_ids = [snapshot_id for _, snapshot_id, _ in snapshots]

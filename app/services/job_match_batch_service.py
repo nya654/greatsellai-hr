@@ -26,6 +26,7 @@ from app.services.job_service import (
     run_job_match,
 )
 from app.services.resume_eligibility import has_unreliable_source_text
+from app.services.resume_score_batch_service import enqueue_resume_score_batch
 from app.services.workspace_background_lane_service import (
     acquire_workspace_background_lane,
     fair_available_workspace_ids,
@@ -308,8 +309,14 @@ def enqueue_job_version_match_batch(
     settings: AppSettings,
     resume_ids: Sequence[str] | None = None,
     allow_internal_job: bool = False,
+    score_template_id: str | None = None,
 ) -> JobMatchBatchResponse:
-    """Persist one full N×M side of the matrix without calling the model in HTTP."""
+    """Persist one full N×M side of the matrix without calling the model in HTTP.
+
+    When ``score_template_id`` is given, the same eligible candidates that
+    this call enqueues for matching are also enqueued for general scoring with
+    that template, closing the match→score loop in one request.
+    """
 
     # Serialize both “find active batch” and “create a new batch” by the
     # current JD version. Locking only an already-existing batch leaves a race
@@ -382,6 +389,13 @@ def enqueue_job_version_match_batch(
             snapshots=snapshots,
             now=_utcnow(),
         )
+        if score_template_id is not None and snapshots:
+            enqueue_resume_score_batch(
+                session,
+                template_id=score_template_id,
+                settings=settings,
+                resume_ids=[snapshot[0] for snapshot in snapshots],
+            )
         return _batch_response(existing)
 
     # A queued/retried batch must keep the same approved route even if the
@@ -443,6 +457,13 @@ def enqueue_job_version_match_batch(
         batch.status = BATCH_COMPLETED
         batch.completed_at = now
     session.flush()
+    if score_template_id is not None and snapshots:
+        enqueue_resume_score_batch(
+            session,
+            template_id=score_template_id,
+            settings=settings,
+            resume_ids=[snapshot[0] for snapshot in snapshots],
+        )
     return _batch_response(batch)
 
 

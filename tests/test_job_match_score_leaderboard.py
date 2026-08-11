@@ -337,3 +337,45 @@ def test_score_leaderboard_is_tenant_isolated(
         params={"template_id": b_template_id},
     )
     assert foreign.status_code == 404, foreign.text
+
+
+def test_score_leaderboard_ignores_stale_template_version_batch(ai_client) -> None:
+    """旧版本批次的活跃项不得让当前模板版本的评分榜显示「生成中」。"""
+    from app.models import ScoreTemplate
+
+    source_text = "教育经历 清华大学 计算机 工作经历 Acme Python Engineer 技能 Python SQL"
+    _, resume_id = _save_ready_resume(ai_client, source_text=source_text)
+    job = _create_job(
+        ai_client,
+        requirements=JobRequirements(must_have=["Python experience"]),
+    )
+    job_version_id = str(job["job_version_id"])
+    template = ai_client.post("/v1/score-templates", json=_template_payload())
+    assert template.status_code == 200, template.text
+    template_id = template.json()["template_id"]
+    database = ai_client.app.state.database
+
+    # 入队一个 v1 活跃批次后编辑模板，使版本 +1（旧批次保持 active）。
+    with database.session_factory() as session:
+        resume_score_batch_service.enqueue_resume_score_batch(
+            session,
+            template_id=template_id,
+            settings=ai_client.app.state.settings,
+            resume_ids=[resume_id],
+        )
+        template_row = session.get(ScoreTemplate, template_id)
+        assert template_row is not None
+        template_row.version += 1
+        session.commit()
+
+    with database.session_factory() as session:
+        board = job_match_batch_service.list_job_version_score_leaderboard(
+            session,
+            job_version_id=job_version_id,
+            template_id=template_id,
+        )
+        # 旧版本批次的活跃项不得让行停留在「生成中」，也不得冒出进行中标签。
+        assert board.batch is None
+        by_resume = {item.resume_id: item for item in board.items}
+        assert by_resume[resume_id].score_task_state == "none"
+        assert by_resume[resume_id].score_total is None

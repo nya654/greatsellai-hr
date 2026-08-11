@@ -53,14 +53,20 @@ def active_score_task_states(
     resume_ids: list[str],
     *,
     template_id: str | None = None,
+    template_version: int | None = None,
 ) -> dict[str, str]:
     """Map resume_id -> 'queued' | 'running' from active batch items.
 
     Runs under the session's tenant scope (``with_loader_criteria``), so a
     foreign workspace's batch can never surface here.  When ``template_id``
     is given, only active batches for that template count, so one template's
-    in-flight score never leaks into another template's table.  When a resume
-    appears in several active batches, ``running`` wins over ``queued``.
+    in-flight score never leaks into another template's table.  When
+    ``template_version`` is also given it must match the batch's frozen
+    version as well, keeping the leaderboard aligned with
+    ``_existing_active_batch`` (which only reports the current version) and
+    preventing a stale batch from an older template version from holding rows
+    in the generating state.  When a resume appears in several active batches,
+    ``running`` wins over ``queued``.
     """
 
     if not resume_ids:
@@ -73,6 +79,10 @@ def active_score_task_states(
     )
     if template_id is not None:
         statement = statement.where(ResumeScoreBatch.template_id == template_id)
+    if template_version is not None:
+        statement = statement.where(
+            ResumeScoreBatch.template_version == template_version
+        )
     rows = session.execute(
         statement.where(
             ResumeScoreBatchItem.resume_id.in_(resume_ids),

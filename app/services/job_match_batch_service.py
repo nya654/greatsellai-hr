@@ -1218,6 +1218,7 @@ def list_job_version_score_leaderboard(
         session,
         resume_ids,
         template_id=template.id,
+        template_version=template.version,
     )
     candidates_by_resume: dict[str, tuple[str, str | None]] = {}
     if resume_ids:

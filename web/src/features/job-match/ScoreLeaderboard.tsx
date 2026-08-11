@@ -85,6 +85,7 @@ function ScoreRow({
   rank: number;
 }) {
   const inProgress = scoreTaskInProgress(item.score_task_state);
+  const hasScore = item.score_total !== null;
   return (
     <tr className="score-candidate-row">
       <td className="score-rank">
@@ -94,13 +95,13 @@ function ScoreRow({
         <strong>{item.candidate_display_name?.trim() || "未命名候选人"}</strong>
       </td>
       <td>
-        {inProgress ? (
+        {hasScore ? (
+          <strong className="score-number">{item.score_total.toFixed(1)}</strong>
+        ) : inProgress ? (
           <span className="score-activity" role="status" aria-label="评分生成中">
             <span className="score-activity-dot" aria-hidden="true" />
             <span className="score-activity-copy">评分生成中…</span>
           </span>
-        ) : item.score_total !== null ? (
-          <strong className="score-number">{item.score_total.toFixed(1)}</strong>
         ) : (
           <span className="score-muted">尚无通用评分</span>
         )}

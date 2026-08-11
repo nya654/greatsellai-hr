@@ -929,6 +929,15 @@ export function ResumeLibraryPage({
                           <span className="library-quality-copy">
                             请使用候选人的当前版本
                           </span>
+                        ) : item.score_total !== null ? (
+                          <div
+                            className="library-score"
+                            title={item.score_template_name ?? "评分模板"}
+                          >
+                            <strong>{item.score_total.toFixed(1)}</strong>
+                            <span>/ 100</span>
+                            {scoreNotice && <small>{scoreNotice}</small>}
+                          </div>
                         ) : scoreTaskIsInProgress(item.score_task_state) ? (
                           <div
                             className="library-score-activity"
@@ -942,15 +951,6 @@ export function ResumeLibraryPage({
                             <span className="library-score-activity-copy">
                               评分生成中…
                             </span>
-                          </div>
-                        ) : item.score_total !== null ? (
-                          <div
-                            className="library-score"
-                            title={item.score_template_name ?? "评分模板"}
-                          >
-                            <strong>{item.score_total.toFixed(1)}</strong>
-                            <span>/ 100</span>
-                            {scoreNotice && <small>{scoreNotice}</small>}
                           </div>
                         ) : item.is_active ? (
                           <span className="library-empty-copy">

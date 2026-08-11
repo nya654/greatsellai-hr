@@ -290,7 +290,7 @@ class AppSettings:
             ),
             worker_concurrency=int(os.getenv("RESUME_V3_WORKER_CONCURRENCY", "1")),
             worker_database_pool_size=int(
-                os.getenv("RESUME_V3_WORKER_DATABASE_POOL_SIZE", "1")
+                os.getenv("RESUME_V3_WORKER_DATABASE_POOL_SIZE", "2")
             ),
             worker_database_max_overflow=int(
                 os.getenv("RESUME_V3_WORKER_DATABASE_MAX_OVERFLOW", "0")
@@ -619,9 +619,12 @@ class AppSettings:
             raise ValueError("RESUME_V3_DATABASE_MAX_OVERFLOW must not be negative")
         if not 1 <= self.worker_concurrency <= 16:
             raise ValueError("RESUME_V3_WORKER_CONCURRENCY must be between 1 and 16")
-        if self.worker_database_pool_size < 1:
+        if self.worker_database_pool_size < 2:
             raise ValueError(
-                "RESUME_V3_WORKER_DATABASE_POOL_SIZE must be at least 1"
+                "RESUME_V3_WORKER_DATABASE_POOL_SIZE must be at least 2: JD match "
+                "keeps its business session open while the AI gateway opens a "
+                "second durable ledger session on the same engine, so a single "
+                "connection stalls every real (non-cached) JD-match item"
             )
         if self.worker_database_max_overflow < 0:
             raise ValueError(

@@ -3041,6 +3041,11 @@ class ResumeLibraryResponse(ApiModel):
     total: int
     page: int
     page_size: int
+    # Whole-library tab counts (independent of the current page and of the
+    # active status filter), so the tab badges never jump while paginating.
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    # Total resume count across all statuses, again independent of the filter.
+    all_total: int = 0
 
 
 class ResumeRetryQueuedItem(ApiModel):

@@ -1534,6 +1534,10 @@ export interface ResumeLibraryResponse {
   total: number;
   page: number;
   page_size: number;
+  /** Whole-library status-tab counts, independent of page and status filter. */
+  status_counts: Partial<Record<ResumeLibraryStatusFilter, number>>;
+  /** Total resume count across all statuses, independent of the filter. */
+  all_total: number;
 }
 
 /** A private bookmark belongs to the current user in the current workspace. */

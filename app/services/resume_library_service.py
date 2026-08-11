@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Literal
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
@@ -210,6 +210,42 @@ def _library_state_for_tone(
     )
 
 
+_STATUS_TONE_KEYS = ("processing", "attention", "unscored", "summary_pending")
+
+
+def _status_tone_counts(
+    session: Session,
+    resumes: list[Resume],
+) -> dict[str, int]:
+    """Count every resume's status tab across the whole library.
+
+    The tab badges must stay stable while paging, so these come from the full
+    result set, never from the paginated slice returned to the page.
+    """
+
+    counts = {tone: 0 for tone in _STATUS_TONE_KEYS}
+    if not resumes:
+        return counts
+    wait_estimates = estimate_pending_resume_analysis_waits(
+        session,
+        resumes=resumes,
+    )
+    score_attempts = _latest_score_attempt_by_resume(
+        session,
+        resume_ids=[resume.id for resume in resumes],
+    )
+    for resume in resumes:
+        tone = _library_state_for_tone(
+            session,
+            resume,
+            wait_estimates=wait_estimates,
+            score_attempts=score_attempts,
+        )
+        if tone is not None:
+            counts[tone] += 1
+    return counts
+
+
 _LIBRARY_LOAD_OPTIONS = (
     selectinload(Resume.candidate),
     selectinload(Resume.document_extraction_job),
@@ -253,14 +289,9 @@ def list_resume_library(
     )
 
     if status_filter is None:
-        total = int(
-            session.scalar(select(func.count(Resume.id)).where(*filters)) or 0
-        )
-        resumes = session.scalars(
-            base_statement
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-        ).all()
+        all_resumes = session.scalars(base_statement).all()
+        total = len(all_resumes)
+        resumes = all_resumes[(page - 1) * page_size : page * page_size]
     else:
         all_resumes = session.scalars(base_statement).all()
         wait_estimates = estimate_pending_resume_analysis_waits(
@@ -385,11 +416,14 @@ def list_resume_library(
                 score_task_state=score_task_states.get(resume.id, "none"),
             )
         )
+    status_counts = _status_tone_counts(session, all_resumes)
     return ResumeLibraryResponse(
         items=items,
         total=total,
         page=page,
         page_size=page_size,
+        status_counts=status_counts,
+        all_total=len(all_resumes),
     )
 
 

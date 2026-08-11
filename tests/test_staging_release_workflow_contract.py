@@ -40,7 +40,7 @@ def test_staging_workflow_only_accepts_a_successful_main_ci_or_confirmed_main_di
     assert 'output.write(f"ci_run_attempt={ci_run_attempt}\\n")' in workflow
     assert 'output.write(f"ci_run_id={ci_run_id}\\\\n")' not in workflow
     assert "environment:\n      name: staging" in workflow
-    assert "group: greatsellai-hr-release-lane" in workflow
+    assert "group: greatsellai-hr-staging-lane" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "github.event.repository.private && " in workflow
     assert "|| 'ubuntu-latest'" in workflow

@@ -27,10 +27,11 @@ jobs:
        github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted", "Linux", "X64", "greatsell-ci"]') || 'ubuntu-latest' }}
     timeout-minutes: 45
-    # This lock starts only when the deployment job runs. An unapproved
-    # production Environment must not block newer main commits from staging.
+    # Staging serializes on its own lane. An unapproved production
+    # Environment waits on the production lane only, so it can never block
+    # newer main commits from reaching staging.
     concurrency:
-      group: greatsellai-hr-release-lane
+      group: greatsellai-hr-staging-lane
       cancel-in-progress: false
     environment:
       name: staging

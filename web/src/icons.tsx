@@ -21,6 +21,7 @@ export type IconName =
   | "layers"
   | "match"
   | "more"
+  | "pencil"
   | "plus"
   | "refresh"
   | "search"
@@ -55,6 +56,7 @@ const paths: Record<IconName, ReactNode> = {
   match: <><circle cx="10" cy="10" r="6" /><path d="m15 15 5 5M8 10l1.5 1.5L12.5 8.5" /></>,
   more: <><circle cx="5" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="19" cy="12" r="1" fill="currentColor" stroke="none" /></>,
   plus: <><path d="M12 5v14M5 12h14" /></>,
+  pencil: <><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" /></>,
   refresh: <><path d="M20 11a8 8 0 1 0 2 5.4" /><path d="M20 4v7h-7" /></>,
   search: <><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></>,
   spark: <><path d="m12 3 1.6 5.4L19 10l-5.4 1.6L12 17l-1.6-5.4L5 10l5.4-1.6zM19 16l.7 2.3L22 19l-2.3.7L19 22l-.7-2.3L16 19l2.3-.7z" /></>,

@@ -171,7 +171,7 @@ def latest_current_scores_by_template(
 
     if not resume_ids:
         return {}
-    rows = session.execute(
+    rows = session.scalars(
         select(ResumeScore)
         .where(
             ResumeScore.resume_id.in_(resume_ids),

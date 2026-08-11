@@ -235,13 +235,19 @@ function resumeLibraryStatus(item: ResumeLibraryItem): {
 
 /** Whether one-click retry has any branch to dispatch for this row. */
 function isRowRetryable(item: ResumeLibraryItem): boolean {
+  const readyForProcessing = item.is_active && item.extraction_status === "ready";
+  // First-time summary/score: a ready resume with a missing result is retryable.
+  const missingScore = readyForProcessing && item.score_status == null;
+  const missingSummary = readyForProcessing && item.ai_summary_status == null;
   return Boolean(
     item.score_retryable ||
       item.ai_summary_status === "failed" ||
       item.ai_summary_status === "unavailable" ||
       item.ai_extraction_status === "needs_attention" ||
       item.ai_extraction_status === "unavailable" ||
-      item.extraction_status === "failed",
+      item.extraction_status === "failed" ||
+      missingScore ||
+      missingSummary,
   );
 }
 
@@ -398,6 +404,7 @@ export function ResumeLibraryPage({
   const [selectedResumeIds, setSelectedResumeIds] = useState<ReadonlySet<string>>(
     new Set(),
   );
+  const [selectAllInLibrary, setSelectAllInLibrary] = useState(false);
   const [batchRetrying, setBatchRetrying] = useState(false);
   const [retryingResumeId, setRetryingResumeId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
@@ -557,19 +564,11 @@ export function ResumeLibraryPage({
     [],
   );
 
-  const toggleSelectAllOnPage = useCallback(
-    (checked: boolean | undefined) => {
-      setSelectedResumeIds((current) => {
-        const next = new Set(current);
-        for (const item of items) {
-          if (checked) next.add(item.resume_id);
-          else next.delete(item.resume_id);
-        }
-        return next;
-      });
-    },
-    [items],
-  );
+  const toggleSelectAllInLibrary = useCallback((checked: boolean | undefined) => {
+    const next = Boolean(checked);
+    setSelectAllInLibrary(next);
+    if (next) setSelectedResumeIds(new Set());
+  }, []);
 
   const handleStatusTabChange = useCallback((key: string) => {
     const next =
@@ -579,16 +578,20 @@ export function ResumeLibraryPage({
   }, []);
 
   const retrySelected = useCallback(async () => {
+    if (batchRetrying) return;
     const ids = [...selectedResumeIds];
-    if (!ids.length || batchRetrying) return;
+    if (!selectAllInLibrary && !ids.length) return;
     setBatchRetrying(true);
     setError(null);
     try {
-      const result = await api.retryResumesFailed(ids);
+      const result = selectAllInLibrary
+        ? await api.retryResumesAll()
+        : await api.retryResumesFailed(ids);
       notify(
         "success",
-        `已重试 ${result.queued.length}，跳过 ${result.skipped.length}`,
+        `已重试 ${result.queued_count}，跳过 ${result.skipped_count}`,
       );
+      setSelectAllInLibrary(false);
       setSelectedResumeIds(new Set());
       void loadLibrary();
     } catch (retryError) {
@@ -596,7 +599,14 @@ export function ResumeLibraryPage({
     } finally {
       setBatchRetrying(false);
     }
-  }, [batchRetrying, formatError, loadLibrary, notify, selectedResumeIds]);
+  }, [
+    batchRetrying,
+    formatError,
+    loadLibrary,
+    notify,
+    selectAllInLibrary,
+    selectedResumeIds,
+  ]);
 
   const retryResume = useCallback(
     async (item: ResumeLibraryItem) => {
@@ -661,7 +671,7 @@ export function ResumeLibraryPage({
               />
             </div>
           ) : null}
-          {selectedResumeIds.size > 0 && (
+          {(selectAllInLibrary || selectedResumeIds.size > 0) && (
             <BackofficeButton
               disabled={batchRetrying}
               icon={batchRetrying ? undefined : <Icon name="refresh" size={16} />}
@@ -669,7 +679,9 @@ export function ResumeLibraryPage({
               onClick={() => void retrySelected()}
               tone="primary"
             >
-              重试所选（{selectedResumeIds.size}）
+              {selectAllInLibrary
+                ? `重试全部（${library?.all_total ?? 0}）`
+                : `重试所选（${selectedResumeIds.size}）`}
             </BackofficeButton>
           )}
           <BackofficeButton
@@ -737,10 +749,16 @@ export function ResumeLibraryPage({
                   <tr>
                     <th aria-label="选择简历" className="library-check-cell" scope="col">
                       <SemiCheckbox
-                        aria-label="选择本页全部简历"
-                        checked={allOnPageSelected}
-                        indeterminate={someOnPageSelected && !allOnPageSelected}
-                        onChange={(event) => toggleSelectAllOnPage(event.target.checked)}
+                        aria-label="选择全部简历（含所有页）"
+                        checked={selectAllInLibrary || allOnPageSelected}
+                        indeterminate={
+                          !selectAllInLibrary &&
+                          someOnPageSelected &&
+                          !allOnPageSelected
+                        }
+                        onChange={(event) =>
+                          toggleSelectAllInLibrary(event.target.checked)
+                        }
                       />
                     </th>
                     <th scope="col">候选人</th>
@@ -782,9 +800,14 @@ export function ResumeLibraryPage({
                         >
                           <SemiCheckbox
                             aria-label={`选择 ${item.display_name?.trim() || "未命名候选人"}`}
-                            checked={selectedResumeIds.has(item.resume_id)}
-                            disabled={rowRetrying}
-                            onChange={(event) => toggleRowSelection(item, event.target.checked)}
+                            checked={
+                              selectAllInLibrary ||
+                              selectedResumeIds.has(item.resume_id)
+                            }
+                            disabled={rowRetrying || selectAllInLibrary}
+                            onChange={(event) =>
+                              toggleRowSelection(item, event.target.checked)
+                            }
                           />
                         </td>
                         <td className="library-candidate-cell">

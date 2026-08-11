@@ -27,6 +27,7 @@ from app.services.resume_retry_service import (
     SKIP_ACTIVE_RESUME_IMMUTABLE,
     SKIP_JOB_ALREADY_RUNNING,
     SKIP_NO_FAILED_STEP,
+    SKIP_NO_SCORE_TEMPLATE,
     SKIP_RESUME_NOT_SCOREABLE,
     SKIP_TEMPLATE_ARCHIVED,
     retry_resume_failed,
@@ -86,10 +87,11 @@ def _set_summary_failed(session, resume: Resume) -> None:
     job.completed_at = datetime.now(timezone.utc)
 
 
-def _create_failed_score_item(
+def _create_score_item(
     ai_client,
     resume: Resume,
     *,
+    status: str = "failed",
     archived_template: bool = False,
 ) -> str:
     database = ai_client.app.state.database
@@ -121,7 +123,7 @@ def _create_failed_score_item(
                     resume_id=resume.id,
                     fact_snapshot_id=snapshot.id,
                     facts_version=resume.facts_version,
-                    status="failed",
+                    status=status,
                     updated_at=now,
                     completed_at=now,
                     last_error="provider_timeout",
@@ -225,8 +227,93 @@ def test_dispatch_summary_failure(ai_client, monkeypatch) -> None:
 
     dispatch = _dispatch(ai_client, resume_id)
     assert dispatch.actions == (ACTION_SUMMARY,)
-    assert dispatch.skip_reasons == ()
+    assert dispatch.skip_reasons == (SKIP_NO_SCORE_TEMPLATE,)
     assert calls == [resume_id]
+
+
+def test_dispatch_never_summarized_requeues_summary(ai_client, monkeypatch) -> None:
+    _, resume_id = _save_ready(ai_client)
+    database = ai_client.app.state.database
+    calls = []
+
+    def fake_summary_requeue(session, *, resume, settings):
+        del session, settings
+        calls.append(resume.id)
+        return None
+
+    monkeypatch.setattr(
+        resume_retry_service,
+        "request_resume_summary_job",
+        fake_summary_requeue,
+    )
+    with database.session_factory() as session:
+        with bypass_organization_scope(session):
+            resume = session.get(Resume, resume_id)
+            assert resume is not None
+            for job in list(resume.summary_jobs):
+                session.delete(job)
+            session.commit()
+
+    dispatch = _dispatch(ai_client, resume_id)
+    assert dispatch.actions == (ACTION_SUMMARY,)
+    assert SKIP_NO_SCORE_TEMPLATE in dispatch.skip_reasons
+    assert calls == [resume_id]
+
+
+def test_dispatch_first_time_scores_with_configured_templates(
+    ai_client,
+    monkeypatch,
+) -> None:
+    _, resume_id = _save_ready(ai_client)
+    database = ai_client.app.state.database
+    settings = ai_client.app.state.settings
+    template_id = "template-first-score"
+    calls = []
+
+    def fake_score_enqueue(session, *, template_id, settings, resume_id):
+        del session, settings
+        calls.append((template_id, resume_id))
+        return None
+
+    monkeypatch.setattr(
+        resume_retry_service,
+        "enqueue_resume_score_batch",
+        fake_score_enqueue,
+    )
+    monkeypatch.setattr(
+        resume_retry_service,
+        "_auto_score_template_ids",
+        lambda session: [template_id],
+    )
+
+    dispatch = _dispatch(ai_client, resume_id)
+    assert dispatch.actions == (ACTION_SCORE,)
+    assert dispatch.skip_reasons == ()
+    assert calls == [(template_id, resume_id)]
+
+
+def test_dispatch_first_time_score_not_triggered_for_inactive_resume(
+    ai_client,
+    monkeypatch,
+) -> None:
+    _, resume_id = _save_ready(ai_client)
+    database = ai_client.app.state.database
+    with database.session_factory() as session:
+        with bypass_organization_scope(session):
+            resume = session.get(Resume, resume_id)
+            assert resume is not None
+            resume.is_active = False
+            session.commit()
+
+    monkeypatch.setattr(
+        resume_retry_service,
+        "_auto_score_template_ids",
+        lambda session: ["template-first-score"],
+    )
+
+    dispatch = _dispatch(ai_client, resume_id)
+    assert dispatch.actions == ()
+    assert dispatch.skip_reasons == ()
 
 
 def test_dispatch_score_failure(ai_client, monkeypatch) -> None:
@@ -250,7 +337,7 @@ def test_dispatch_score_failure(ai_client, monkeypatch) -> None:
         with bypass_organization_scope(session):
             resume = session.get(Resume, resume_id)
             assert resume is not None
-            template_id = _create_failed_score_item(ai_client, resume)
+            template_id = _create_score_item(ai_client, resume)
             session.commit()
 
     dispatch = _dispatch(ai_client, resume_id)
@@ -301,7 +388,7 @@ def test_dispatch_skips_archived_score_template(ai_client) -> None:
         with bypass_organization_scope(session):
             resume = session.get(Resume, resume_id)
             assert resume is not None
-            _create_failed_score_item(ai_client, resume, archived_template=True)
+            _create_score_item(ai_client, resume, archived_template=True)
             session.commit()
 
     dispatch = _dispatch(ai_client, resume_id)
@@ -316,7 +403,7 @@ def test_dispatch_skips_not_scoreable_resume(ai_client) -> None:
         with bypass_organization_scope(session):
             resume = session.get(Resume, resume_id)
             assert resume is not None
-            _create_failed_score_item(ai_client, resume)
+            _create_score_item(ai_client, resume)
             resume.is_active = False
             session.commit()
 
@@ -327,18 +414,32 @@ def test_dispatch_skips_not_scoreable_resume(ai_client) -> None:
 
 def test_dispatch_reports_no_failed_step_for_healthy_resume(ai_client) -> None:
     _, resume_id = _save_ready(ai_client)
+    database = ai_client.app.state.database
+    now = datetime.now(timezone.utc)
+    with database.session_factory() as session:
+        with bypass_organization_scope(session):
+            resume = session.get(Resume, resume_id)
+            assert resume is not None
+            summary_job = _latest_summary_job(
+                session, resume.id, resume.facts_version
+            )
+            assert summary_job is not None
+            summary_job.status = "succeeded"
+            summary_job.completed_at = now
+            _create_score_item(ai_client, resume, status="succeeded")
+            session.commit()
 
     dispatch = _dispatch(ai_client, resume_id)
     assert dispatch.actions == ()
     assert dispatch.skip_reasons == ()
 
 
-def test_dispatch_never_scored_is_not_a_trigger(ai_client) -> None:
+def test_dispatch_never_scored_skips_without_configured_template(ai_client) -> None:
     _, resume_id = _save_ready(ai_client)
 
     dispatch = _dispatch(ai_client, resume_id)
     assert dispatch.actions == ()
-    assert dispatch.skip_reasons == ()
+    assert dispatch.skip_reasons == (SKIP_NO_SCORE_TEMPLATE,)
 
 
 # --- retry endpoints -------------------------------------------------------
@@ -358,7 +459,7 @@ def test_single_retry_requeues_failed_summary(ai_client) -> None:
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["queued"] == [ACTION_SUMMARY]
-    assert payload["skipped"] == []
+    assert payload["skipped"] == [SKIP_NO_SCORE_TEMPLATE]
 
     with database.session_factory() as session:
         with bypass_organization_scope(session):
@@ -392,8 +493,10 @@ def test_batch_retry_collects_queued_and_skipped(ai_client) -> None:
         {"resume_id": first_resume_id, "actions": [ACTION_SUMMARY]}
     ]
     assert payload["skipped"] == [
-        {"resume_id": second_resume_id, "reason": SKIP_NO_FAILED_STEP}
+        {"resume_id": second_resume_id, "reason": SKIP_NO_SCORE_TEMPLATE}
     ]
+    assert payload["queued_count"] == 1
+    assert payload["skipped_count"] == 1
     assert first_candidate and second_candidate
 
 
@@ -404,6 +507,41 @@ def test_batch_retry_rejects_unknown_resume(ai_client) -> None:
     )
     assert response.status_code == 404
     assert response.json()["detail"] == "resume_not_found"
+
+
+def test_batch_retry_all_scores_whole_library(ai_client) -> None:
+    _, first_resume_id = _save_ready(ai_client)
+    _, second_resume_id = _save_ready(ai_client)
+    database = ai_client.app.state.database
+    with database.session_factory() as session:
+        with bypass_organization_scope(session):
+            resume = session.get(Resume, first_resume_id)
+            assert resume is not None
+            _set_summary_failed(session, resume)
+            session.commit()
+
+    response = ai_client.post("/v1/resumes/retry-failed", json={"all": True})
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["queued_count"] == 1
+    assert payload["skipped_count"] == 1
+    assert {item["resume_id"] for item in payload["queued"]} == {first_resume_id}
+    assert {item["resume_id"] for item in payload["skipped"]} == {second_resume_id}
+    assert payload["skipped"][0]["reason"] == SKIP_NO_SCORE_TEMPLATE
+    assert {first_resume_id, second_resume_id} == {
+        item["resume_id"] for item in payload["queued"] + payload["skipped"]
+    }
+
+
+def test_batch_retry_rejects_missing_or_ambiguous_target(ai_client) -> None:
+    empty_response = ai_client.post("/v1/resumes/retry-failed", json={})
+    assert empty_response.status_code == 422
+
+    ambiguous_response = ai_client.post(
+        "/v1/resumes/retry-failed",
+        json={"resume_ids": ["some-id"], "all": True},
+    )
+    assert ambiguous_response.status_code == 422
 
 
 def test_single_retry_returns_404_for_missing_resume(ai_client) -> None:
@@ -528,7 +666,7 @@ def test_resume_library_exposes_score_retryable_state(ai_client) -> None:
         with bypass_organization_scope(session):
             resume = session.get(Resume, resume_id)
             assert resume is not None
-            _create_failed_score_item(ai_client, resume)
+            _create_score_item(ai_client, resume)
             session.commit()
 
     items = _library_items(ai_client)

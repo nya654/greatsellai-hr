@@ -6680,20 +6680,29 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         payload: ResumeBatchRetryRequest,
         session: Session = Depends(get_session),
     ) -> ResumeBatchRetryResponse:
-        resumes = session.scalars(
-            select(Resume).where(Resume.id.in_(payload.resume_ids))
-        ).all()
-        by_id = {resume.id: resume for resume in resumes}
-        missing = [resume_id for resume_id in payload.resume_ids if resume_id not in by_id]
-        if missing:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="resume_not_found",
-            )
+        if payload.all:
+            # Whole-library retry: every workspace resume (org scope is
+            # applied to the session automatically), not just a selection.
+            resumes = session.scalars(
+                select(Resume).order_by(Resume.created_at.desc(), Resume.id.desc())
+            ).all()
+            targets = [(resume.id, resume) for resume in resumes]
+        else:
+            resume_ids = payload.resume_ids or []
+            resumes = session.scalars(
+                select(Resume).where(Resume.id.in_(resume_ids))
+            ).all()
+            by_id = {resume.id: resume for resume in resumes}
+            missing = [resume_id for resume_id in resume_ids if resume_id not in by_id]
+            if missing:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="resume_not_found",
+                )
+            targets = [(resume_id, by_id[resume_id]) for resume_id in resume_ids]
         queued: list[dict[str, object]] = []
         skipped: list[dict[str, object]] = []
-        for resume_id in payload.resume_ids:
-            resume = by_id[resume_id]
+        for resume_id, resume in targets:
             dispatch = retry_resume_failed(
                 session,
                 resume=resume,
@@ -6713,7 +6722,12 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                     }
                 )
         _commit_or_raise(session)
-        return ResumeBatchRetryResponse(queued=queued, skipped=skipped)
+        return ResumeBatchRetryResponse(
+            queued=queued,
+            skipped=skipped,
+            queued_count=len(queued),
+            skipped_count=len(skipped),
+        )
 
     @app.post(
         "/v1/saved-filters",

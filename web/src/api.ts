@@ -90,6 +90,7 @@ import type {
   WorkspaceFeedbackSubmitInput,
   SavedFilter,
   SavedFilterCreate,
+  ScoreLeaderboard,
   ScoreTemplate,
   ScoreTemplateCreate,
   ScoreTemplateOptimization,
@@ -1025,8 +1026,19 @@ export function createApiClient(options: ApiClientOptions = {}) {
       );
     },
 
-    enqueueAllJobMatches(jobVersionId: string): Promise<JobMatchBatch> {
-      return request<JobMatchBatch>(`/job-versions/${resourcePath(jobVersionId)}/match-all`, { method: "POST" });
+    enqueueAllJobMatches(
+      jobVersionId: string,
+      scoreTemplateId?: string,
+    ): Promise<JobMatchBatch> {
+      return request<JobMatchBatch>(
+        `/job-versions/${resourcePath(jobVersionId)}/match-all`,
+        {
+          method: "POST",
+          body: scoreTemplateId
+            ? { score_template_id: scoreTemplateId }
+            : undefined,
+        },
+      );
     },
 
     getJobMatchBatch(batchId: string): Promise<JobMatchBatch> {
@@ -1045,6 +1057,15 @@ export function createApiClient(options: ApiClientOptions = {}) {
 
     listJobVersionMatches(jobVersionId: string): Promise<JobMatch[]> {
       return request<JobMatch[]>(`/job-versions/${resourcePath(jobVersionId)}/matches`);
+    },
+
+    listJobVersionScoreLeaderboard(
+      jobVersionId: string,
+      templateId: string,
+    ): Promise<ScoreLeaderboard> {
+      return request<ScoreLeaderboard>(
+        `/job-versions/${resourcePath(jobVersionId)}/score-leaderboard?template_id=${encodeURIComponent(templateId)}`,
+      );
     },
   };
 }

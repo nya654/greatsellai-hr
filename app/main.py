@@ -169,6 +169,7 @@ from app.schemas import (
     JobApplicationStageTransitionCreate,
     JobGenerationRequest,
     JobGenerationResponse,
+    JobMatchBatchEnqueue,
     JobMatchBatchResponse,
     JobMatchBatchItemResponse,
     JobMatchCreate,
@@ -216,6 +217,7 @@ from app.schemas import (
     ResumeSummaryResponse,
     SavedFilterCreate,
     SavedFilterResponse,
+    ScoreLeaderboardResponse,
     ScoreTemplateCreate,
     ScoreTemplateOptimizationResponse,
     ScoreTemplateResponse,
@@ -475,6 +477,7 @@ from app.services.job_match_batch_service import (
     enqueue_job_version_match_batch,
     get_job_match_batch,
     list_job_match_batch_items,
+    list_job_version_score_leaderboard,
 )
 from app.services.recruiting_service import (
     RecruitingServiceError,
@@ -7600,6 +7603,29 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         except JobVersionNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
+    @app.get(
+        "/v1/job-versions/{job_version_id}/score-leaderboard",
+        response_model=ScoreLeaderboardResponse,
+        dependencies=[Depends(require_single_admin)],
+    )
+    def get_job_version_score_leaderboard(
+        job_version_id: str,
+        template_id: str,
+        session: Session = Depends(get_session),
+    ) -> ScoreLeaderboardResponse:
+        try:
+            return list_job_version_score_leaderboard(
+                session,
+                job_version_id=job_version_id,
+                template_id=template_id,
+            )
+        except JobVersionNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except ScoreTemplateNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except ScoreServiceError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
     @app.post(
         "/v1/job-versions/{job_version_id}/extract",
         response_model=JobVersionResponse,
@@ -7687,6 +7713,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
     )
     def post_enqueue_job_version_match_batch(
         job_version_id: str,
+        payload: JobMatchBatchEnqueue | None = None,
         session: Session = Depends(get_session),
     ) -> JobMatchBatchResponse:
         try:
@@ -7694,10 +7721,17 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
                 session,
                 job_version_id=job_version_id,
                 settings=settings,
+                score_template_id=payload.score_template_id if payload else None,
             )
         except JobVersionNotFoundError as exc:
             session.rollback()
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except ScoreTemplateNotFoundError as exc:
+            session.rollback()
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except ScoreServiceError as exc:
+            session.rollback()
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         except JobServiceError as exc:
             session.rollback()
             _raise_job_service_error(exc)

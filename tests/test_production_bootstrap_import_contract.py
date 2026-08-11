@@ -151,7 +151,7 @@ def test_bootstrap_workflows_are_manual_production_environment_actions() -> None
         assert "workflow_dispatch:" in workflow
         assert "  push:" not in workflow
         assert "environment:\n      name: production" in workflow
-        assert "group: greatsellai-hr-release-lane" in workflow
+        assert "group: greatsellai-hr-production-lane" in workflow
         assert "refs/heads/main" in workflow
         assert "STAGING_" not in workflow
     assert "IMPORT_PRODUCTION_SNAPSHOT" in import_workflow

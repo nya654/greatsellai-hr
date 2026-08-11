@@ -3074,6 +3074,32 @@ class ResumeBatchRetryResponse(ApiModel):
     skipped: list[ResumeRetrySkippedItem] = Field(default_factory=list)
 
 
+class ResumeRetryQueuedItem(ApiModel):
+    resume_id: str
+    actions: list[str] = Field(default_factory=list)
+
+
+class ResumeRetrySkippedItem(ApiModel):
+    resume_id: str
+    reason: str
+
+
+class ResumeSingleRetryResponse(ApiModel):
+    """Per-resume retry outcome: worker queues re-queued and skip reasons."""
+
+    queued: list[str] = Field(default_factory=list)
+    skipped: list[str] = Field(default_factory=list)
+
+
+class ResumeBatchRetryRequest(ApiModel):
+    resume_ids: list[str] = Field(min_length=1, max_length=100)
+
+
+class ResumeBatchRetryResponse(ApiModel):
+    queued: list[ResumeRetryQueuedItem] = Field(default_factory=list)
+    skipped: list[ResumeRetrySkippedItem] = Field(default_factory=list)
+
+
 class CandidateFavoriteState(ApiModel):
     """Private favorite state for one current-workspace candidate."""
 

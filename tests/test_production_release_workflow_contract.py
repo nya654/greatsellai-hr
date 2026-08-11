@@ -86,7 +86,7 @@ def test_legacy_pending_reconciliation_is_manual_and_uses_the_production_lock() 
 
     assert "workflow_dispatch:" in workflow
     assert "RECONCILE_LEGACY_PENDING" in workflow
-    assert "group: greatsellai-hr-release-lane" in workflow
+    assert "group: greatsellai-hr-production-lane" in workflow
     assert "environment:" in workflow and "name: production" in workflow
     assert "ref: main" in workflow
     assert 'scripts/reconcile-legacy-pending-release.sh "$PENDING_TAG" "$PENDING_COMMIT"' in workflow
@@ -102,7 +102,7 @@ def test_pending_target_finalization_is_manual_and_narrowly_confirmed() -> None:
 
     assert "workflow_dispatch:" in workflow
     assert "FINALIZE_PENDING_PROXY_STARTUP" in workflow
-    assert "group: greatsellai-hr-release-lane" in workflow
+    assert "group: greatsellai-hr-production-lane" in workflow
     assert "environment:" in workflow and "name: production" in workflow
     assert "ref: main" in workflow
     assert 'scripts/finalize-pending-release.sh "$PENDING_TAG" "$PENDING_COMMIT"' in workflow
@@ -121,7 +121,7 @@ def test_healthy_pending_finalization_is_manual_and_read_only_for_runtime_state(
 
     assert "workflow_dispatch:" in workflow
     assert "FINALIZE_HEALTHY_PENDING_RUNTIME" in workflow
-    assert "group: greatsellai-hr-release-lane" in workflow
+    assert "group: greatsellai-hr-production-lane" in workflow
     assert "environment:" in workflow and "name: production" in workflow
     assert "ref: main" in workflow
     assert 'bash scripts/finalize-healthy-pending-release.sh "$PENDING_TAG" "$PENDING_COMMIT"' in workflow

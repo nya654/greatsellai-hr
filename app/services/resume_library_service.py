@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from typing import Literal
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
@@ -26,6 +27,8 @@ from app.services.normalization import DEGREE_RANK
 from app.services.resume_analysis_wait_estimate_service import (
     estimate_pending_resume_analysis_waits,
 )
+from app.services.resume_retry_service import resume_library_status_tone
+from app.services.resume_score_batch_service import ITEM_FAILED
 from app.services.resume_summary_job_service import summary_generation_state
 from app.services.source_tag_service import resume_source_tag_references
 
@@ -200,6 +203,99 @@ def _highest_education(resume: Resume) -> ResumeEducation | None:
     )
 
 
+def _latest_score_attempt_by_resume(
+    session: Session,
+    *,
+    resume_ids: list[str],
+) -> dict[str, ResumeScoreBatchItem]:
+    """Return the most recent durable score attempt per resume, if any."""
+
+    if not resume_ids:
+        return {}
+    rows = session.execute(
+        select(ResumeScoreBatchItem)
+        .where(ResumeScoreBatchItem.resume_id.in_(resume_ids))
+        .order_by(
+            ResumeScoreBatchItem.updated_at.desc(),
+            ResumeScoreBatchItem.id.desc(),
+        )
+    ).scalars().all()
+    latest: dict[str, ResumeScoreBatchItem] = {}
+    for row in rows:
+        latest.setdefault(row.resume_id, row)
+    return latest
+
+
+def _library_state_for_tone(
+    session: Session,
+    resume: Resume,
+    *,
+    wait_estimates: Mapping[str, object],
+    score_attempts: Mapping[str, ResumeScoreBatchItem],
+) -> str | None:
+    """Classify one resume into its status tab for the filtered view."""
+
+    ai_status, _ = ai_extraction_state(resume)
+    summary_status, _ = summary_generation_state(resume)
+    score_attempt = score_attempts.get(resume.id)
+    return resume_library_status_tone(
+        resume,
+        ai_status=ai_status,
+        summary_status=summary_status,
+        wait_estimate_present=resume.id in wait_estimates,
+        score_retryable=score_attempt is not None and score_attempt.status == ITEM_FAILED,
+        current_score_present=_latest_current_score(resume) is not None,
+    )
+
+
+_STATUS_TONE_KEYS = ("processing", "attention", "unscored", "summary_pending")
+
+
+def _status_tone_counts(
+    session: Session,
+    resumes: list[Resume],
+) -> dict[str, int]:
+    """Count every resume's status tab across the whole library.
+
+    The tab badges must stay stable while paging, so these come from the full
+    result set, never from the paginated slice returned to the page.
+    """
+
+    counts = {tone: 0 for tone in _STATUS_TONE_KEYS}
+    if not resumes:
+        return counts
+    wait_estimates = estimate_pending_resume_analysis_waits(
+        session,
+        resumes=resumes,
+    )
+    score_attempts = _latest_score_attempt_by_resume(
+        session,
+        resume_ids=[resume.id for resume in resumes],
+    )
+    for resume in resumes:
+        tone = _library_state_for_tone(
+            session,
+            resume,
+            wait_estimates=wait_estimates,
+            score_attempts=score_attempts,
+        )
+        if tone is not None:
+            counts[tone] += 1
+    return counts
+
+
+_LIBRARY_LOAD_OPTIONS = (
+    selectinload(Resume.candidate),
+    selectinload(Resume.document_extraction_job),
+    selectinload(Resume.ai_extraction_job),
+    selectinload(Resume.candidate_name_extraction_job),
+    selectinload(Resume.educations),
+    selectinload(Resume.summaries),
+    selectinload(Resume.summary_jobs),
+    selectinload(Resume.scores).selectinload(ResumeScore.template),
+)
+
+
 def list_resume_library(
     session: Session,
     *,
@@ -207,33 +303,57 @@ def list_resume_library(
     page_size: int,
     mailbox_config_id: str | None = None,
     viewer_user_id: str | None = None,
+    status_filter: Literal[
+        "processing", "attention", "unscored", "summary_pending"
+    ] | None = None,
 ) -> ResumeLibraryResponse:
-    """List uploaded resume versions without exposing raw extracted facts."""
+    """List uploaded resume versions without exposing raw extracted facts.
+
+    ``status_filter`` narrows the view to one mutually exclusive status tab.
+    The four buckets depend on per-resume job states that are impractical to
+    express as SQL, so the filtered path classifies every matching resume in
+    Python before paginating.  Without a filter the common list uses the
+    existing SQL-paged fast path.
+    """
 
     filters = []
     if mailbox_config_id is not None:
         filters.append(Resume.source_mailbox_config_id == mailbox_config_id)
-    total = int(
-        session.scalar(select(func.count(Resume.id)).where(*filters)) or 0
-    )
-    statement = (
+    base_statement = (
         select(Resume)
-        .options(
-            selectinload(Resume.candidate),
-            selectinload(Resume.document_extraction_job),
-            selectinload(Resume.ai_extraction_job),
-            selectinload(Resume.candidate_name_extraction_job),
-            selectinload(Resume.educations),
-            selectinload(Resume.summaries),
-            selectinload(Resume.summary_jobs),
-            selectinload(Resume.scores).selectinload(ResumeScore.template),
-        )
+        .options(*_LIBRARY_LOAD_OPTIONS)
         .where(*filters)
         .order_by(Resume.created_at.desc(), Resume.id.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
     )
-    resumes = session.scalars(statement).all()
+
+    if status_filter is None:
+        all_resumes = session.scalars(base_statement).all()
+        total = len(all_resumes)
+        resumes = all_resumes[(page - 1) * page_size : page * page_size]
+    else:
+        all_resumes = session.scalars(base_statement).all()
+        wait_estimates = estimate_pending_resume_analysis_waits(
+            session,
+            resumes=all_resumes,
+        )
+        score_attempts = _latest_score_attempt_by_resume(
+            session,
+            resume_ids=[resume.id for resume in all_resumes],
+        )
+        filtered = [
+            resume
+            for resume in all_resumes
+            if _library_state_for_tone(
+                session,
+                resume,
+                wait_estimates=wait_estimates,
+                score_attempts=score_attempts,
+            )
+            == status_filter
+        ]
+        total = len(filtered)
+        resumes = filtered[(page - 1) * page_size : page * page_size]
+
     source_tags_by_resume = resume_source_tag_references(
         session,
         resume_ids=[resume.id for resume in resumes],
@@ -251,6 +371,10 @@ def list_resume_library(
         session,
         resumes=resumes,
     )
+    score_attempts = _latest_score_attempt_by_resume(
+        session,
+        resume_ids=[resume.id for resume in resumes],
+    )
     score_task_states = active_score_task_states(
         session,
         resume_ids=[resume.id for resume in resumes],
@@ -266,6 +390,7 @@ def list_resume_library(
         )
         summary_status, summary_error = summary_generation_state(resume)
         wait_estimate = wait_estimates.get(resume.id)
+        score_attempt = score_attempts.get(resume.id)
         items.append(
             ResumeLibraryItem(
                 resume_id=resume.id,
@@ -320,14 +445,23 @@ def list_resume_library(
                 score_status=score.status if score else None,
                 score_template_name=score.template.name if score and score.template else None,
                 score_created_at=_isoformat(score.created_at) if score else None,
+                latest_score_status=(
+                    score_attempt.status if score_attempt is not None else None
+                ),
+                score_retryable=(
+                    score_attempt is not None and score_attempt.status == ITEM_FAILED
+                ),
                 score_task_state=score_task_states.get(resume.id, "none"),
             )
         )
+    status_counts = _status_tone_counts(session, all_resumes)
     return ResumeLibraryResponse(
         items=items,
         total=total,
         page=page,
         page_size=page_size,
+        status_counts=status_counts,
+        all_total=len(all_resumes),
     )
 
 

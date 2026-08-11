@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { Icon } from "../../icons";
 import {
@@ -25,14 +25,22 @@ import type {
   ResumeAnalysisWaitEstimate,
   ResumeLibraryItem,
   ResumeLibraryResponse,
+  ResumeLibraryStatusFilter,
 } from "../../types";
 import "./resume-library.css";
+
+const SemiTabs = lazy(() => import("@douyinfe/semi-ui-19/lib/es/tabs"));
+const SemiTabPane = lazy(() => import("@douyinfe/semi-ui-19/lib/es/tabs/TabPane"));
+const SemiCheckbox = lazy(() => import("@douyinfe/semi-ui-19/lib/es/checkbox/checkbox"));
 
 const DEFAULT_RESUME_LIBRARY_PAGE_SIZE = 50;
 const RESUME_LIBRARY_PAGE_SIZE_OPTIONS = [25, 50, 100];
 const RESUME_LIBRARY_PAGE_SIZE_SELECT_OPTIONS = RESUME_LIBRARY_PAGE_SIZE_OPTIONS.map(
   (pageSize) => ({ label: `${pageSize} 条`, value: String(pageSize) }),
 );
+
+/** Sentinel tab key for the unfiltered view. */
+const ALL_RESUMES_TAB = "all";
 
 interface ResumeLibraryPageProps {
   formatError: (error: unknown) => string;
@@ -42,6 +50,8 @@ interface ResumeLibraryPageProps {
   selectedResumeId: string | null;
   /** Refresh other candidate-facing surfaces after a private bookmark changes. */
   onFavoriteChanged?: () => void;
+  /** Transient feedback region for one-click retry outcomes. */
+  notify: (kind: "success" | "error", message: string) => void;
 }
 
 type AnalysisPhase = "source_reading" | "resume_analysis" | "name_completion";
@@ -215,6 +225,42 @@ function resumeLibraryStatus(item: ResumeLibraryItem): {
   return { label: "等待启用", tone: "waiting" };
 }
 
+/**
+ * The server owns the status-tab classification: the response carries
+ * whole-library ``status_counts`` / ``all_total`` so the badges stay stable
+ * no matter which page or filter is active. A healthy active resume belongs
+ * to no tab.
+ */
+
+/** Whether one-click retry has any branch to dispatch for this row. */
+function isRowRetryable(item: ResumeLibraryItem): boolean {
+  return Boolean(
+    item.score_retryable ||
+      item.ai_summary_status === "failed" ||
+      item.ai_summary_status === "unavailable" ||
+      item.ai_extraction_status === "needs_attention" ||
+      item.ai_extraction_status === "unavailable" ||
+      item.extraction_status === "failed",
+  );
+}
+
+interface LibraryStatusTab {
+  key: ResumeLibraryStatusFilter | typeof ALL_RESUMES_TAB;
+  label: string;
+  count: number;
+}
+
+const STATUS_TAB_DEFINITIONS: ReadonlyArray<{
+  key: LibraryStatusTab["key"];
+  label: string;
+}> = [
+  { key: ALL_RESUMES_TAB, label: "全部" },
+  { key: "processing", label: "处理中" },
+  { key: "attention", label: "需处理" },
+  { key: "unscored", label: "待评分" },
+  { key: "summary_pending", label: "待总结" },
+];
+
 function waitEstimateLabel(estimate: ResumeAnalysisWaitEstimate): string {
   const minimum = Math.max(0, estimate.estimated_min_seconds);
   const maximum = Math.max(minimum, estimate.estimated_max_seconds);
@@ -350,6 +396,7 @@ function candidateProfileText(item: ResumeLibraryItem): string {
 
 export function ResumeLibraryPage({
   formatError,
+  notify,
   selectedResumeId,
   refreshToken,
   onOpenResume,
@@ -359,6 +406,12 @@ export function ResumeLibraryPage({
   const [library, setLibrary] = useState<ResumeLibraryResponse | null>(null);
   const [mailboxSources, setMailboxSources] = useState<MailboxConfig[]>([]);
   const [sourceMailboxId, setSourceMailboxId] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<ResumeLibraryStatusFilter | null>(null);
+  const [selectedResumeIds, setSelectedResumeIds] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
+  const [batchRetrying, setBatchRetrying] = useState(false);
+  const [retryingResumeId, setRetryingResumeId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_RESUME_LIBRARY_PAGE_SIZE);
   const [loading, setLoading] = useState(true);
@@ -386,6 +439,7 @@ export function ResumeLibraryPage({
         page,
         pageSize,
         sourceMailboxId,
+        statusFilter,
       );
       if (requestId === latestLibraryRequestIdRef.current) {
         setLibrary(nextLibrary);
@@ -399,7 +453,7 @@ export function ResumeLibraryPage({
         setLoading(false);
       }
     }
-  }, [formatError, page, pageSize, sourceMailboxId]);
+  }, [formatError, page, pageSize, sourceMailboxId, statusFilter]);
 
   useEffect(() => {
     void loadLibrary();
@@ -486,21 +540,105 @@ export function ResumeLibraryPage({
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const canPageBack = page > 1;
   const canPageForward = page < totalPages;
-  const pageOverview = items.reduce(
-    (summary, item) => {
-      const status = resumeLibraryStatus(item);
-      if (status.tone !== "ready") {
-        summary[status.tone] += 1;
-      }
-      if (status.tone === "ready" && item.score_total === null) {
-        summary.unscored += 1;
-      }
-      return summary;
-    },
-    { progress: 0, attention: 0, waiting: 0, unscored: 0 },
+  const statusTabs: LibraryStatusTab[] = STATUS_TAB_DEFINITIONS.map((tab) => {
+    const count =
+      tab.key === ALL_RESUMES_TAB
+        ? library?.all_total ?? total
+        : library?.status_counts?.[tab.key] ?? 0;
+    return { ...tab, count };
+  });
+  const pageResumeIds = items.map((item) => item.resume_id);
+  const allOnPageSelected = pageResumeIds.length > 0 && pageResumeIds.every(
+    (resumeId) => selectedResumeIds.has(resumeId),
+  );
+  const someOnPageSelected = pageResumeIds.some((resumeId) =>
+    selectedResumeIds.has(resumeId),
   );
   const firstItemIndex = total ? (page - 1) * pageSize + 1 : 0;
   const lastItemIndex = Math.min(page * pageSize, total);
+
+  const toggleRowSelection = useCallback(
+    (item: ResumeLibraryItem, checked: boolean | undefined) => {
+      setSelectedResumeIds((current) => {
+        const next = new Set(current);
+        if (checked) next.add(item.resume_id);
+        else next.delete(item.resume_id);
+        return next;
+      });
+    },
+    [],
+  );
+
+  const toggleSelectAllOnPage = useCallback(
+    (checked: boolean | undefined) => {
+      setSelectedResumeIds((current) => {
+        const next = new Set(current);
+        for (const item of items) {
+          if (checked) next.add(item.resume_id);
+          else next.delete(item.resume_id);
+        }
+        return next;
+      });
+    },
+    [items],
+  );
+
+  const handleStatusTabChange = useCallback((key: string) => {
+    const next =
+      key === ALL_RESUMES_TAB ? null : (key as ResumeLibraryStatusFilter);
+    setStatusFilter(next);
+    setPage(1);
+  }, []);
+
+  const retrySelected = useCallback(async () => {
+    const ids = [...selectedResumeIds];
+    if (!ids.length || batchRetrying) return;
+    setBatchRetrying(true);
+    setError(null);
+    try {
+      const result = await api.retryResumesFailed(ids);
+      notify(
+        "success",
+        `已重试 ${result.queued.length}，跳过 ${result.skipped.length}`,
+      );
+      setSelectedResumeIds(new Set());
+      void loadLibrary();
+    } catch (retryError) {
+      setError(formatError(retryError));
+    } finally {
+      setBatchRetrying(false);
+    }
+  }, [batchRetrying, formatError, loadLibrary, notify, selectedResumeIds]);
+
+  const retryResume = useCallback(
+    async (item: ResumeLibraryItem) => {
+      if (retryingResumeId === item.resume_id) return;
+      setRetryingResumeId(item.resume_id);
+      setError(null);
+      try {
+        const result = await api.retryResumeFailed(item.resume_id);
+        notify(
+          "success",
+          result.queued.length
+            ? "已重新加入处理队列"
+            : "该简历当前没有可重试的失败环节",
+        );
+        setSelectedResumeIds((current) => {
+          if (!current.has(item.resume_id)) return current;
+          const next = new Set(current);
+          next.delete(item.resume_id);
+          return next;
+        });
+        void loadLibrary();
+      } catch (retryError) {
+        setError(formatError(retryError));
+      } finally {
+        setRetryingResumeId(null);
+      }
+    },
+    [formatError, loadLibrary, notify, retryingResumeId],
+  );
+
   const mailboxOptions = [
     { label: "全部来源", value: "" },
     ...mailboxSources.map((mailbox) => ({
@@ -535,6 +673,17 @@ export function ResumeLibraryPage({
               />
             </div>
           ) : null}
+          {selectedResumeIds.size > 0 && (
+            <BackofficeButton
+              disabled={batchRetrying}
+              icon={batchRetrying ? undefined : <Icon name="refresh" size={16} />}
+              loading={batchRetrying}
+              onClick={() => void retrySelected()}
+              tone="primary"
+            >
+              重试所选（{selectedResumeIds.size}）
+            </BackofficeButton>
+          )}
           <BackofficeButton
             disabled={loading}
             icon={loading ? undefined : <Icon name="refresh" size={16} />}
@@ -553,30 +702,30 @@ export function ResumeLibraryPage({
         </div>
       </header>
 
-      {library &&
-        pageOverview.progress +
-          pageOverview.waiting +
-          pageOverview.attention +
-          pageOverview.unscored >
-          0 && (
-          <section aria-label="当前页面简历状态" className="library-queue-summary">
-            {pageOverview.progress + pageOverview.waiting > 0 && (
-              <span className="library-queue-item is-progress">
-                处理中 <strong>{pageOverview.progress + pageOverview.waiting}</strong>
-              </span>
-            )}
-            {pageOverview.attention > 0 && (
-              <span className="library-queue-item is-attention">
-                需处理 <strong>{pageOverview.attention}</strong>
-              </span>
-            )}
-            {pageOverview.unscored > 0 && (
-              <span className="library-queue-item">
-                待评分 <strong>{pageOverview.unscored}</strong>
-              </span>
-            )}
-          </section>
-        )}
+      {library && (
+        <Suspense fallback={<p className="library-status-tabs-loading">正在加载状态筛选…</p>}>
+          <SemiTabs
+            activeKey={statusFilter ?? ALL_RESUMES_TAB}
+            aria-label="按状态筛选简历"
+            className="library-status-tabs"
+            onChange={handleStatusTabChange}
+            type="button"
+          >
+            {statusTabs.map((tab) => (
+              <SemiTabPane
+                itemKey={tab.key}
+                key={tab.key}
+                tab={(
+                  <span className="library-status-tab">
+                    {tab.label}
+                    <span className="library-status-tab-count">{tab.count}</span>
+                  </span>
+                )}
+              />
+            ))}
+          </SemiTabs>
+        </Suspense>
+      )}
 
       {error && (
         <p className="library-error" role="status">
@@ -585,54 +734,76 @@ export function ResumeLibraryPage({
       )}
 
       <section aria-label="简历库列表" className="library-table-frame">
-        {loading && !library ? (
-          <TableSkeleton />
-        ) : items.length ? (
-          <div
-            aria-label="简历库列表，可横向滚动查看全部字段"
-            className="table-scroll"
-            role="region"
-            tabIndex={0}
-          >
-            <table className="candidate-table library-table">
-              <thead>
-                <tr>
-                  <th scope="col">候选人</th>
-                  <th scope="col">AI 总结</th>
-                  <th scope="col">AI 评分</th>
-                  <th scope="col">上传时间</th>
-                  <th aria-label="查看简历" scope="col" />
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((item) => {
-                  const status = resumeLibraryStatus(item);
-                  const sourceTextIssue = hasSourceTextQualityIssue(
-                    item.quality_flags,
-                  );
-                  const supersededReparse = hasSupersededReparseVersion(
-                    item.quality_flags,
-                  );
-                  const scoreNotice = resumeLibraryScoreNotice(
-                    item.score_status,
-                  );
-                  const candidateProfile = candidateProfileText(item);
-                  const favoriteUpdating =
-                    favoriteActionCandidateId === item.candidate_id;
-                  return (
-                    <tr
-                      className={[
-                        selectedResumeId === item.resume_id ? "is-selected" : "",
-                        sourceTextIssue ? "has-source-quality-issue" : "",
-                        supersededReparse ? "has-superseded-reparse" : "",
-                      ]
-                        .filter(Boolean)
-                        .join(" ")}
-                      key={item.resume_id}
-                      onClick={() => onOpenResume(item)}
-                    >
-                      <td className="library-candidate-cell">
-                        <div className="candidate-person">
+        <Suspense fallback={<TableSkeleton />}>
+          {loading && !library ? (
+            <TableSkeleton />
+          ) : items.length ? (
+            <div
+              aria-label="简历库列表，可横向滚动查看全部字段"
+              className="table-scroll"
+              role="region"
+              tabIndex={0}
+            >
+              <table className="candidate-table library-table">
+                <thead>
+                  <tr>
+                    <th aria-label="选择简历" className="library-check-cell" scope="col">
+                      <SemiCheckbox
+                        aria-label="选择本页全部简历"
+                        checked={allOnPageSelected}
+                        indeterminate={someOnPageSelected && !allOnPageSelected}
+                        onChange={(event) => toggleSelectAllOnPage(event.target.checked)}
+                      />
+                    </th>
+                    <th scope="col">候选人</th>
+                    <th scope="col">AI 总结</th>
+                    <th scope="col">AI 评分</th>
+                    <th scope="col">上传时间</th>
+                    <th aria-label="操作" scope="col" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((item) => {
+                    const status = resumeLibraryStatus(item);
+                    const sourceTextIssue = hasSourceTextQualityIssue(
+                      item.quality_flags,
+                    );
+                    const supersededReparse = hasSupersededReparseVersion(
+                      item.quality_flags,
+                    );
+                    const scoreNotice = resumeLibraryScoreNotice(
+                      item.score_status,
+                    );
+                    const candidateProfile = candidateProfileText(item);
+                    const favoriteUpdating =
+                      favoriteActionCandidateId === item.candidate_id;
+                    const retryable = isRowRetryable(item);
+                    const rowRetrying = retryingResumeId === item.resume_id;
+                    return (
+                      <tr
+                        className={[
+                          selectedResumeId === item.resume_id ? "is-selected" : "",
+                          sourceTextIssue ? "has-source-quality-issue" : "",
+                          supersededReparse ? "has-superseded-reparse" : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
+                        key={item.resume_id}
+                        onClick={() => onOpenResume(item)}
+                      >
+                        <td
+                          className="library-check-cell"
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <SemiCheckbox
+                            aria-label={`选择 ${item.display_name?.trim() || "未命名候选人"}`}
+                            checked={selectedResumeIds.has(item.resume_id)}
+                            disabled={rowRetrying}
+                            onChange={(event) => toggleRowSelection(item, event.target.checked)}
+                          />
+                        </td>
+                        <td className="library-candidate-cell">
+                          <div className="candidate-person">
                           <span className="candidate-name">
                             {item.display_name?.trim() || "未命名候选人"}
                           </span>
@@ -797,6 +968,26 @@ export function ResumeLibraryPage({
                         </span>
                       </td>
                       <td className="library-open-cell">
+                        {retryable && (
+                          <button
+                            aria-label={`重试 ${item.display_name?.trim() || "未命名候选人"} 的失败环节`}
+                            className="library-retry-button"
+                            disabled={rowRetrying}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void retryResume(item);
+                            }}
+                            title="重新排队失败的解析、提取、总结或评分"
+                            type="button"
+                          >
+                            {rowRetrying ? (
+                              <i aria-hidden="true" className="spinner" />
+                            ) : (
+                              <Icon name="refresh" size={14} />
+                            )}
+                            重试
+                          </button>
+                        )}
                         <button
                           aria-label={`查看 ${item.display_name?.trim() || "未命名候选人"} 的简历详情`}
                           className="library-open-affordance"
@@ -835,6 +1026,7 @@ export function ResumeLibraryPage({
             </div>
           </div>
         )}
+        </Suspense>
       </section>
 
       <footer className="library-table-footer">

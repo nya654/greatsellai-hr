@@ -62,12 +62,15 @@ import type {
   PasswordResetCompleteInput,
   PasswordResetRequestResult,
   RegistrationOffer,
+  ResumeBatchRetryResponse,
   ResumeDetail,
   ResumeLibraryResponse,
+  ResumeLibraryStatusFilter,
   ResumeReviewDetail,
   ResumeScore,
   ResumeScoreBatch,
   ResumeScoreBatchItem,
+  ResumeSingleRetryResponse,
   ResumeSummary,
   ResumeSummaryManualCreate,
   ResumeUploadResponse,
@@ -894,10 +897,31 @@ export function createApiClient(options: ApiClientOptions = {}) {
       page = 1,
       pageSize = 50,
       mailboxId?: string | null,
+      statusFilter?: ResumeLibraryStatusFilter | null,
     ): Promise<ResumeLibraryResponse> {
       const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
       if (mailboxId) query.set("mailbox_id", mailboxId);
+      if (statusFilter) query.set("status_filter", statusFilter);
       return request<ResumeLibraryResponse>(`/resume-library?${query.toString()}`);
+    },
+
+    /**
+     * Re-queues every failed/abnormal pipeline of one resume. The server
+     * returns the actions it queued and the reasons any branch was skipped.
+     */
+    retryResumeFailed(resumeId: string): Promise<ResumeSingleRetryResponse> {
+      return request<ResumeSingleRetryResponse>(
+        `/resumes/${resourcePath(resumeId)}/retry-failed`,
+        { method: "POST" },
+      );
+    },
+
+    /** Batch variant: one dispatch per requested resume, all in a single call. */
+    retryResumesFailed(resumeIds: string[]): Promise<ResumeBatchRetryResponse> {
+      return request<ResumeBatchRetryResponse>("/resumes/retry-failed", {
+        method: "POST",
+        body: { resume_ids: resumeIds },
+      });
     },
 
     listSavedFilters(): Promise<SavedFilter[]> {

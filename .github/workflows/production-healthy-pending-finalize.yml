@@ -25,7 +25,7 @@ jobs:
     runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted", "Linux", "X64", "greatsell-ci"]') || 'ubuntu-latest' }}
     timeout-minutes: 45
     concurrency:
-      group: greatsellai-hr-release-lane
+      group: greatsellai-hr-production-lane
       cancel-in-progress: false
     environment:
       name: production

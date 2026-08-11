@@ -3025,6 +3025,11 @@ class ResumeLibraryItem(ApiModel):
     score_status: str | None = None
     score_template_name: str | None = None
     score_created_at: str | None = None
+    # Durable score-attempt state (from the resume score batch item), so the
+    # client can tell "never scored" apart from "the most recent scoring run
+    # failed and can be retried".
+    latest_score_status: str | None = None
+    score_retryable: bool = False
     # Derived, never persisted: whether an active batch item is generating this
     # row's score right now.  Lets the library animate "评分生成中" while the
     # worker runs, without waiting for a completed score row.
@@ -3036,6 +3041,63 @@ class ResumeLibraryResponse(ApiModel):
     total: int
     page: int
     page_size: int
+    # Whole-library tab counts (independent of the current page and of the
+    # active status filter), so the tab badges never jump while paginating.
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    # Total resume count across all statuses, again independent of the filter.
+    all_total: int = 0
+
+
+class ResumeRetryQueuedItem(ApiModel):
+    resume_id: str
+    actions: list[str] = Field(default_factory=list)
+
+
+class ResumeRetrySkippedItem(ApiModel):
+    resume_id: str
+    reason: str
+
+
+class ResumeSingleRetryResponse(ApiModel):
+    """Per-resume retry outcome: worker queues re-queued and skip reasons."""
+
+    queued: list[str] = Field(default_factory=list)
+    skipped: list[str] = Field(default_factory=list)
+
+
+class ResumeBatchRetryRequest(ApiModel):
+    resume_ids: list[str] = Field(min_length=1, max_length=100)
+
+
+class ResumeBatchRetryResponse(ApiModel):
+    queued: list[ResumeRetryQueuedItem] = Field(default_factory=list)
+    skipped: list[ResumeRetrySkippedItem] = Field(default_factory=list)
+
+
+class ResumeRetryQueuedItem(ApiModel):
+    resume_id: str
+    actions: list[str] = Field(default_factory=list)
+
+
+class ResumeRetrySkippedItem(ApiModel):
+    resume_id: str
+    reason: str
+
+
+class ResumeSingleRetryResponse(ApiModel):
+    """Per-resume retry outcome: worker queues re-queued and skip reasons."""
+
+    queued: list[str] = Field(default_factory=list)
+    skipped: list[str] = Field(default_factory=list)
+
+
+class ResumeBatchRetryRequest(ApiModel):
+    resume_ids: list[str] = Field(min_length=1, max_length=100)
+
+
+class ResumeBatchRetryResponse(ApiModel):
+    queued: list[ResumeRetryQueuedItem] = Field(default_factory=list)
+    skipped: list[ResumeRetrySkippedItem] = Field(default_factory=list)
 
 
 class CandidateFavoriteState(ApiModel):

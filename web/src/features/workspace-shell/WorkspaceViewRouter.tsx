@@ -169,6 +169,7 @@ export function WorkspaceViewRouter({
       {view === "library" && (
         <ResumeLibraryPage
           formatError={feedback.formatError}
+          notify={feedback.notify}
           refreshToken={library.refreshToken}
           selectedResumeId={library.selectedResumeId}
           onFavoriteChanged={onFavoriteChanged}

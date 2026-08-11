@@ -226,34 +226,11 @@ function resumeLibraryStatus(item: ResumeLibraryItem): {
 }
 
 /**
- * Mirrors the server's mutually exclusive status tabs so the filtered view and
- * the tab counts agree with the API. A healthy active resume belongs to no tab.
+ * The server owns the status-tab classification: the response carries
+ * whole-library ``status_counts`` / ``all_total`` so the badges stay stable
+ * no matter which page or filter is active. A healthy active resume belongs
+ * to no tab.
  */
-function libraryStatusTone(item: ResumeLibraryItem): ResumeLibraryStatusFilter | null {
-  const sourceTextIssue = hasSourceTextQualityIssue(item.quality_flags);
-  if (item.is_active && item.extraction_status === "ready" && !sourceTextIssue) {
-    if (item.ai_summary_status === "failed" || item.ai_summary_status === "unavailable") {
-      return "summary_pending";
-    }
-    if (aiSummaryIsInProgress(item.ai_summary_status) || item.analysis_wait_estimate) {
-      return "processing";
-    }
-    if (item.score_status === null || item.score_retryable) {
-      return "unscored";
-    }
-    return null;
-  }
-  if (sourceTextIssue) return "attention";
-  if (hasSupersededReparseVersion(item.quality_flags)) return "attention";
-  if (item.extraction_status === "failed") return "attention";
-  if (
-    item.ai_extraction_status === "needs_attention" ||
-    item.ai_extraction_status === "unavailable"
-  ) {
-    return "attention";
-  }
-  return "processing";
-}
 
 /** Whether one-click retry has any branch to dispatch for this row. */
 function isRowRetryable(item: ResumeLibraryItem): boolean {
@@ -563,26 +540,12 @@ export function ResumeLibraryPage({
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const canPageBack = page > 1;
   const canPageForward = page < totalPages;
-  const toneCounts: Record<ResumeLibraryStatusFilter, number> = {
-    processing: 0,
-    attention: 0,
-    unscored: 0,
-    summary_pending: 0,
-  };
-  for (const item of items) {
-    const tone = libraryStatusTone(item);
-    if (tone) toneCounts[tone] += 1;
-  }
   const statusTabs: LibraryStatusTab[] = STATUS_TAB_DEFINITIONS.map((tab) => {
-    const activeCount =
+    const count =
       tab.key === ALL_RESUMES_TAB
-        ? statusFilter === null
-          ? total
-          : items.length
-        : statusFilter === tab.key
-          ? total
-          : toneCounts[tab.key];
-    return { ...tab, count: activeCount };
+        ? library?.all_total ?? total
+        : library?.status_counts?.[tab.key] ?? 0;
+    return { ...tab, count };
   });
   const pageResumeIds = items.map((item) => item.resume_id);
   const allOnPageSelected = pageResumeIds.length > 0 && pageResumeIds.every(

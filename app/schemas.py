@@ -3066,38 +3066,26 @@ class ResumeSingleRetryResponse(ApiModel):
 
 
 class ResumeBatchRetryRequest(ApiModel):
-    resume_ids: list[str] = Field(min_length=1, max_length=100)
+    """Retry explicit resume ids, or the whole library when ``all`` is set.
+
+    Exactly one of ``resume_ids`` and ``all`` must be provided.
+    """
+
+    resume_ids: list[str] | None = Field(default=None, max_length=100)
+    all: bool = False
+
+    @model_validator(mode="after")
+    def require_exactly_one_target(self) -> "ResumeBatchRetryRequest":
+        if bool(self.resume_ids) == bool(self.all):
+            raise ValueError("retry_target_required_exactly_one_of_resume_ids_or_all")
+        return self
 
 
 class ResumeBatchRetryResponse(ApiModel):
     queued: list[ResumeRetryQueuedItem] = Field(default_factory=list)
     skipped: list[ResumeRetrySkippedItem] = Field(default_factory=list)
-
-
-class ResumeRetryQueuedItem(ApiModel):
-    resume_id: str
-    actions: list[str] = Field(default_factory=list)
-
-
-class ResumeRetrySkippedItem(ApiModel):
-    resume_id: str
-    reason: str
-
-
-class ResumeSingleRetryResponse(ApiModel):
-    """Per-resume retry outcome: worker queues re-queued and skip reasons."""
-
-    queued: list[str] = Field(default_factory=list)
-    skipped: list[str] = Field(default_factory=list)
-
-
-class ResumeBatchRetryRequest(ApiModel):
-    resume_ids: list[str] = Field(min_length=1, max_length=100)
-
-
-class ResumeBatchRetryResponse(ApiModel):
-    queued: list[ResumeRetryQueuedItem] = Field(default_factory=list)
-    skipped: list[ResumeRetrySkippedItem] = Field(default_factory=list)
+    queued_count: int = 0
+    skipped_count: int = 0
 
 
 class CandidateFavoriteState(ApiModel):

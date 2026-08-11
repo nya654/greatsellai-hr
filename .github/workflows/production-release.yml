@@ -103,10 +103,13 @@ jobs:
     # source (compose build, Tencent mirror defaults); this job tags the
     # verified candidate and deploys it. Nothing crosses the border.
     timeout-minutes: 75
-    # Do not acquire the deployment lock while this job is waiting for an
-    # Environment reviewer; staging must remain available for newer main.
+    # The production lane serializes promotions against each other, but it is
+    # separate from the staging lane: waiting for an Environment reviewer here
+    # must not block staging from deploying newer main. The "Reconfirm
+    # promotion target is still current main" steps below still refuse to
+    # deploy a stale candidate if main advanced during the review wait.
     concurrency:
-      group: greatsellai-hr-release-lane
+      group: greatsellai-hr-production-lane
       cancel-in-progress: false
     environment:
       name: production

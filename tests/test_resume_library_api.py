@@ -473,3 +473,45 @@ def test_resume_library_score_task_state_none_without_active_batch(ai_client) ->
     item = response.json()["items"][0]
     assert item["resume_id"] == resume_id
     assert item["score_task_state"] == "none"
+
+
+def test_score_task_state_is_scoped_to_selected_template(ai_client) -> None:
+    """另一个模板的活跃批次不得让本模板的评分榜显示"生成中"。"""
+
+    _, resume_id = _save_ready_resume(
+        ai_client,
+        source_text="教育经历 清华大学 计算机 本科。工作经历 Acme Python Engineer。技能 Python SQL",
+    )
+    template = ai_client.post("/v1/score-templates", json=_template_payload())
+    assert template.status_code == 200, template.text
+    template_id = template.json()["template_id"]
+    other = ai_client.post(
+        "/v1/score-templates",
+        json={**_template_payload(), "name": "Other template"},
+    )
+    assert other.status_code == 200, other.text
+    other_id = other.json()["template_id"]
+
+    batch = ai_client.post(f"/v1/score-templates/{other_id}/score-all")
+    assert batch.status_code == 200, batch.text
+
+    from app.services.resume_library_service import (
+        active_score_task_states,
+        latest_current_scores_by_template,
+    )
+
+    database = ai_client.app.state.database
+    with database.session_factory() as session:
+        assert (
+            active_score_task_states(session, [resume_id], template_id=template_id)
+            == {}
+        )
+        assert set(
+            active_score_task_states(session, [resume_id], template_id=other_id)
+        ) == {resume_id}
+        assert (
+            latest_current_scores_by_template(
+                session, resume_ids=[resume_id], template_id=template_id
+            )
+            == {}
+        )

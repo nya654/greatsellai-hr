@@ -45,26 +45,33 @@ _IN_PROGRESS_SCORE_STATUSES = ("queued", "running")
 _PREVIEW_MAX_CHARS = 220
 
 
-def _active_score_task_states(
+def active_score_task_states(
     session: Session,
     resume_ids: list[str],
+    *,
+    template_id: str | None = None,
 ) -> dict[str, str]:
     """Map resume_id -> 'queued' | 'running' from active batch items.
 
     Runs under the session's tenant scope (``with_loader_criteria``), so a
-    foreign workspace's batch can never surface here.  When a resume appears
-    in several active batches, ``running`` wins over ``queued``.
+    foreign workspace's batch can never surface here.  When ``template_id``
+    is given, only active batches for that template count, so one template's
+    in-flight score never leaks into another template's table.  When a resume
+    appears in several active batches, ``running`` wins over ``queued``.
     """
 
     if not resume_ids:
         return {}
+    statement = select(
+        ResumeScoreBatchItem.resume_id, ResumeScoreBatchItem.status
+    ).join(
+        ResumeScoreBatch,
+        ResumeScoreBatch.id == ResumeScoreBatchItem.batch_id,
+    )
+    if template_id is not None:
+        statement = statement.where(ResumeScoreBatch.template_id == template_id)
     rows = session.execute(
-        select(ResumeScoreBatchItem.resume_id, ResumeScoreBatchItem.status)
-        .join(
-            ResumeScoreBatch,
-            ResumeScoreBatch.id == ResumeScoreBatchItem.batch_id,
-        )
-        .where(
+        statement.where(
             ResumeScoreBatchItem.resume_id.in_(resume_ids),
             ResumeScoreBatchItem.status.in_(_IN_PROGRESS_SCORE_STATUSES),
             ResumeScoreBatch.status.in_(_IN_PROGRESS_SCORE_STATUSES),
@@ -148,6 +155,37 @@ def _latest_current_score(resume: Resume) -> ResumeScore | None:
     return max(candidates, key=lambda score: (score.created_at, score.id), default=None)
 
 
+def latest_current_scores_by_template(
+    session: Session,
+    *,
+    resume_ids: list[str],
+    template_id: str,
+) -> dict[str, ResumeScore]:
+    """Latest current-facts score per resume for one template.
+
+    Mirrors ``_latest_current_score`` but query-scoped to one template so the
+    score leaderboard can show each candidate's score for the selected rule
+    without loading every template's rows.  Facts-version filtering is applied
+    by the caller (which knows each resume's current facts_version).
+    """
+
+    if not resume_ids:
+        return {}
+    rows = session.execute(
+        select(ResumeScore)
+        .where(
+            ResumeScore.resume_id.in_(resume_ids),
+            ResumeScore.template_id == template_id,
+            ResumeScore.status.in_(_CURRENT_SCORE_STATUSES),
+        )
+        .order_by(ResumeScore.created_at.desc(), ResumeScore.id.desc())
+    ).all()
+    latest: dict[str, ResumeScore] = {}
+    for score in rows:
+        latest.setdefault(score.resume_id, score)
+    return latest
+
+
 def _highest_education(resume: Resume) -> ResumeEducation | None:
     """Return the education record that grounds the compact library profile."""
 
@@ -213,7 +251,7 @@ def list_resume_library(
         session,
         resumes=resumes,
     )
-    score_task_states = _active_score_task_states(
+    score_task_states = active_score_task_states(
         session,
         resume_ids=[resume.id for resume in resumes],
     )
@@ -293,4 +331,8 @@ def list_resume_library(
     )
 
 
-__all__ = ["list_resume_library"]
+__all__ = [
+    "list_resume_library",
+    "active_score_task_states",
+    "latest_current_scores_by_template",
+]

@@ -555,17 +555,12 @@ export function MatchWorkspace({
                     ariaLabel={isJobManagement ? "切换已保存的岗位" : "选择用于智能匹配的岗位 JD"}
                     id="saved-job-selector"
                     onChange={(value) => {
-                      if (!value) {
-                        if (isJobManagement) beginNewJob();
-                        return;
-                      }
                       const next = isJobManagement
                         ? latestConfirmedJobs.find((item) => item.job_id === value)
                         : confirmedJobVersions.find((item) => item.job_version_id === value);
                       if (next) selectJobVersion(next);
                     }}
                     options={[
-                      ...(isJobManagement ? [{ label: "新建岗位 JD", value: "" }] : []),
                       ...(isJobManagement ? latestConfirmedJobs : confirmedJobVersions).map((item) => ({
                         label: isJobManagement
                           ? jobManagementLabel(item, confirmedVersionCounts.get(item.job_id) ?? 1)
@@ -758,6 +753,7 @@ export function MatchWorkspace({
                           ? "填写岗位需求后点击「AI 生成 JD」；已有完整 JD 可直接粘贴后点击「原版发布」。"
                           : "粘贴完整原版 JD 后点击「原版发布」，内容会按原样保存。"
                       }
+                      rows={12}
                       value={jobBrief}
                     />
                     <p className="candidate-meta">

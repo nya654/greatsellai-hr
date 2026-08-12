@@ -1474,12 +1474,22 @@ def _validate_fact_references(
     *,
     fact_ids: set[str],
     code: str,
+    filter_unknown: bool = False,
 ) -> list[str]:
-    return _require_string_list(
+    items = _require_string_list(
         value,
         code=code,
-        allowed_values=fact_ids,
     )
+    if not filter_unknown:
+        for item in items:
+            if item not in fact_ids:
+                raise _contract_error(code)
+        return items
+    # Lenient for resume scores: the default model occasionally invents a fact
+    # ID that is not in the snapshot. Drop unknown IDs instead of rejecting the
+    # whole score — known IDs keep their evidence link and the rationale text
+    # remains for the reviewer.
+    return [item for item in items if item in fact_ids]
 
 
 def _valid_score_value(value: object) -> float:
@@ -1895,6 +1905,7 @@ def validate_resume_score_output(
                     item["fact_ids"],
                     fact_ids=fact_id_set,
                     code="score_fact_ids",
+                    filter_unknown=True,
                 ),
                 "uncertainties": uncertainties,
             }
@@ -1929,6 +1940,7 @@ def validate_resume_score_output(
                     risk_flag["fact_ids"],
                     fact_ids=fact_id_set,
                     code="score_risk_flag_fact_ids",
+                    filter_unknown=True,
                 ),
             }
         )

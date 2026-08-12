@@ -924,14 +924,6 @@ export function createApiClient(options: ApiClientOptions = {}) {
       });
     },
 
-    /** Whole-library variant: dispatch every resume in the workspace at once. */
-    retryResumesAll(): Promise<ResumeBatchRetryResponse> {
-      return request<ResumeBatchRetryResponse>("/resumes/retry-failed", {
-        method: "POST",
-        body: { all: true },
-      });
-    },
-
     listSavedFilters(): Promise<SavedFilter[]> {
       return request<SavedFilter[]>("/saved-filters");
     },

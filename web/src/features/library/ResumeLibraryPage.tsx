@@ -404,7 +404,7 @@ export function ResumeLibraryPage({
   const [selectedResumeIds, setSelectedResumeIds] = useState<ReadonlySet<string>>(
     new Set(),
   );
-  const [selectAllInLibrary, setSelectAllInLibrary] = useState(false);
+  const [selectAllRequested, setSelectAllRequested] = useState(false);
   const [batchRetrying, setBatchRetrying] = useState(false);
   const [retryingResumeId, setRetryingResumeId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
@@ -564,11 +564,43 @@ export function ResumeLibraryPage({
     [],
   );
 
-  const toggleSelectAllInLibrary = useCallback((checked: boolean | undefined) => {
-    const next = Boolean(checked);
-    setSelectAllInLibrary(next);
-    if (next) setSelectedResumeIds(new Set());
-  }, []);
+  const toggleSelectAll = useCallback(
+    async (checked: boolean | undefined) => {
+      if (!checked) {
+        setSelectedResumeIds(new Set());
+        return;
+      }
+      // 全选只覆盖当前筛选（状态 tab + 邮箱来源）能到达的简历，而不是整
+      // 个库。逐页收集全部 resume_id 进 selectedResumeIds，重试时按这批
+      // ID 走批量接口，避免「待评分 63」却重试了全库。
+      setSelectAllRequested(true);
+      setError(null);
+      try {
+        const collected = new Set<string>();
+        let collectPage = 1;
+        const collectPageSize = 100;
+        for (;;) {
+          const response = await api.listResumeLibrary(
+            collectPage,
+            collectPageSize,
+            sourceMailboxId,
+            statusFilter,
+          );
+          for (const item of response.items) {
+            collected.add(item.resume_id);
+          }
+          if (response.items.length < collectPageSize) break;
+          collectPage += 1;
+        }
+        setSelectedResumeIds(new Set(collected));
+      } catch (selectError) {
+        setError(formatError(selectError));
+      } finally {
+        setSelectAllRequested(false);
+      }
+    },
+    [formatError, sourceMailboxId, statusFilter],
+  );
 
   const handleStatusTabChange = useCallback((key: string) => {
     const next =
@@ -580,18 +612,15 @@ export function ResumeLibraryPage({
   const retrySelected = useCallback(async () => {
     if (batchRetrying) return;
     const ids = [...selectedResumeIds];
-    if (!selectAllInLibrary && !ids.length) return;
+    if (!ids.length) return;
     setBatchRetrying(true);
     setError(null);
     try {
-      const result = selectAllInLibrary
-        ? await api.retryResumesAll()
-        : await api.retryResumesFailed(ids);
+      const result = await api.retryResumesFailed(ids);
       notify(
         "success",
         `已重试 ${result.queued_count}，跳过 ${result.skipped_count}`,
       );
-      setSelectAllInLibrary(false);
       setSelectedResumeIds(new Set());
       void loadLibrary();
     } catch (retryError) {
@@ -599,14 +628,7 @@ export function ResumeLibraryPage({
     } finally {
       setBatchRetrying(false);
     }
-  }, [
-    batchRetrying,
-    formatError,
-    loadLibrary,
-    notify,
-    selectAllInLibrary,
-    selectedResumeIds,
-  ]);
+  }, [batchRetrying, formatError, loadLibrary, notify, selectedResumeIds]);
 
   const retryResume = useCallback(
     async (item: ResumeLibraryItem) => {
@@ -671,7 +693,7 @@ export function ResumeLibraryPage({
               />
             </div>
           ) : null}
-          {(selectAllInLibrary || selectedResumeIds.size > 0) && (
+          {(selectAllRequested || selectedResumeIds.size > 0) && (
             <BackofficeButton
               disabled={batchRetrying}
               icon={batchRetrying ? undefined : <Icon name="refresh" size={16} />}
@@ -679,8 +701,8 @@ export function ResumeLibraryPage({
               onClick={() => void retrySelected()}
               tone="primary"
             >
-              {selectAllInLibrary
-                ? `重试全部（${library?.all_total ?? 0}）`
+              {selectAllRequested
+                ? "正在选择全部…"
                 : `重试所选（${selectedResumeIds.size}）`}
             </BackofficeButton>
           )}
@@ -749,15 +771,14 @@ export function ResumeLibraryPage({
                   <tr>
                     <th aria-label="选择简历" className="library-check-cell" scope="col">
                       <SemiCheckbox
-                        aria-label="选择全部简历（含所有页）"
-                        checked={selectAllInLibrary || allOnPageSelected}
+                        aria-label="选择当前筛选下的全部简历"
+                        checked={allOnPageSelected}
                         indeterminate={
-                          !selectAllInLibrary &&
-                          someOnPageSelected &&
-                          !allOnPageSelected
+                          someOnPageSelected && !allOnPageSelected
                         }
+                        disabled={selectAllRequested}
                         onChange={(event) =>
-                          toggleSelectAllInLibrary(event.target.checked)
+                          void toggleSelectAll(event.target.checked)
                         }
                       />
                     </th>
@@ -800,11 +821,8 @@ export function ResumeLibraryPage({
                         >
                           <SemiCheckbox
                             aria-label={`选择 ${item.display_name?.trim() || "未命名候选人"}`}
-                            checked={
-                              selectAllInLibrary ||
-                              selectedResumeIds.has(item.resume_id)
-                            }
-                            disabled={rowRetrying || selectAllInLibrary}
+                            checked={selectedResumeIds.has(item.resume_id)}
+                            disabled={rowRetrying || selectAllRequested}
                             onChange={(event) =>
                               toggleRowSelection(item, event.target.checked)
                             }

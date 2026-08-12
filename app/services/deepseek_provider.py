@@ -1522,16 +1522,16 @@ def _require_simplified_chinese_score_text(value: object, *, code: str) -> str:
 
 
 def _require_non_empty_score_text(value: object, *, code: str) -> str:
-    """Relaxed guard for per-dimension rationale / uncertainties.
+    """Relaxed guard for per-dimension rationale / uncertainties / risk flags.
 
-    These two fields were the dominant source of score-batch failures: the
-    default model frequently mixes English terms (or writes English sentences)
-    in the rationale and uncertainty list, and the strict simplified-Chinese
-    check rejected them, leaving the candidate with no score at all. A
-    candidate with a mixed-language or English rationale is strictly better
-    than a candidate with no score, so these fields only require non-empty
-    text. The recruiter-facing ``overall_summary`` and ``risk_flags.message``
-    keep the simplified-Chinese requirement.
+    These fields were the dominant source of score-batch failures: the default
+    model frequently mixes English terms (or writes English sentences) in the
+    rationale, uncertainty list and risk-flag message, and the strict
+    simplified-Chinese check rejected them, leaving the candidate with no
+    score at all. A candidate with a mixed-language or English explanation is
+    strictly better than a candidate with no score, so these fields only
+    require non-empty text. The recruiter-facing ``overall_summary`` keeps the
+    simplified-Chinese requirement.
     """
 
     if not isinstance(value, str) or not value.strip():
@@ -1918,9 +1918,9 @@ def validate_resume_score_output(
             {"message", "fact_ids"},
             code="score_risk_flag_fields",
         )
-        message = _require_simplified_chinese_score_text(
+        message = _require_non_empty_score_text(
             risk_flag["message"],
-            code="score_risk_flag_message_language",
+            code="score_risk_flag_message_empty",
         )
         normalized_risk_flags.append(
             {

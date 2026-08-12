@@ -291,20 +291,24 @@ def test_score_output_rejects_scores_above_hundred() -> None:
 
 
 def test_score_output_rejects_english_recruiter_text() -> None:
-    # Per-dimension rationale / uncertainties only require non-empty text: the
-    # default model mixes English into these fields often enough that rejecting
-    # it left candidates with no score at all. English or mixed content here is
-    # accepted and preserved.
-    english_rationale = _valid_score_output()
-    rationale_dimensions = english_rationale["dimension_scores"]
+    # Per-dimension rationale / uncertainties / risk-flag messages only require
+    # non-empty text: the default model mixes English into these fields often
+    # enough that rejecting it left candidates with no score at all. English or
+    # mixed content here is accepted and preserved.
+    english_payload = _valid_score_output()
+    rationale_dimensions = english_payload["dimension_scores"]
     assert isinstance(rationale_dimensions, list)
     assert isinstance(rationale_dimensions[0], dict)
     assert isinstance(rationale_dimensions[1], dict)
     rationale_dimensions[0]["rationale"] = "Python is explicitly listed."
     rationale_dimensions[1]["rationale"] = "The snapshot has one employment record."
     rationale_dimensions[0]["uncertainties"] = ["No domain relevance is stated."]
+    risk_flags = english_payload["risk_flags"]
+    assert isinstance(risk_flags, list)
+    assert isinstance(risk_flags[0], dict)
+    risk_flags[0]["message"] = "Domain relevance needs verification."
     validated = validate_resume_score_output(
-        english_rationale,
+        english_payload,
         dimensions=_dimensions(),
         fact_ids=_fact_ids(),
     )
@@ -315,25 +319,16 @@ def test_score_output_rejects_english_recruiter_text() -> None:
     assert validated["dimension_scores"][0]["uncertainties"] == [
         "No domain relevance is stated."
     ]
+    assert validated["risk_flags"][0]["message"] == (
+        "Domain relevance needs verification."
+    )
 
-    # Recruiter-facing overall_summary and risk_flags.message stay strict.
+    # Recruiter-facing overall_summary stays strict.
     invalid_summary = _valid_score_output()
     invalid_summary["overall_summary"] = "The factual record shows Python and one role."
     with pytest.raises(DeepSeekProviderError, match="score_overall_summary_language"):
         validate_resume_score_output(
             invalid_summary,
-            dimensions=_dimensions(),
-            fact_ids=_fact_ids(),
-        )
-
-    invalid_risk = _valid_score_output()
-    risk_flags = invalid_risk["risk_flags"]
-    assert isinstance(risk_flags, list)
-    assert isinstance(risk_flags[0], dict)
-    risk_flags[0]["message"] = "Domain relevance needs verification."
-    with pytest.raises(DeepSeekProviderError, match="score_risk_flag_message_language"):
-        validate_resume_score_output(
-            invalid_risk,
             dimensions=_dimensions(),
             fact_ids=_fact_ids(),
         )
@@ -348,6 +343,18 @@ def test_score_output_rejects_empty_rationale() -> None:
     with pytest.raises(DeepSeekProviderError, match="score_rationale_empty"):
         validate_resume_score_output(
             empty_rationale,
+            dimensions=_dimensions(),
+            fact_ids=_fact_ids(),
+        )
+
+    empty_message = _valid_score_output()
+    risk_flags = empty_message["risk_flags"]
+    assert isinstance(risk_flags, list)
+    assert isinstance(risk_flags[0], dict)
+    risk_flags[0]["message"] = "   "
+    with pytest.raises(DeepSeekProviderError, match="score_risk_flag_message_empty"):
+        validate_resume_score_output(
+            empty_message,
             dimensions=_dimensions(),
             fact_ids=_fact_ids(),
         )

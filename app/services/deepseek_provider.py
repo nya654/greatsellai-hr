@@ -1521,6 +1521,24 @@ def _require_simplified_chinese_score_text(value: object, *, code: str) -> str:
     return _require_simplified_chinese_recruiter_text(value, code=code)
 
 
+def _require_non_empty_score_text(value: object, *, code: str) -> str:
+    """Relaxed guard for per-dimension rationale / uncertainties.
+
+    These two fields were the dominant source of score-batch failures: the
+    default model frequently mixes English terms (or writes English sentences)
+    in the rationale and uncertainty list, and the strict simplified-Chinese
+    check rejected them, leaving the candidate with no score at all. A
+    candidate with a mixed-language or English rationale is strictly better
+    than a candidate with no score, so these fields only require non-empty
+    text. The recruiter-facing ``overall_summary`` and ``risk_flags.message``
+    keep the simplified-Chinese requirement.
+    """
+
+    if not isinstance(value, str) or not value.strip():
+        raise _contract_error(code)
+    return value.strip()
+
+
 def _score_template_optimization_source_is_unsafe(value: str) -> bool:
     """Whether source text must stay outside the optimizer model payload."""
 
@@ -1857,20 +1875,17 @@ def validate_resume_score_output(
         key = item["key"]
         if not isinstance(key, str) or key not in by_key or key in seen_keys:
             raise _contract_error("score_dimension_key")
-        rationale = _require_simplified_chinese_score_text(
+        rationale = _require_non_empty_score_text(
             item["rationale"],
-            code="score_rationale_language",
+            code="score_rationale_empty",
         )
-        uncertainties = [
-            _require_simplified_chinese_score_text(
-                uncertainty,
-                code="score_uncertainties_language",
-            )
-            for uncertainty in _require_string_list(
-                item["uncertainties"],
-                code="score_uncertainties",
-            )
-        ]
+        # _require_string_list already rejects empty/whitespace items, so the
+        # relaxed language guard here is redundant: it only needs to ensure the
+        # items are non-empty strings, never the strict simplified-Chinese rule.
+        uncertainties = _require_string_list(
+            item["uncertainties"],
+            code="score_uncertainties",
+        )
         normalized_scores.append(
             {
                 "key": key,

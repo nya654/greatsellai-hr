@@ -269,14 +269,16 @@ def test_score_output_requires_each_unique_dimension_and_known_fact_ids() -> Non
             fact_ids=_fact_ids(),
         )
 
-    unknown_fact = _valid_score_output()
-    unknown_fact["dimension_scores"][0]["fact_ids"] = ["skill-999"]  # type: ignore[index]
-    with pytest.raises(DeepSeekProviderError, match="score_fact_ids"):
-        validate_resume_score_output(
-            unknown_fact,
-            dimensions=_dimensions(),
-            fact_ids=_fact_ids(),
-        )
+    # Unknown fact IDs are dropped (not rejected): the default model sometimes
+    # invents a fact ID, and a score with its rationale is better than none.
+    mixed_facts = _valid_score_output()
+    mixed_facts["dimension_scores"][0]["fact_ids"] = ["skill-001", "skill-999"]  # type: ignore[index]
+    validated_facts = validate_resume_score_output(
+        mixed_facts,
+        dimensions=_dimensions(),
+        fact_ids=_fact_ids(),
+    )
+    assert validated_facts["dimension_scores"][0]["fact_ids"] == ["skill-001"]
 
 
 def test_score_output_rejects_scores_above_hundred() -> None:

@@ -291,42 +291,32 @@ def test_score_output_rejects_scores_above_hundred() -> None:
 
 
 def test_score_output_rejects_english_recruiter_text() -> None:
-    invalid_rationale = _valid_score_output()
-    rationale_dimensions = invalid_rationale["dimension_scores"]
+    # Per-dimension rationale / uncertainties only require non-empty text: the
+    # default model mixes English into these fields often enough that rejecting
+    # it left candidates with no score at all. English or mixed content here is
+    # accepted and preserved.
+    english_rationale = _valid_score_output()
+    rationale_dimensions = english_rationale["dimension_scores"]
     assert isinstance(rationale_dimensions, list)
     assert isinstance(rationale_dimensions[0], dict)
+    assert isinstance(rationale_dimensions[1], dict)
     rationale_dimensions[0]["rationale"] = "Python is explicitly listed."
-    with pytest.raises(DeepSeekProviderError, match="score_rationale_language"):
-        validate_resume_score_output(
-            invalid_rationale,
-            dimensions=_dimensions(),
-            fact_ids=_fact_ids(),
-        )
+    rationale_dimensions[1]["rationale"] = "The snapshot has one employment record."
+    rationale_dimensions[0]["uncertainties"] = ["No domain relevance is stated."]
+    validated = validate_resume_score_output(
+        english_rationale,
+        dimensions=_dimensions(),
+        fact_ids=_fact_ids(),
+    )
+    assert (
+        validated["dimension_scores"][0]["rationale"]
+        == "Python is explicitly listed."
+    )
+    assert validated["dimension_scores"][0]["uncertainties"] == [
+        "No domain relevance is stated."
+    ]
 
-    mixed_language_rationale = _valid_score_output()
-    mixed_dimensions = mixed_language_rationale["dimension_scores"]
-    assert isinstance(mixed_dimensions, list)
-    assert isinstance(mixed_dimensions[0], dict)
-    mixed_dimensions[0]["rationale"] = "Python is explicitly listed。中文提示。"
-    with pytest.raises(DeepSeekProviderError, match="score_rationale_language"):
-        validate_resume_score_output(
-            mixed_language_rationale,
-            dimensions=_dimensions(),
-            fact_ids=_fact_ids(),
-        )
-
-    invalid_uncertainty = _valid_score_output()
-    uncertainty_dimensions = invalid_uncertainty["dimension_scores"]
-    assert isinstance(uncertainty_dimensions, list)
-    assert isinstance(uncertainty_dimensions[1], dict)
-    uncertainty_dimensions[1]["uncertainties"] = ["No domain relevance is stated."]
-    with pytest.raises(DeepSeekProviderError, match="score_uncertainties_language"):
-        validate_resume_score_output(
-            invalid_uncertainty,
-            dimensions=_dimensions(),
-            fact_ids=_fact_ids(),
-        )
-
+    # Recruiter-facing overall_summary and risk_flags.message stay strict.
     invalid_summary = _valid_score_output()
     invalid_summary["overall_summary"] = "The factual record shows Python and one role."
     with pytest.raises(DeepSeekProviderError, match="score_overall_summary_language"):
@@ -344,6 +334,32 @@ def test_score_output_rejects_english_recruiter_text() -> None:
     with pytest.raises(DeepSeekProviderError, match="score_risk_flag_message_language"):
         validate_resume_score_output(
             invalid_risk,
+            dimensions=_dimensions(),
+            fact_ids=_fact_ids(),
+        )
+
+
+def test_score_output_rejects_empty_rationale_or_uncertainty() -> None:
+    empty_rationale = _valid_score_output()
+    rationale_dimensions = empty_rationale["dimension_scores"]
+    assert isinstance(rationale_dimensions, list)
+    assert isinstance(rationale_dimensions[0], dict)
+    rationale_dimensions[0]["rationale"] = "   "
+    with pytest.raises(DeepSeekProviderError, match="score_rationale_empty"):
+        validate_resume_score_output(
+            empty_rationale,
+            dimensions=_dimensions(),
+            fact_ids=_fact_ids(),
+        )
+
+    empty_uncertainty = _valid_score_output()
+    uncertainty_dimensions = empty_uncertainty["dimension_scores"]
+    assert isinstance(uncertainty_dimensions, list)
+    assert isinstance(uncertainty_dimensions[1], dict)
+    uncertainty_dimensions[1]["uncertainties"] = ["", "  "]
+    with pytest.raises(DeepSeekProviderError, match="score_uncertainties_empty"):
+        validate_resume_score_output(
+            empty_uncertainty,
             dimensions=_dimensions(),
             fact_ids=_fact_ids(),
         )
@@ -411,7 +427,9 @@ def test_score_rejects_two_english_outputs_after_one_correction(monkeypatch) -> 
         fake_provider_call,
     )
 
-    with pytest.raises(DeepSeekProviderError, match="score_rationale_language"):
+    # rationale/uncertainties 现在放行中英夹杂，英文输出会撞在仍要求
+    # 简体中文的 overall_summary 上，因此纠正重试后仍拒绝。
+    with pytest.raises(DeepSeekProviderError, match="score_overall_summary_language"):
         score_resume_fact_snapshot(
             api_key="not-used",
             model="not-used",

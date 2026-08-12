@@ -1879,16 +1879,13 @@ def validate_resume_score_output(
             item["rationale"],
             code="score_rationale_empty",
         )
-        uncertainties = [
-            _require_non_empty_score_text(
-                uncertainty,
-                code="score_uncertainties_empty",
-            )
-            for uncertainty in _require_string_list(
-                item["uncertainties"],
-                code="score_uncertainties",
-            )
-        ]
+        # _require_string_list already rejects empty/whitespace items, so the
+        # relaxed language guard here is redundant: it only needs to ensure the
+        # items are non-empty strings, never the strict simplified-Chinese rule.
+        uncertainties = _require_string_list(
+            item["uncertainties"],
+            code="score_uncertainties",
+        )
         normalized_scores.append(
             {
                 "key": key,

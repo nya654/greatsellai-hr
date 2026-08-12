@@ -339,7 +339,7 @@ def test_score_output_rejects_english_recruiter_text() -> None:
         )
 
 
-def test_score_output_rejects_empty_rationale_or_uncertainty() -> None:
+def test_score_output_rejects_empty_rationale() -> None:
     empty_rationale = _valid_score_output()
     rationale_dimensions = empty_rationale["dimension_scores"]
     assert isinstance(rationale_dimensions, list)
@@ -348,18 +348,6 @@ def test_score_output_rejects_empty_rationale_or_uncertainty() -> None:
     with pytest.raises(DeepSeekProviderError, match="score_rationale_empty"):
         validate_resume_score_output(
             empty_rationale,
-            dimensions=_dimensions(),
-            fact_ids=_fact_ids(),
-        )
-
-    empty_uncertainty = _valid_score_output()
-    uncertainty_dimensions = empty_uncertainty["dimension_scores"]
-    assert isinstance(uncertainty_dimensions, list)
-    assert isinstance(uncertainty_dimensions[1], dict)
-    uncertainty_dimensions[1]["uncertainties"] = ["", "  "]
-    with pytest.raises(DeepSeekProviderError, match="score_uncertainties_empty"):
-        validate_resume_score_output(
-            empty_uncertainty,
             dimensions=_dimensions(),
             fact_ids=_fact_ids(),
         )

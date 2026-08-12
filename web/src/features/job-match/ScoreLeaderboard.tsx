@@ -1,5 +1,6 @@
 import type { ScoreLeaderboard as ScoreLeaderboardData } from "../../types";
 import { Icon } from "../../icons";
+import { ScoreDisplay } from "../../backoffice/ui/ScoreDisplay";
 
 function scoreTaskInProgress(state: string): boolean {
   return state === "queued" || state === "running";
@@ -57,7 +58,12 @@ export function ScoreLeaderboard({
             </thead>
             <tbody>
               {board.items.map((item, index) => (
-                <ScoreRow key={item.resume_id} item={item} rank={index + 1} />
+                <ScoreRow
+                  key={item.resume_id}
+                  item={item}
+                  rank={index + 1}
+                  templateName={templateName}
+                />
               ))}
             </tbody>
           </table>
@@ -80,9 +86,11 @@ export function ScoreLeaderboard({
 function ScoreRow({
   item,
   rank,
+  templateName,
 }: {
   item: ScoreLeaderboardData["items"][number];
   rank: number;
+  templateName: string | null;
 }) {
   const inProgress = scoreTaskInProgress(item.score_task_state);
   return (
@@ -95,7 +103,11 @@ function ScoreRow({
       </td>
       <td>
         {item.score_total !== null ? (
-          <strong className="score-number">{item.score_total.toFixed(1)}</strong>
+          <ScoreDisplay
+            total={item.score_total}
+            status={item.score_status}
+            templateName={templateName}
+          />
         ) : inProgress ? (
           <span className="score-activity" role="status" aria-label="评分生成中">
             <span className="score-activity-dot" aria-hidden="true" />

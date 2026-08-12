@@ -7,6 +7,7 @@ import {
 } from "../../resume-extraction-user-messages";
 import { BackofficeButton } from "../../backoffice/ui/BackofficeButton";
 import { BackofficeSelect } from "../../backoffice/ui/BackofficeSelect";
+import { ScoreDisplay } from "../../backoffice/ui/ScoreDisplay";
 import { TableSkeleton } from "../../backoffice/ui/TableSkeleton";
 import {
   AI_STATUS_POLL_INTERVAL_MS,
@@ -341,19 +342,6 @@ function summaryStatusLabel(item: ResumeLibraryItem): string {
   return item.is_active
     ? "等待 AI 自动生成总结"
     : "候选人信息提取完成后自动生成";
-}
-
-function resumeLibraryScoreNotice(status: string | null): string | null {
-  switch (status) {
-    case "overridden":
-      return "含人工调整";
-    case "needs_review":
-      return "建议复核";
-    case "succeeded":
-      return null;
-    default:
-      return "评分待更新";
-  }
 }
 
 function graduationProfileLabel(graduationMonth: string | null): string {
@@ -789,9 +777,6 @@ export function ResumeLibraryPage({
                     const supersededReparse = hasSupersededReparseVersion(
                       item.quality_flags,
                     );
-                    const scoreNotice = resumeLibraryScoreNotice(
-                      item.score_status,
-                    );
                     const candidateProfile = candidateProfileText(item);
                     const favoriteUpdating =
                       favoriteActionCandidateId === item.candidate_id;
@@ -953,14 +938,11 @@ export function ResumeLibraryPage({
                             请使用候选人的当前版本
                           </span>
                         ) : item.score_total !== null ? (
-                          <div
-                            className="library-score"
-                            title={item.score_template_name ?? "评分模板"}
-                          >
-                            <strong>{item.score_total.toFixed(1)}</strong>
-                            <span>/ 100</span>
-                            {scoreNotice && <small>{scoreNotice}</small>}
-                          </div>
+                          <ScoreDisplay
+                            total={item.score_total}
+                            status={item.score_status}
+                            templateName={item.score_template_name ?? null}
+                          />
                         ) : scoreTaskIsInProgress(item.score_task_state) ? (
                           <div
                             className="library-score-activity"

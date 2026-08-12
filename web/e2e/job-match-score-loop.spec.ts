@@ -55,7 +55,9 @@ test("智能匹配左右并排两个表，通用评分可生成中并落分", as
   const dot = activity.locator(".score-activity-dot");
   await expect(dot).toHaveAttribute("aria-hidden", "true");
 
-  // 完成后动画消失、回到分数数字。
+  // 完成后动画消失、回到分数数字（共享 ScoreDisplay 渲染 .library-score）。
   await expect(activity).not.toBeVisible({ timeout: 10_000 });
-  await expect(scoreTable.locator(".score-number").first()).toHaveText("88.0");
+  await expect(
+    scoreTable.locator(".library-score strong").first(),
+  ).toHaveText("88.0");
 });

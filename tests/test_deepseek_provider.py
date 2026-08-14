@@ -7,6 +7,8 @@ import pytest
 from app.services.deepseek_provider import (
     _downgrade_incomplete_work_experiences,
     _flatten_evidence_block_ids,
+    _normalize_year_only_months,
+    _validate_resume_facts_payload,
     call_strict_function,
     DeepSeekProviderError,
     EvidenceBlock,
@@ -538,6 +540,69 @@ def test_empty_resume_fact_arrays_have_a_stable_retry_code(monkeypatch) -> None:
         raise AssertionError("empty fact arrays must not be accepted")
 
     assert len(requests) == 1
+
+
+def test_year_only_education_months_are_normalized_before_validation() -> None:
+    # The model frequently emits a bare year (e.g. "2024") for month fields when
+    # the resume only states a year; the YYYY-MM contract previously rejected
+    # the whole extraction as deepseek_invalid_structured_response.
+    payload = {
+        "schema_version": "resume_facts.v2",
+        "candidate_name_raw": "Test Candidate",
+        "candidate_name_evidence_block_ids": ["page-001"],
+        "education": [
+            {
+                "school_name_raw": "Test University",
+                "degree": "bachelor",
+                "major_raw": None,
+                "start_month": "2024",
+                "end_month": "2026",
+                "evidence_block_ids": ["page-001"],
+            }
+        ],
+        "experiences": [
+            {
+                "experience_type": "employment",
+                "experience_name_raw": "Recruiting Platform",
+                "organization_name_raw": "Acme",
+                "title_raw": "Engineer",
+                "start_month": "2020",
+                "end_month": None,
+                "is_current": True,
+                "evidence_block_ids": ["page-001"],
+                "classification_evidence_block_ids": ["page-001"],
+            }
+        ],
+        "skills": [{"skill_display": "Python", "evidence_block_ids": ["page-001"]}],
+        "language_credentials": [],
+        "scholarships": [],
+    }
+    result = _validate_resume_facts_payload(payload)
+    assert result.education[0].start_month == "2024-01"
+    assert result.education[0].end_month == "2026-01"
+    assert result.experiences[0].start_month == "2020-01"
+
+
+def test_normalize_year_only_months_leaves_yyyymm_and_none_untouched() -> None:
+    payload = {
+        "education": [
+            {
+                "start_month": "2022-07",
+                "end_month": None,
+            }
+        ],
+        "experiences": [
+            {
+                "start_month": "2021",
+                "end_month": "2021-12",
+            }
+        ],
+    }
+    _normalize_year_only_months(payload)  # type: ignore[arg-type]
+    assert payload["education"][0]["start_month"] == "2022-07"
+    assert payload["education"][0]["end_month"] is None
+    assert payload["experiences"][0]["start_month"] == "2021-01"
+    assert payload["experiences"][0]["end_month"] == "2021-12"
 
 
 def test_extraction_retry_prompt_requests_a_fresh_grounded_submission(monkeypatch) -> None:

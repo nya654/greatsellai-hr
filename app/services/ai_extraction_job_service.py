@@ -76,6 +76,9 @@ _RETRYABLE_STRUCTURED_RESPONSE_ERRORS = frozenset(
         "deepseek_tool_call_missing",
         "deepseek_arguments_missing",
         "deepseek_response_truncated",
+        # The gateway maps a length-limited response to this code; route it to
+        # the compact no-details fallback instead of failing the whole resume.
+        "ai_provider_truncated",
     }
 )
 

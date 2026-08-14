@@ -485,7 +485,10 @@ def test_rich_extraction_condenses_details_on_long_resumes(monkeypatch) -> None:
         captured["payload"] = json.loads(request.data.decode("utf-8"))
         return FakeResponse()
 
-    monkeypatch.setattr("app.services.deepseek_provider.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "app.services.deepseek_provider.urllib.request.urlopen",
+        fake_urlopen,
+    )
 
     # ~9k chars of rendered source is above the condense threshold; the prompt
     # must ask for a capped, summarized detail list instead of verbatim copies.

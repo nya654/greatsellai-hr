@@ -2631,9 +2631,10 @@ def extract_resume_core_facts(
         # budget (up to 4 education + 8 experience + 16 skills, each with raw
         # text and page evidence). Truncation was the dominant extraction
         # failure in production (`ai_provider_truncated`); staging re-runs with
-        # 5000 still truncated the longest resumes, so give the model generous
-        # room to return the complete structured facts.
-        max_tokens=10000,
+        # 5000 and 10000 still truncated the longest resumes, so give the model
+        # even more room. The real cure is stopping the model from copying long
+        # raw passages, which is tracked separately.
+        max_tokens=20000,
     )
     try:
         return _validate_resume_facts_payload(parsed)

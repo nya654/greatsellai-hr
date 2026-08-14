@@ -2522,6 +2522,26 @@ def _downgrade_incomplete_work_experiences(payload: dict[str, Any]) -> None:
             experience["experience_type"] = "unknown"
 
 
+_YEAR_ONLY_MONTH = re.compile(r"^\d{4}$")
+
+
+def _normalize_year_only_months(payload: dict[str, Any]) -> None:
+    """The model often emits a bare year (e.g. "2024") for month fields when the
+    resume only states a year, which the ``YYYY-MM`` contract rejects. Normalize
+    such values to ``YYYY-01`` so the resume still validates and the duration
+    math stays sound.
+    """
+
+    for category in ("education", "experiences"):
+        for entry in payload.get(category) or []:
+            if not isinstance(entry, dict):
+                continue
+            for field in ("start_month", "end_month"):
+                value = entry.get(field)
+                if isinstance(value, str) and _YEAR_ONLY_MONTH.fullmatch(value):
+                    entry[field] = f"{value}-01"
+
+
 def _validate_resume_facts_payload(payload: object) -> ResumeFactsSubmission:
     if not isinstance(payload, dict):
         raise ValueError("invalid_resume_facts_payload")
@@ -2538,6 +2558,7 @@ def _validate_resume_facts_payload(payload: object) -> ResumeFactsSubmission:
         # A name alone is not enough to build a screening profile.  Keep this
         # distinct from malformed JSON so a queue retry remains actionable.
         raise DeepSeekProviderError("deepseek_empty_structured_facts")
+    _normalize_year_only_months(payload)
     _flatten_evidence_block_ids(payload)
     _downgrade_incomplete_work_experiences(payload)
     return ResumeFactsSubmission.model_validate(payload)

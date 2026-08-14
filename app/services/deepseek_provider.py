@@ -2609,9 +2609,10 @@ def extract_resume_core_facts(
         # Long resumes routinely produce a facts JSON that exceeds a 1800-token
         # budget (up to 4 education + 8 experience + 16 skills, each with raw
         # text and page evidence). Truncation was the dominant extraction
-        # failure in production (`ai_provider_truncated`), so give the model
+        # failure in production (`ai_provider_truncated`); staging re-runs with
+        # 5000 still truncated the longest resumes, so give the model generous
         # room to return the complete structured facts.
-        max_tokens=5000,
+        max_tokens=10000,
     )
     try:
         return _validate_resume_facts_payload(parsed)

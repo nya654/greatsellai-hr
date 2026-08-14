@@ -2289,6 +2289,12 @@ def render_evidence_blocks(
     return "\n".join(rows)
 
 
+# Above this rendered-source length the rich extraction asks the model to
+# condense per-experience detail items instead of copying every task verbatim,
+# which would blow the output budget on long resumes.
+_RICH_EXTRACT_CONDENSE_THRESHOLD_CHARS = 8000
+
+
 def extract_resume_facts(
     *,
     api_key: str,
@@ -2307,6 +2313,10 @@ def extract_resume_facts(
         retain_candidate_name=True,
         retain_gender_and_birth=True,
     )
+    # Very long resumes blow the output budget when the model copies every
+    # written task verbatim as a detail item. Short resumes keep the full
+    # verbatim detail extraction; only long ones are asked to condense.
+    condense_details = len(source) > _RICH_EXTRACT_CONDENSE_THRESHOLD_CHARS
     institution_rulebook = build_985_211_ai_rulebook()
     correction = (
         " This is a retry after the previous function arguments failed validation. "
@@ -2323,10 +2333,10 @@ def extract_resume_facts(
         "thinking": {"type": "disabled"},
         "temperature": 0,
         # A multi-page resume can contain several employment, internship,
-        # project, and competition entries.  Reserve enough space for each
-        # source-cited detail item instead of forcing the model to collapse
-        # responsibilities into a short summary.
-        "max_tokens": 5000,
+        # project, and competition entries.  Reserve enough space for the
+        # verbatim detail path on short resumes; long resumes are asked to
+        # condense details, so this budget stays bounded.
+        "max_tokens": 10000,
         "messages": [
             {
                 "role": "system",
@@ -2382,10 +2392,20 @@ def extract_resume_facts(
                     "name when explicitly written, including the name of an internship "
                     "program; title_raw is the candidate's role or position. Put an explicit "
                     "name in experience_name_raw rather than repeating it as a detail item. "
-                    "detail_items must contain every separately written task, "
-                    "implementation, responsibility, contribution, result, or output as its "
-                    "own verbatim item with evidence. Do not paraphrase, merge, infer, or "
-                    "drop a written detail. If a name, role, or detail is not explicit, use "
+                    "detail_items "
+                    + (
+                        "must include at most 4 of the most substantive tasks, "
+                        "implementations, responsibilities, contributions, results, or "
+                        "outputs per experience, each summarized concisely in one "
+                        "sentence. Never reproduce long raw passages verbatim; the "
+                        "evidence blocks remain the source of truth. "
+                        if condense_details
+                        else "must contain every separately written task, "
+                        "implementation, responsibility, contribution, result, or output "
+                        "as its own verbatim item with evidence. Do not paraphrase, "
+                        "merge, infer, or drop a written detail. "
+                    )
+                    + "If a name, role, or detail is not explicit, use "
                     "null or an empty array for that field. If no explicit fact "
                     "exists, return an empty array for that category. 985/211 rulebook:\n"
                     + institution_rulebook

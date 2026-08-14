@@ -430,6 +430,85 @@ def test_extraction_prompt_contains_the_versioned_ai_rulebook(monkeypatch) -> No
     assert "person@example.com" not in prompt
 
 
+def test_rich_extraction_condenses_details_on_long_resumes(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "function": {
+                                            "arguments": json.dumps(
+                                                {
+                                                    "schema_version": "resume_facts.v1",
+                                                    "candidate_name_raw": "Test Candidate",
+                                                    "candidate_name_evidence_block_ids": [
+                                                        "page-001"
+                                                    ],
+                                                    "education": [
+                                                        {
+                                                            "school_name_raw": "Test University",
+                                                            "degree": "bachelor",
+                                                            "ai_985_211_judgment": False,
+                                                            "ai_institution_roster_id": None,
+                                                            "major_raw": "Computer Science",
+                                                            "start_month": None,
+                                                            "end_month": None,
+                                                            "evidence_block_ids": ["page-001"],
+                                                        }
+                                                    ],
+                                                    "experiences": [],
+                                                    "skills": [],
+                                                }
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, *, timeout):
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr("app.services.deepseek_provider.urlopen", fake_urlopen)
+
+    # ~9k chars of rendered source is above the condense threshold; the prompt
+    # must ask for a capped, summarized detail list instead of verbatim copies.
+    long_text = "职责：完成数据分析 完成报表开发 处理用户反馈 " * 400
+    extract_resume_facts(
+        api_key="test-key",
+        model="test-model",
+        timeout_seconds=5,
+        blocks=[
+            EvidenceBlock(
+                block_id="page-001",
+                page_no=1,
+                block_type="page",
+                text=long_text,
+            )
+        ],
+    )
+    prompt = captured["payload"]["messages"][1]["content"]
+    assert "at most 4 of the most substantive tasks" in prompt
+    assert "Never reproduce long raw passages verbatim" in prompt
+    assert "detail_items must contain every separately written task" not in prompt
+
+
 def test_strict_function_reports_output_truncation_before_json_parsing(monkeypatch) -> None:
     class FakeResponse:
         def __enter__(self) -> "FakeResponse":

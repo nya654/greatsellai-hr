@@ -248,11 +248,14 @@ def test_platform_admin_alone_can_publish_ai_model_route(
             "provider_slug": "test-provider",
             "display_name": "Test model",
             "provider_model_id": "provider-side-model-id",
-            "capabilities": ["chat", "tools", "json_schema"],
+            "capabilities": ["chat", "tools", "json_schema", "vision"],
+            "candidate_image_allowed": True,
         },
     )
     assert model.status_code == 201, model.text
     assert model.json()["provider_slug"] == "test-provider"
+    assert model.json()["candidate_image_allowed"] is True
+    assert "vision" in model.json()["capabilities"]
 
     price = identity_client.post(
         "/v1/platform/ai/model-prices",
@@ -269,37 +272,37 @@ def test_platform_admin_alone_can_publish_ai_model_route(
     assert price.json()["source"] == "platform-test"
 
     published = identity_client.put(
-        "/v1/platform/ai/routes/resume_score",
+        "/v1/platform/ai/routes/resume_ocr_page",
         json={
             "display_name": "Resume score route",
             "description": "Platform-owned test route",
             "targets": [
                 {
                     "model_slug": "test-model",
-                    "max_attempts": 2,
-                    "allow_fallback_on": ["timeout", "provider_5xx"],
+                    "max_attempts": 1,
+                    "allow_fallback_on": [],
                 }
             ],
             "prompt_revision": "resume-score.prompt.v1",
         },
     )
     assert published.status_code == 200, published.text
-    assert published.json()["feature"] == "resume_score"
+    assert published.json()["feature"] == "resume_ocr_page"
     assert published.json()["version"] == 1
     assert published.json()["targets"] == [
         {
             "model_slug": "test-model",
-            "max_attempts": 2,
-            "allow_fallback_on": ["timeout", "provider_5xx"],
+            "max_attempts": 1,
+            "allow_fallback_on": [],
         }
     ]
 
     listed = identity_client.get("/v1/platform/ai/routes")
     assert listed.status_code == 200, listed.text
-    policy = next(item for item in listed.json() if item["feature"] == "resume_score")
+    policy = next(item for item in listed.json() if item["feature"] == "resume_ocr_page")
     assert policy["current_version"] == 1
 
-    versions = identity_client.get("/v1/platform/ai/routes/resume_score/versions")
+    versions = identity_client.get("/v1/platform/ai/routes/resume_ocr_page/versions")
     assert versions.status_code == 200, versions.text
     assert versions.json()[0]["prompt_revision"] == "resume-score.prompt.v1"
 
@@ -316,6 +319,61 @@ def test_platform_admin_alone_can_publish_ai_model_route(
     assert "credential_ref" not in serialized_audits
     assert "test-provider-credential" not in serialized_audits
     assert "prompt_revision" not in serialized_audits
+
+
+def test_platform_ocr_route_requires_explicit_candidate_image_authorization(
+    identity_client: TestClient,
+) -> None:
+    _login_platform_admin(identity_client)
+    provider = identity_client.post(
+        "/v1/platform/ai/providers",
+        json={
+            "slug": "vision-provider",
+            "display_name": "Vision provider",
+            "driver": "openai_compatible",
+            "endpoint_url": "https://api.example.test/v1/chat/completions",
+            "credential_ref": "test-provider-credential",
+        },
+    )
+    assert provider.status_code == 201, provider.text
+    invalid_permission = identity_client.post(
+        "/v1/platform/ai/models",
+        json={
+            "slug": "image-approved-without-vision",
+            "provider_slug": "vision-provider",
+            "display_name": "Invalid image permission",
+            "provider_model_id": "text-model",
+            "capabilities": ["chat"],
+            "candidate_image_allowed": True,
+        },
+    )
+    assert invalid_permission.status_code == 422, invalid_permission.text
+    assert "candidate_image_permission_requires_vision" in invalid_permission.text
+
+    model = identity_client.post(
+        "/v1/platform/ai/models",
+        json={
+            "slug": "vision-without-image-approval",
+            "provider_slug": "vision-provider",
+            "display_name": "Vision without image approval",
+            "provider_model_id": "vision-model",
+            "capabilities": ["chat", "vision"],
+        },
+    )
+    assert model.status_code == 201, model.text
+    assert model.json()["candidate_image_allowed"] is False
+
+    published = identity_client.put(
+        "/v1/platform/ai/routes/resume_ocr_page",
+        json={
+            "display_name": "Resume OCR",
+            "targets": [{"model_slug": "vision-without-image-approval"}],
+            "reason": "Verify candidate image authorization gate",
+        },
+    )
+
+    assert published.status_code == 422, published.text
+    assert published.json()["detail"] == "ai_route_candidate_image_not_allowed"
 
 
 def test_platform_ai_route_cannot_publish_with_unconfigured_provider_credential(

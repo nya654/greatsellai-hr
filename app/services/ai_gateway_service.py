@@ -19,7 +19,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
@@ -31,11 +31,14 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.ai import (
     ChatMessage,
     CompletionRequest,
+    CompletionResult,
+    InlineImageContentPart,
     RouteAuthentication,
     RouteTarget,
     ToolCall,
     ToolChoice,
     ToolDefinition,
+    TextContentPart,
 )
 from app.ai.adapters import OpenAICompatibleAdapter
 from app.ai.errors import ProviderError, ProviderErrorCategory
@@ -156,6 +159,37 @@ class _ExecutionHandle:
     next_attempt_no: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class AiGatewayCompletionExecutor:
+    """Typed in-memory completion access for one durable gateway run."""
+
+    _handle: _ExecutionHandle
+
+    def complete(self, request: CompletionRequest) -> CompletionResult:
+        handle = self._handle
+        if request.feature != handle.spec.feature:
+            raise AiGatewayError("ai_request_feature_mismatch")
+        if request.organization_id != handle.organization_id:
+            raise AiGatewayError("ai_request_workspace_mismatch")
+        if request.run_id not in {None, handle.run_id}:
+            raise AiGatewayError("ai_request_run_mismatch")
+        expected_refs = (
+            (request.business_ref_type, handle.spec.business_ref_type),
+            (request.business_ref_id, handle.spec.business_ref_id),
+        )
+        if any(actual not in {None, expected} for actual, expected in expected_refs):
+            raise AiGatewayError("ai_request_business_reference_mismatch")
+        bound_request = replace(
+            request,
+            run_id=handle.run_id,
+            business_ref_type=handle.spec.business_ref_type,
+            business_ref_id=handle.spec.business_ref_id,
+            metadata=dict(request.metadata),
+        )
+        _record_completion_request_fingerprint(handle, bound_request)
+        return _execute_completion_result(handle, bound_request)
+
+
 def active_legacy_payload_executor() -> Callable[[Mapping[str, object]], dict[str, object]] | None:
     """Return the current in-memory gateway hook, if a service installed one.
 
@@ -213,7 +247,7 @@ def ai_gateway_execution(
     *,
     settings: AppSettings,
     spec: AiExecutionSpec,
-) -> Iterator[None]:
+) -> Iterator[AiGatewayCompletionExecutor]:
     """Install a per-run gateway context and finalize its durable ledger.
 
     It intentionally opens a separate session bound to the same engine.  This
@@ -236,7 +270,7 @@ def ai_gateway_execution(
         token = _CURRENT_LEGACY_PAYLOAD_EXECUTOR.set(
             lambda payload: _execute_legacy_payload(handle, payload)
         )
-        yield
+        yield AiGatewayCompletionExecutor(handle)
     except BaseException as exc:
         if handle is not None:
             _finish_run(handle, status="failed", failure_code=_safe_failure_code(exc))
@@ -430,6 +464,8 @@ def _bootstrap_legacy_route_if_available(
     instead create provider/model/route records through the platform API.
     """
 
+    if feature == "resume_ocr_page":
+        return
     if not settings.deepseek_api_key or not settings.legacy_openai_compatible_endpoint:
         return
 
@@ -576,7 +612,8 @@ def _execute_legacy_payload(
 ) -> dict[str, object]:
     request = _completion_request_from_legacy_payload(handle, payload)
     _record_input_fingerprint(handle, payload)
-    return _execute_completion(handle, request)
+    result = _execute_completion_result(handle, request)
+    return dict(result.raw_response)
 
 
 def _completion_request_from_legacy_payload(
@@ -745,8 +782,106 @@ def _record_input_fingerprint(handle: _ExecutionHandle, payload: Mapping[str, ob
         handle.session.commit()
 
 
-def _execute_completion(handle: _ExecutionHandle, request: CompletionRequest) -> dict[str, object]:
+def _record_completion_request_fingerprint(
+    handle: _ExecutionHandle,
+    request: CompletionRequest,
+) -> None:
+    run = handle.session.get(AiRun, handle.run_id)
+    if run is None:
+        raise AiGatewayError("ai_run_not_found")
+    if run.source_snapshot_hmac is not None:
+        return
+
+    secret = handle.settings.session_secret
+    digest = hmac.new(secret.encode("utf-8"), digestmod=hashlib.sha256) if secret else None
+    input_size = 0
+    for part in _completion_fingerprint_parts(request):
+        input_size += len(part)
+        if digest is not None:
+            digest.update(len(part).to_bytes(8, "big"))
+            digest.update(part)
+    run.source_snapshot_hmac = digest.hexdigest() if digest is not None else None
+    run.input_size_bytes = input_size
+    handle.session.commit()
+
+
+def _completion_fingerprint_parts(request: CompletionRequest) -> Iterator[bytes]:
+    def encoded(value: object) -> bytes:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    yield encoded(
+        {
+            "feature": request.feature,
+            "data_classification": request.data_classification,
+            "required_capabilities": sorted(request.required_capabilities),
+            "max_output_tokens": request.max_output_tokens,
+            "temperature": request.temperature,
+            "tool_choice": (
+                None
+                if request.tool_choice is None
+                else {"mode": request.tool_choice.mode, "name": request.tool_choice.name}
+            ),
+            "metadata": dict(request.metadata),
+        }
+    )
+    for message in request.messages:
+        yield encoded(
+            {
+                "role": message.role,
+                "name": message.name,
+                "tool_call_id": message.tool_call_id,
+            }
+        )
+        if isinstance(message.content, str):
+            yield message.content.encode("utf-8")
+        elif isinstance(message.content, tuple):
+            for content_part in message.content:
+                if isinstance(content_part, TextContentPart):
+                    yield b"text"
+                    yield content_part.text.encode("utf-8")
+                else:
+                    assert isinstance(content_part, InlineImageContentPart)
+                    yield encoded(
+                        {
+                            "type": "inline_image",
+                            "media_type": content_part.media_type,
+                            "detail": content_part.detail,
+                        }
+                    )
+                    yield content_part.data
+        for tool_call in message.tool_calls:
+            yield encoded(
+                {
+                    "id": tool_call.id,
+                    "name": tool_call.name,
+                    "arguments": tool_call.arguments,
+                }
+            )
+    for tool in request.tools:
+        yield encoded(
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": dict(tool.parameters),
+                "strict": tool.strict,
+            }
+        )
+
+
+def _execute_completion_result(
+    handle: _ExecutionHandle,
+    request: CompletionRequest,
+) -> CompletionResult:
     targets = _validated_targets(handle.route_policy_version)
+    single_attempt_vision_ocr = handle.spec.feature == "resume_ocr_page"
+    if single_attempt_vision_ocr:
+        targets = targets[:1]
     previous_failed_invocation_id: str | None = None
     last_error: ProviderError | None = None
     for target_index, target_data in enumerate(targets):
@@ -755,9 +890,12 @@ def _execute_completion(handle: _ExecutionHandle, request: CompletionRequest) ->
             settings=handle.settings,
             target_data=target_data,
             required_capabilities=request.required_capabilities,
+            data_classification=request.data_classification,
             max_output_tokens=request.max_output_tokens,
         )
-        max_attempts = _target_max_attempts(target_data)
+        max_attempts = (
+            1 if single_attempt_vision_ocr else _target_max_attempts(target_data)
+        )
         for attempt_index in range(max_attempts):
             handle.next_attempt_no += 1
             adapter = _adapter_for_driver(route.driver)
@@ -790,9 +928,13 @@ def _execute_completion(handle: _ExecutionHandle, request: CompletionRequest) ->
                 last_error = exc
                 if exc.retryable and attempt_index + 1 < max_attempts:
                     continue
-                if exc.fallback_eligible and _target_allows_fallback(
-                    target_data,
-                    category=exc.category,
+                if (
+                    not single_attempt_vision_ocr
+                    and exc.fallback_eligible
+                    and _target_allows_fallback(
+                        target_data,
+                        category=exc.category,
+                    )
                 ):
                     break
                 raise AiGatewayError(f"ai_provider_{exc.category.value}") from exc
@@ -813,7 +955,7 @@ def _execute_completion(handle: _ExecutionHandle, request: CompletionRequest) ->
                 price=price,
                 latency_ms=_elapsed_ms(started),
             )
-            return dict(result.raw_response)
+            return result
         # The next target is an explicit fallback, never an automatic
         # cheapest-model decision.
         continue
@@ -877,6 +1019,7 @@ def _resolve_route_target(
     settings: AppSettings,
     target_data: Mapping[str, object],
     required_capabilities: frozenset[str],
+    data_classification: str,
     max_output_tokens: int | None,
 ) -> tuple[RouteTarget, AiModelPriceVersion | None]:
     model_id = target_data["model_profile_id"]
@@ -891,6 +1034,8 @@ def _resolve_route_target(
         raise AiGatewayError("ai_route_endpoint_missing")
     if not _model_supports(model, required_capabilities):
         raise AiGatewayError("ai_route_capability_missing")
+    if not _model_allows_data_classification(model, data_classification):
+        raise AiGatewayError("ai_route_data_classification_not_allowed")
     if (
         max_output_tokens is not None
         and model.max_output_tokens is not None
@@ -932,6 +1077,23 @@ def _model_supports(model: AiModelProfile, required: frozenset[str]) -> bool:
     else:
         capabilities = set()
     return required.issubset(capabilities)
+
+
+def _model_allows_data_classification(
+    model: AiModelProfile,
+    data_classification: str,
+) -> bool:
+    raw = model.data_classification_json
+    if not isinstance(raw, Mapping):
+        return False
+    if data_classification == "candidate_text":
+        return raw.get("candidate_data_allowed") is True
+    if data_classification == "candidate_image":
+        return (
+            raw.get("candidate_data_allowed") is True
+            and raw.get("candidate_image_allowed") is True
+        )
+    return False
 
 
 def _resolve_credential(settings: AppSettings, reference: str | None) -> str | None:
@@ -1228,6 +1390,7 @@ def _safe_failure_code(exc: BaseException) -> str:
 
 __all__ = [
     "AiExecutionSpec",
+    "AiGatewayCompletionExecutor",
     "AiGatewayError",
     "LEGACY_RUNTIME_CREDENTIAL_REF",
     "SUPPORTED_AI_FEATURES",

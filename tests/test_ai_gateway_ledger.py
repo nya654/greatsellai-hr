@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -8,7 +9,15 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.ai import CompletionResult, NormalizedUsage, ToolCall
+from app.ai import (
+    ChatMessage,
+    CompletionRequest,
+    CompletionResult,
+    InlineImageContentPart,
+    NormalizedUsage,
+    TextContentPart,
+    ToolCall,
+)
 from app.ai.adapters import OpenAICompatibleAdapter
 from app.ai.errors import ProviderError, ProviderErrorCategory
 from app.config import AppSettings
@@ -33,7 +42,11 @@ from app.services.ai_gateway_service import (
 )
 from app.services.deepseek_provider import DeepSeekProviderError, call_strict_function
 from app.services.trial_quota_service import TRIAL_LLM_CALL_QUOTA_EXHAUSTED_CODE
-from app.tenant_scope import clear_organization_context, set_organization_context
+from app.tenant_scope import (
+    clear_organization_context,
+    organization_context_id,
+    set_organization_context,
+)
 
 
 def _gateway_tool_result(*, include_usage: bool = True) -> CompletionResult:
@@ -195,6 +208,66 @@ def _seed_two_target_route(
     session.commit()
 
 
+def _seed_vision_route(
+    session: Session,
+    *,
+    candidate_image_allowed: bool,
+    max_attempts: int = 1,
+    allow_fallback_on: list[str] | None = None,
+) -> None:
+    provider = AiProviderProfile(
+        slug=f"vision-test-provider-{int(candidate_image_allowed)}",
+        display_name="Vision test provider",
+        driver="openai_compatible",
+        base_url="https://vision-provider.invalid/v1/chat/completions",
+        credential_ref="legacy-runtime-credential",
+        request_defaults_json={},
+        enabled=True,
+    )
+    session.add(provider)
+    session.flush()
+    model = AiModelProfile(
+        provider_profile_id=provider.id,
+        slug=f"vision-test-model-{int(candidate_image_allowed)}",
+        display_name="Vision test model",
+        provider_model_id="MiniMax-M3",
+        capabilities_json={"chat": True, "vision": True},
+        data_classification_json={
+            "candidate_data_allowed": True,
+            "candidate_image_allowed": candidate_image_allowed,
+        },
+        enabled=True,
+    )
+    session.add(model)
+    session.flush()
+    policy = AiRoutePolicy(
+        feature="resume_ocr_page",
+        display_name="Resume OCR page",
+        enabled=True,
+    )
+    session.add(policy)
+    session.flush()
+    version = AiRoutePolicyVersion(
+        policy_id=policy.id,
+        version=1,
+        status="published",
+        targets_json=[
+            {
+                "model_profile_id": model.id,
+                "max_attempts": max_attempts,
+                "allow_fallback_on": allow_fallback_on or [],
+            }
+        ],
+        retry_policy_json={},
+        max_cost_guard_json={},
+        published_at=utcnow(),
+    )
+    session.add(version)
+    session.flush()
+    policy.active_version_id = version.id
+    session.commit()
+
+
 def _set_legacy_trial_llm_usage(
     session: Session,
     *,
@@ -249,6 +322,23 @@ def test_legacy_bootstrap_uses_operator_facing_deepseek_and_route_labels(
     assert policy.description == "根据岗位要求生成候选人评分。"
 
 
+def test_legacy_bootstrap_never_routes_vision_ocr_to_deepseek(ai_client) -> None:
+    database = ai_client.app.state.database
+    settings = ai_client.app.state.settings
+
+    with database.session_factory() as session:
+        _bootstrap_legacy_route_if_available(
+            session,
+            settings=settings,
+            feature="resume_ocr_page",
+        )
+        policy = session.scalar(
+            select(AiRoutePolicy).where(AiRoutePolicy.feature == "resume_ocr_page")
+        )
+
+    assert policy is None
+
+
 def test_gateway_writes_cost_ledger_without_persisting_prompt_or_output(
     ai_client,
     monkeypatch: pytest.MonkeyPatch,
@@ -297,6 +387,138 @@ def test_gateway_writes_cost_ledger_without_persisting_prompt_or_output(
         assert not hasattr(invocation, "prompt")
         assert not hasattr(invocation, "response")
         assert not hasattr(invocation, "api_key")
+
+
+def test_typed_vision_completion_writes_fingerprint_only(
+    ai_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = ai_client.app.state.database
+    settings = replace(ai_client.app.state.settings, session_secret="vision-test-secret")
+    image_bytes = b"private-candidate-page-image"
+
+    def complete_vision(
+        self: OpenAICompatibleAdapter,
+        request: CompletionRequest,
+        route: object,
+    ) -> CompletionResult:
+        assert request.data_classification == "candidate_image"
+        assert request.required_capabilities == frozenset({"chat", "vision"})
+        return CompletionResult(
+            content="Candidate resume transcription",
+            tool_calls=(),
+            finish_reason="stop",
+            provider_request_id="vision-request-1",
+            usage=NormalizedUsage(input_tokens=20, output_tokens=4, request_units=1),
+            raw_status_code=200,
+            model_id="MiniMax-M3",
+            raw_response={"private": "must-not-persist"},
+        )
+
+    monkeypatch.setattr(OpenAICompatibleAdapter, "complete", complete_vision)
+    with database.session_factory() as session:
+        _seed_vision_route(session, candidate_image_allowed=True)
+        with ai_gateway_execution(
+            session,
+            settings=settings,
+            spec=AiExecutionSpec(
+                feature="resume_ocr_page",
+                business_ref_type="resume_document_page",
+                business_ref_id="resume-1:page-1",
+                service_kind="ocr",
+            ),
+        ) as executor:
+            result = executor.complete(
+                CompletionRequest(
+                    feature="resume_ocr_page",
+                    organization_id=organization_context_id(session),
+                    messages=(
+                        ChatMessage(role="system", content="Transcribe only."),
+                        ChatMessage(
+                            role="user",
+                            content=(
+                                TextContentPart("Read the page."),
+                                InlineImageContentPart(
+                                    media_type="image/jpeg",
+                                    data=image_bytes,
+                                ),
+                            ),
+                        ),
+                    ),
+                    required_capabilities=frozenset({"chat", "vision"}),
+                    data_classification="candidate_image",
+                    max_output_tokens=4096,
+                    temperature=0,
+                )
+            )
+        assert result.content == "Candidate resume transcription"
+
+        session.expire_all()
+        run = session.scalar(
+            select(AiRun).where(AiRun.business_ref_id == "resume-1:page-1")
+        )
+        assert run is not None
+        assert run.status == "succeeded"
+        assert run.source_snapshot_hmac
+        assert run.input_size_bytes is not None
+        assert run.input_size_bytes >= len(image_bytes)
+        assert image_bytes.decode("ascii") not in repr(run)
+        invocation = session.scalar(
+            select(ApiInvocation).where(ApiInvocation.ai_run_id == run.id)
+        )
+        assert invocation is not None
+        assert invocation.provider_model_id == "MiniMax-M3"
+        assert "must-not-persist" not in repr(invocation)
+
+
+def test_typed_vision_completion_requires_model_candidate_image_authorization(
+    ai_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = ai_client.app.state.database
+    settings = ai_client.app.state.settings
+    provider_calls = 0
+
+    def should_not_call(*args: object, **kwargs: object) -> CompletionResult:
+        nonlocal provider_calls
+        provider_calls += 1
+        raise AssertionError("unauthorized image must not reach provider")
+
+    monkeypatch.setattr(OpenAICompatibleAdapter, "complete", should_not_call)
+    with database.session_factory() as session:
+        _seed_vision_route(session, candidate_image_allowed=False)
+        with pytest.raises(AiGatewayError, match="data_classification_not_allowed"):
+            with ai_gateway_execution(
+                session,
+                settings=settings,
+                spec=AiExecutionSpec(
+                    feature="resume_ocr_page",
+                    business_ref_type="resume_document_page",
+                    business_ref_id="resume-denied:page-1",
+                    service_kind="ocr",
+                ),
+            ) as executor:
+                executor.complete(
+                    CompletionRequest(
+                        feature="resume_ocr_page",
+                        organization_id=organization_context_id(session),
+                        messages=(
+                            ChatMessage(
+                                role="user",
+                                content=(
+                                    TextContentPart("Transcribe."),
+                                    InlineImageContentPart(
+                                        media_type="image/jpeg",
+                                        data=b"private-image",
+                                    ),
+                                ),
+                            ),
+                        ),
+                        required_capabilities=frozenset({"chat", "vision"}),
+                        data_classification="candidate_image",
+                    )
+                )
+    assert provider_calls == 0
 
 
 def test_gateway_enforces_trial_llm_call_cap_before_a_second_provider_attempt(

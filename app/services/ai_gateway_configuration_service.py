@@ -98,7 +98,10 @@ def create_model_profile(
         capabilities_json={capability: True for capability in payload.capabilities},
         context_window=payload.context_window_tokens,
         max_output_tokens=payload.max_output_tokens,
-        data_classification_json={"candidate_data_allowed": True},
+        data_classification_json={
+            "candidate_data_allowed": True,
+            "candidate_image_allowed": payload.candidate_image_allowed,
+        },
         enabled=payload.is_enabled,
     )
     session.add(model)
@@ -184,7 +187,18 @@ def publish_route_policy(
 ) -> AiRoutePolicyVersionResponse:
     if feature not in SUPPORTED_AI_FEATURES:
         raise AiGatewayConfigurationError("unsupported_ai_feature")
-    models = _models_for_route_targets(session, payload.targets, settings=settings)
+    if feature == "resume_ocr_page" and (
+        len(payload.targets) != 1
+        or payload.targets[0].max_attempts != 1
+        or payload.targets[0].allow_fallback_on
+    ):
+        raise AiGatewayConfigurationError("ai_ocr_route_must_be_single_attempt")
+    models = _models_for_route_targets(
+        session,
+        payload.targets,
+        settings=settings,
+        feature=feature,
+    )
     policy = session.scalar(select(AiRoutePolicy).where(AiRoutePolicy.feature == feature))
     if policy is None:
         policy = AiRoutePolicy(
@@ -235,6 +249,7 @@ def _models_for_route_targets(
     targets: Iterable[AiRouteTargetInput],
     *,
     settings: AppSettings,
+    feature: str,
 ) -> list[AiModelProfile]:
     models: list[AiModelProfile] = []
     for target in targets:
@@ -248,6 +263,26 @@ def _models_for_route_targets(
             raise AiGatewayConfigurationError("ai_route_provider_unavailable")
         if not ai_provider_credential_configured(settings, provider.credential_ref):
             raise AiGatewayConfigurationError("ai_route_credential_not_configured")
+        if feature == "resume_ocr_page":
+            capabilities = (
+                model.capabilities_json
+                if isinstance(model.capabilities_json, dict)
+                else {}
+            )
+            if not all(capabilities.get(item) is True for item in ("chat", "vision")):
+                raise AiGatewayConfigurationError("ai_route_model_capability_missing")
+            classification = (
+                model.data_classification_json
+                if isinstance(model.data_classification_json, dict)
+                else {}
+            )
+            if not (
+                classification.get("candidate_data_allowed") is True
+                and classification.get("candidate_image_allowed") is True
+            ):
+                raise AiGatewayConfigurationError(
+                    "ai_route_candidate_image_not_allowed"
+                )
         models.append(model)
     return models
 
@@ -277,6 +312,11 @@ def _provider_response(
 
 def _model_response(model: AiModelProfile, provider_slug: str) -> AiModelProfileResponse:
     raw_capabilities = model.capabilities_json if isinstance(model.capabilities_json, dict) else {}
+    raw_data_classification = (
+        model.data_classification_json
+        if isinstance(model.data_classification_json, dict)
+        else {}
+    )
     return AiModelProfileResponse(
         model_id=model.id,
         slug=model.slug,
@@ -285,6 +325,7 @@ def _model_response(model: AiModelProfile, provider_slug: str) -> AiModelProfile
         display_name=model.display_name,
         provider_model_id=model.provider_model_id,
         capabilities=[key for key, value in raw_capabilities.items() if value is True],
+        candidate_image_allowed=raw_data_classification.get("candidate_image_allowed") is True,
         context_window_tokens=model.context_window,
         max_output_tokens=model.max_output_tokens,
         is_enabled=model.enabled,

@@ -95,9 +95,11 @@ const AI_CAPABILITY_LABELS: Record<AiModelCapability, string> = {
   chat: "对话",
   tools: "工具调用",
   json_schema: "JSON Schema",
+  vision: "视觉输入",
 };
 
 function routeCapabilityRequirements(feature: string): AiModelCapability[] {
+  if (feature === "resume_ocr_page") return ["chat", "vision"];
   if (structuredRouteFeatures.has(feature)) return ["chat", "tools", "json_schema"];
   if (feature === "recruiting_agent_turn") return ["chat", "tools"];
   return ["chat"];
@@ -251,6 +253,8 @@ export function AdminAiConfigurationPanel({
     chat: true,
     tools: true,
     json_schema: true,
+    vision: false,
+    candidate_image_allowed: false,
     context_window_tokens: "",
     max_output_tokens: "",
     is_enabled: true,
@@ -266,7 +270,8 @@ export function AdminAiConfigurationPanel({
       && provider.credential_configured
     ))
     && supportsRouteCapabilities(model, routeCapabilities)
-  )), [models, providers, routeCapabilities]);
+    && (routeFeature !== "resume_ocr_page" || model.candidate_image_allowed)
+  )), [models, providers, routeCapabilities, routeFeature]);
   const [routeDraft, setRouteDraft] = useState<RouteDraft>({
     display_name: routeFeatures[0].label,
     description: "",
@@ -388,12 +393,14 @@ export function AdminAiConfigurationPanel({
       const capabilities: AiModelCapability[] = ["chat"];
       if (modelDraft.tools) capabilities.push("tools");
       if (modelDraft.json_schema) capabilities.push("json_schema");
+      if (modelDraft.vision) capabilities.push("vision");
       const payload: AiModelProfileCreateInput = {
         display_name: modelDraft.display_name.trim(),
         slug: modelDraft.slug.trim().toLowerCase(),
         provider_slug: modelDraft.provider_slug,
         provider_model_id: modelDraft.provider_model_id.trim(),
         capabilities,
+        candidate_image_allowed: modelDraft.candidate_image_allowed,
         context_window_tokens: optionalPositiveInteger(modelDraft.context_window_tokens, "上下文窗口"),
         max_output_tokens: optionalPositiveInteger(modelDraft.max_output_tokens, "最大输出"),
         is_enabled: modelDraft.is_enabled,
@@ -401,7 +408,7 @@ export function AdminAiConfigurationPanel({
       };
       const created = await adminApi.createAiModel(payload);
       setModelDraft({
-        display_name: "", slug: "", provider_slug: enabledProviders[0]?.slug ?? "", provider_model_id: "", chat: true, tools: true, json_schema: true,
+        display_name: "", slug: "", provider_slug: enabledProviders[0]?.slug ?? "", provider_model_id: "", chat: true, tools: true, json_schema: true, vision: false, candidate_image_allowed: false,
         context_window_tokens: "", max_output_tokens: "", is_enabled: true, reason: "",
       });
       await finishSubmission(`模型「${created.display_name}」已创建。`);
@@ -428,10 +435,10 @@ export function AdminAiConfigurationPanel({
         display_name: displayName,
         ...(routeDraft.description.trim() ? { description: routeDraft.description.trim() } : {}),
         ...(routeDraft.prompt_revision.trim() ? { prompt_revision: routeDraft.prompt_revision.trim() } : {}),
-        targets: routeDraft.targets.map((target) => ({
+        targets: (routeFeature === "resume_ocr_page" ? routeDraft.targets.slice(0, 1) : routeDraft.targets).map((target) => ({
           model_slug: target.model_slug,
-          max_attempts: target.max_attempts,
-          allow_fallback_on: target.allow_fallback_on,
+          max_attempts: routeFeature === "resume_ocr_page" ? 1 : target.max_attempts,
+          allow_fallback_on: routeFeature === "resume_ocr_page" ? [] : target.allow_fallback_on,
         })),
         reason: reasonValue(routeDraft.reason),
       };
@@ -501,6 +508,7 @@ export function AdminAiConfigurationPanel({
         && provider.credential_configured
       ))
       && supportsRouteCapabilities(model, nextCapabilities)
+      && (nextFeature !== "resume_ocr_page" || model.candidate_image_allowed)
     ));
     setRouteDraft({
       display_name: nextLabel,
@@ -624,6 +632,8 @@ export function AdminAiConfigurationPanel({
             <label><input checked readOnly type="checkbox" /><span><strong>对话（chat）</strong><small>当前所有招聘功能都需要基础对话能力。</small></span></label>
             <label><input checked={modelDraft.tools} onChange={(event) => setModelDraft({ ...modelDraft, tools: event.target.checked, json_schema: event.target.checked ? modelDraft.json_schema : false })} type="checkbox" /><span><strong>工具调用（tools）</strong><small>支持结构化工具与函数调用。</small></span></label>
             <label><input checked={modelDraft.json_schema} onChange={(event) => setModelDraft({ ...modelDraft, json_schema: event.target.checked, tools: event.target.checked ? true : modelDraft.tools })} type="checkbox" /><span><strong>JSON Schema</strong><small>建议启用，以支持提取、评分和匹配等结构化结果。</small></span></label>
+            <label><input checked={modelDraft.vision} onChange={(event) => setModelDraft({ ...modelDraft, vision: event.target.checked, candidate_image_allowed: event.target.checked ? modelDraft.candidate_image_allowed : false })} type="checkbox" /><span><strong>视觉输入（vision）</strong><small>模型可以接收受控的内联图片内容。</small></span></label>
+            <label><input checked={modelDraft.candidate_image_allowed} disabled={!modelDraft.vision} onChange={(event) => setModelDraft({ ...modelDraft, candidate_image_allowed: event.target.checked, vision: event.target.checked ? true : modelDraft.vision })} type="checkbox" /><span><strong>允许候选人页面图片</strong><small>隐私授权门；仅对已批准接收完整简历页面的模型启用。</small></span></label>
             <label><input checked={modelDraft.is_enabled} onChange={(event) => setModelDraft({ ...modelDraft, is_enabled: event.target.checked })} type="checkbox" /><span><strong>创建后立即启用</strong><small>禁用后，新发布的路由无法使用该模型。</small></span></label>
           </fieldset>
           <label className="admin-reason-field"><span>变更原因</span><textarea className="textarea-field" maxLength={500} onChange={(event) => setModelDraft({ ...modelDraft, reason: event.target.value })} placeholder="例如：新增主力结构化提取模型" required rows={3} value={modelDraft.reason} /></label>
@@ -637,7 +647,7 @@ export function AdminAiConfigurationPanel({
           {routeVersionsState === "error" && <div className="admin-ai-route-load-error" role="alert"><span>当前路由版本加载失败：{routeVersionsError}</span><button className="button" onClick={() => void loadRouteVersions()} type="button">重新加载</button></div>}
 
           {!routeReview && <>
-            {!routeModels.length && <p className="admin-form-warning">当前功能需要 {routeCapabilitiesLabel} 能力。请先创建并启用兼容模型，并让对应模型服务显示为「已连接」，才能发布路由。</p>}
+            {!routeModels.length && <p className="admin-form-warning">当前功能需要 {routeCapabilitiesLabel}{routeFeature === "resume_ocr_page" ? "、候选人页面图片授权" : ""}。请先创建并启用兼容模型，并让对应模型服务显示为「已连接」，才能发布路由。</p>}
             <div className="admin-form-grid">
               <label><span>AI 功能</span><select className="select-field" onChange={(event) => selectRouteFeature(event.target.value as RouteFeature)} value={routeFeature}>{routeFeatures.map((feature) => <option key={feature.value} value={feature.value}>{feature.label}</option>)}</select><small>{selectedRouteFeature.detail}</small></label>
               <label><span>路由显示名称</span><input className="field" maxLength={120} onChange={(event) => updateRouteDraft((draft) => ({ ...draft, display_name: event.target.value }))} required value={routeDraft.display_name} /></label>
@@ -649,12 +659,12 @@ export function AdminAiConfigurationPanel({
               {routeDraft.targets.map((target, index) => <div className="admin-ai-route-target" key={`route-target-${index}`}>
                 <div className="admin-ai-route-target-heading"><strong>{index === 0 ? "主模型" : `回退模型 ${index}`}</strong>{routeDraft.targets.length > 1 && <button className="button button-ghost" onClick={() => updateRouteDraft((draft) => ({ ...draft, targets: draft.targets.filter((_, targetIndex) => targetIndex !== index) }))} type="button">移除</button>}</div>
                 <div className="admin-form-grid">
-                  <label><span>模型</span><select className="select-field" disabled={!routeModels.length} onChange={(event) => updateRouteTarget(index, { model_slug: event.target.value })} required value={target.model_slug}>{!routeModels.length && <option value="">暂无兼容模型</option>}{target.model_slug && !routeModels.some((model) => model.slug === target.model_slug) && <option value={target.model_slug}>已归档模型</option>}{routeModels.map((model) => <option key={model.model_id} value={model.slug}>{modelDisplayName(model)}</option>)}</select><small>仅显示具备 {routeCapabilitiesLabel} 能力、已启用且模型服务已连接的模型。</small></label>
-                  <label><span>最大尝试次数</span><select className="select-field" onChange={(event) => updateRouteTarget(index, { max_attempts: Number(event.target.value) })} value={target.max_attempts}><option value={1}>1 次</option><option value={2}>2 次</option><option value={3}>3 次</option></select></label>
+                  <label><span>模型</span><select className="select-field" disabled={!routeModels.length} onChange={(event) => updateRouteTarget(index, { model_slug: event.target.value })} required value={target.model_slug}>{!routeModels.length && <option value="">暂无兼容模型</option>}{target.model_slug && !routeModels.some((model) => model.slug === target.model_slug) && <option value={target.model_slug}>已归档模型</option>}{routeModels.map((model) => <option key={model.model_id} value={model.slug}>{modelDisplayName(model)}</option>)}</select><small>仅显示具备 {routeCapabilitiesLabel}{routeFeature === "resume_ocr_page" ? "、候选人页面图片授权" : ""}、已启用且模型服务已连接的模型。</small></label>
+                  <label><span>最大尝试次数</span><select className="select-field" disabled={routeFeature === "resume_ocr_page"} onChange={(event) => updateRouteTarget(index, { max_attempts: Number(event.target.value) })} value={routeFeature === "resume_ocr_page" ? 1 : target.max_attempts}><option value={1}>1 次</option><option value={2}>2 次</option><option value={3}>3 次</option></select><small>{routeFeature === "resume_ocr_page" ? "候选人页面每页只允许一次外部模型调用。" : "同一目标发生可重试错误时的最大尝试次数。"}</small></label>
                 </div>
                 {index < routeDraft.targets.length - 1 && <fieldset className="admin-ai-fallback-options"><legend>允许回退的原因</legend>{fallbackCategories.map((category) => <label key={category.value}><input checked={target.allow_fallback_on.includes(category.value)} onChange={(event) => toggleFallbackCategory(index, category.value, event.target.checked)} type="checkbox" /><span>{category.label}</span></label>)}</fieldset>}
               </div>)}
-              <div className="admin-ai-route-target-actions"><button className="button" disabled={routeDraft.targets.length >= 4 || routeModels.length <= routeDraft.targets.length} onClick={addRouteTarget} type="button"><Icon name="plus" size={16} />添加回退模型</button><small>最多 4 个目标；同一模型不可重复。</small></div>
+              <div className="admin-ai-route-target-actions"><button className="button" disabled={routeFeature === "resume_ocr_page" || routeDraft.targets.length >= 4 || routeModels.length <= routeDraft.targets.length} onClick={addRouteTarget} type="button"><Icon name="plus" size={16} />添加回退模型</button><small>{routeFeature === "resume_ocr_page" ? "OCR 固定单目标、单次调用，不允许跨模型回退。" : "最多 4 个目标；同一模型不可重复。"}</small></div>
             </fieldset>
             <label className="admin-reason-field"><span>发布原因</span><textarea className="textarea-field" maxLength={500} onChange={(event) => updateRouteDraft((draft) => ({ ...draft, reason: event.target.value }))} placeholder="例如：主模型升级，保留原模型应对限流与超时" required rows={3} value={routeDraft.reason} /></label>
           </>}

@@ -15,11 +15,7 @@ from app.services.text_extraction import (
     PdfExtractionResult,
     extract_pdf_text,
 )
-from app.services.tencent_ocr_provider import (
-    TencentOcrConfig,
-    TencentOcrError,
-    extract_image_text,
-)
+from app.services.document_ocr_service import DocumentOcrEngine, DocumentOcrError
 
 
 class DocumentExtractionError(RuntimeError):
@@ -207,7 +203,7 @@ def extract_document_text(
     *,
     min_text_chars_per_page: int,
     ocr_sparse_text_chars_per_page: int,
-    tencent_ocr_config: TencentOcrConfig | None = None,
+    ocr_engine: DocumentOcrEngine | None = None,
     max_pages: int = 30,
     max_text_chars: int = 250_000,
     max_archive_uncompressed_bytes: int = 100 * 1024 * 1024,
@@ -231,7 +227,7 @@ def extract_document_text(
                 path,
                 min_text_chars_per_page=min_text_chars_per_page,
                 ocr_sparse_text_chars_per_page=ocr_sparse_text_chars_per_page,
-                tencent_ocr_config=tencent_ocr_config,
+                ocr_engine=ocr_engine,
                 max_pages=max_pages,
                 max_text_chars=max_text_chars,
             )
@@ -248,7 +244,7 @@ def extract_document_text(
             path,
             minimum=min_text_chars_per_page,
             sparse=ocr_sparse_text_chars_per_page,
-            config=tencent_ocr_config,
+            ocr_engine=ocr_engine,
             max_pages=max_pages,
             max_text_chars=max_text_chars,
             timeout_seconds=office_timeout_seconds,
@@ -281,7 +277,7 @@ def extract_document_text(
             path,
             minimum=min_text_chars_per_page,
             max_text_chars=max_text_chars,
-            config=tencent_ocr_config,
+            ocr_engine=ocr_engine,
         )
     raise DocumentExtractionError("unsupported_document_type")
 
@@ -342,7 +338,7 @@ def _extract_office_as_pdf(
     *,
     minimum: int,
     sparse: int,
-    config: TencentOcrConfig | None,
+    ocr_engine: DocumentOcrEngine | None,
     max_pages: int,
     max_text_chars: int,
     timeout_seconds: int,
@@ -376,7 +372,7 @@ def _extract_office_as_pdf(
                 converted,
                 min_text_chars_per_page=minimum,
                 ocr_sparse_text_chars_per_page=sparse,
-                tencent_ocr_config=config,
+                ocr_engine=ocr_engine,
                 max_pages=max_pages,
                 max_text_chars=max_text_chars,
             )
@@ -528,18 +524,18 @@ def _extract_image(
     *,
     minimum: int,
     max_text_chars: int,
-    config: TencentOcrConfig | None,
+    ocr_engine: DocumentOcrEngine | None,
 ) -> PdfExtractionResult:
-    if config is None:
-        raise DocumentExtractionError("tencent_ocr_not_configured")
+    if ocr_engine is None:
+        raise DocumentExtractionError("document_ocr_not_configured")
     try:
-        text = extract_image_text(path=path, config=config)
-    except TencentOcrError as exc:
+        text = ocr_engine.extract_image(path=path)
+    except DocumentOcrError as exc:
         raise DocumentExtractionError(str(exc)) from exc
     return _result(
         [text],
         minimum=minimum,
-        parser="tencent-ocr",
+        parser=ocr_engine.parser_label,
         max_pages=1,
         max_text_chars=max_text_chars,
         ocr_attempted_page_count=1,

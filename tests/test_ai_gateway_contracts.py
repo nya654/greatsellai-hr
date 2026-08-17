@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import urllib.error
 from dataclasses import fields, replace
@@ -12,11 +13,13 @@ from app.ai.contracts import (
     ChatMessage,
     CompletionRequest,
     GatewayContractError,
+    InlineImageContentPart,
     RouteAuthentication,
     RouteTarget,
     ToolCall,
     ToolChoice,
     ToolDefinition,
+    TextContentPart,
 )
 from app.ai.errors import ProviderError, ProviderErrorCategory, ProviderResponseError
 from app.services.deepseek_provider import DeepSeekProviderError, _post_chat_completion
@@ -34,8 +37,8 @@ class _FakeResponse:
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool:
         return False
 
-    def read(self) -> bytes:
-        return self._body
+    def read(self, size: int = -1) -> bytes:
+        return self._body if size < 0 else self._body[:size]
 
     def getcode(self) -> int:
         return self._status
@@ -136,6 +139,105 @@ def test_legacy_direct_transport_is_rejected_without_a_gateway_context() -> None
 def test_route_target_rejects_unsafe_provider_endpoints(unsafe_endpoint: str) -> None:
     with pytest.raises(GatewayContractError):
         replace(_route(), endpoint_url=unsafe_endpoint)
+
+
+def test_inline_image_contract_requires_private_bytes_and_explicit_vision() -> None:
+    private_image = b"private-candidate-page"
+    image = InlineImageContentPart(
+        media_type="image/jpeg",
+        data=private_image,
+        detail="high",
+    )
+    message = ChatMessage(
+        role="user",
+        content=(
+            TextContentPart("Transcribe the page."),
+            image,
+        ),
+    )
+
+    assert private_image.decode("ascii") not in repr(image)
+    assert private_image.decode("ascii") not in repr(message)
+    with pytest.raises(GatewayContractError, match="non_empty_bytes"):
+        InlineImageContentPart(
+            media_type="image/jpeg",
+            data="https://untrusted.invalid/page.jpg",  # type: ignore[arg-type]
+        )
+    with pytest.raises(GatewayContractError, match="require_user_role"):
+        ChatMessage(role="system", content=(image,))
+    with pytest.raises(GatewayContractError, match="require_vision"):
+        CompletionRequest(
+            feature="resume_ocr_page",
+            organization_id="organization-001",
+            messages=(message,),
+            data_classification="candidate_image",
+        )
+    with pytest.raises(GatewayContractError, match="candidate_image_classification"):
+        CompletionRequest(
+            feature="resume_ocr_page",
+            organization_id="organization-001",
+            messages=(message,),
+            required_capabilities=frozenset({"chat", "vision"}),
+        )
+
+
+def test_openai_compatible_adapter_serializes_inline_image_only_at_transport() -> None:
+    captured: dict[str, Any] = {}
+    image_bytes = b"private-candidate-page"
+    request = CompletionRequest(
+        feature="resume_ocr_page",
+        organization_id="organization-001",
+        messages=(
+            ChatMessage(role="system", content="Transcribe only."),
+            ChatMessage(
+                role="user",
+                content=(
+                    TextContentPart("Read every visible line."),
+                    InlineImageContentPart(
+                        media_type="image/jpeg",
+                        data=image_bytes,
+                        detail="high",
+                    ),
+                ),
+            ),
+        ),
+        required_capabilities=frozenset({"chat", "vision"}),
+        data_classification="candidate_image",
+        max_output_tokens=4096,
+        temperature=0,
+    )
+
+    def fake_urlopen(http_request: Any, *, timeout: float) -> _FakeResponse:
+        captured["request"] = http_request
+        assert timeout == 12
+        return _FakeResponse(
+            {
+                "id": "vision-response-001",
+                "model": "MiniMax-M3",
+                "choices": [
+                    {"finish_reason": "stop", "message": {"content": "transcribed text"}}
+                ],
+                "usage": {"prompt_tokens": 20, "completion_tokens": 3},
+            }
+        )
+
+    result = OpenAICompatibleAdapter(opener=fake_urlopen).complete(request, _route())
+
+    payload = json.loads(captured["request"].data.decode("utf-8"))
+    parts = payload["messages"][1]["content"]
+    assert parts[0] == {"type": "text", "text": "Read every visible line."}
+    assert parts[1] == {
+        "type": "image_url",
+        "image_url": {
+            "url": (
+                "data:image/jpeg;base64,"
+                + base64.b64encode(image_bytes).decode("ascii")
+            ),
+            "detail": "high",
+        },
+    }
+    assert result.content == "transcribed text"
+    assert image_bytes.decode("ascii") not in repr(request)
 
 
 def test_openai_compatible_adapter_serializes_resolved_route_and_normalizes_usage(
@@ -337,6 +439,24 @@ def test_openai_compatible_adapter_marks_network_failure_as_possibly_billed() ->
     assert raised.value.category is ProviderErrorCategory.NETWORK
     assert raised.value.retryable is True
     assert raised.value.may_have_billed is True
+
+
+def test_openai_compatible_adapter_rejects_oversized_response_body() -> None:
+    def fake_urlopen(*args: object, **kwargs: object) -> _FakeResponse:
+        return _FakeResponse(
+            {
+                "id": "oversized-response",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": "x" * (8 * 1024 * 1024)},
+                    }
+                ],
+            }
+        )
+
+    with pytest.raises(ProviderResponseError):
+        OpenAICompatibleAdapter(opener=fake_urlopen).complete(_request(), _route())
 
 
 def test_openai_compatible_adapter_rejects_malformed_response() -> None:

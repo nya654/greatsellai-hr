@@ -10,12 +10,14 @@ from app.ai.contracts import (
     ChatMessage,
     CompletionRequest,
     CompletionResult,
+    InlineImageContentPart,
     NormalizedUsage,
     RouteAuthentication,
     RouteTarget,
     ToolCall,
     ToolChoice,
     ToolDefinition,
+    TextContentPart,
 )
 from app.ai.errors import ProviderError, ProviderErrorCategory
 
@@ -23,6 +25,7 @@ __all__ = [
     "ChatMessage",
     "CompletionRequest",
     "CompletionResult",
+    "InlineImageContentPart",
     "NormalizedUsage",
     "ProviderError",
     "ProviderErrorCategory",
@@ -31,4 +34,5 @@ __all__ = [
     "ToolCall",
     "ToolChoice",
     "ToolDefinition",
+    "TextContentPart",
 ]

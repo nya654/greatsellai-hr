@@ -6,6 +6,7 @@ model, base URL, credential name, or business prompt.
 
 from __future__ import annotations
 
+import base64
 import json
 import socket
 import urllib.error
@@ -19,11 +20,13 @@ from app.ai.contracts import (
     CompletionRequest,
     CompletionResult,
     GatewayContractError,
+    InlineImageContentPart,
     NormalizedUsage,
     RouteTarget,
     ToolCall,
     ToolChoice,
     ToolDefinition,
+    TextContentPart,
 )
 from app.ai.errors import (
     ProviderConfigurationError,
@@ -33,6 +36,8 @@ from app.ai.errors import (
 )
 
 
+_MAX_REQUEST_BODY_BYTES = 64 * 1024 * 1024
+_MAX_RESPONSE_BODY_BYTES = 8 * 1024 * 1024
 _PROTECTED_DEFAULT_KEYS = frozenset(
     {
         "model",
@@ -74,10 +79,15 @@ class OpenAICompatibleAdapter(CompletionAdapter):
         opener = self._opener or urllib.request.urlopen
         try:
             with opener(http_request, timeout=route.timeout_seconds) as response:
-                raw_body = response.read()
-                raw_response = json.loads(raw_body.decode("utf-8"))
                 status_code = _response_status_code(response)
                 provider_request_id = _provider_request_id(response.headers)
+                raw_body = response.read(_MAX_RESPONSE_BODY_BYTES + 1)
+                if len(raw_body) > _MAX_RESPONSE_BODY_BYTES:
+                    raise ProviderResponseError(
+                        http_status_code=status_code,
+                        provider_request_id=provider_request_id,
+                    )
+                raw_response = json.loads(raw_body.decode("utf-8"))
         except urllib.error.HTTPError as exc:
             raise _http_error_to_provider_error(exc) from exc
         except (TimeoutError, socket.timeout) as exc:
@@ -130,11 +140,17 @@ class OpenAICompatibleAdapter(CompletionAdapter):
         self._validate_route(route)
         payload = _serialize_completion_request(request, route)
         headers = _request_headers(route)
+        encoded_payload = json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if len(encoded_payload) > _MAX_REQUEST_BODY_BYTES:
+            raise ProviderConfigurationError()
         return urllib.request.Request(
             route.endpoint_url,
-            data=json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode(
-                "utf-8"
-            ),
+            data=encoded_payload,
             headers=headers,
             method="POST",
         )
@@ -176,7 +192,7 @@ def _serialize_message(message: ChatMessage) -> dict[str, Any]:
     # turns a valid tool-result continuation into a malformed second request
     # for providers that distinguish a missing field from ``null``.
     if message.content is not None or (message.role == "assistant" and message.tool_calls):
-        payload["content"] = message.content
+        payload["content"] = _serialize_message_content(message.content)
     if message.name is not None:
         payload["name"] = message.name
     if message.tool_call_id is not None:
@@ -184,6 +200,30 @@ def _serialize_message(message: ChatMessage) -> dict[str, Any]:
     if message.tool_calls:
         payload["tool_calls"] = [_serialize_tool_call(call) for call in message.tool_calls]
     return payload
+
+
+def _serialize_message_content(
+    content: str | tuple[TextContentPart | InlineImageContentPart, ...] | None,
+) -> str | list[dict[str, Any]] | None:
+    if not isinstance(content, tuple):
+        return content
+    parts: list[dict[str, Any]] = []
+    for part in content:
+        if isinstance(part, TextContentPart):
+            parts.append({"type": "text", "text": part.text})
+            continue
+        assert isinstance(part, InlineImageContentPart)
+        encoded = base64.b64encode(part.data).decode("ascii")
+        parts.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{part.media_type};base64,{encoded}",
+                    "detail": part.detail,
+                },
+            }
+        )
+    return parts
 
 
 def _serialize_tool_call(call: ToolCall) -> dict[str, Any]:

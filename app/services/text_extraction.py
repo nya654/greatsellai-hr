@@ -11,11 +11,7 @@ import fitz
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
-from app.services.tencent_ocr_provider import (
-    TencentOcrConfig,
-    TencentOcrError,
-    extract_pdf_page_text,
-)
+from app.services.document_ocr_service import DocumentOcrEngine, DocumentOcrError
 
 
 NON_WHITESPACE = re.compile(r"\S")
@@ -163,9 +159,9 @@ class _TextQuality:
     def source_text_unreliable(self) -> bool:
         """Whether unrecovered text is too damaged to support AI conclusions.
 
-        A low signal remains useful for asking PyMuPDF/Tencent OCR to repair
-        the page.  It becomes a user-visible extraction failure only when at
-        least ten percent of the readable payload is made up of known broken
+        A low signal remains useful for asking PyMuPDF or the configured OCR
+        engine to repair the page. It becomes a user-visible extraction failure
+        only when at least ten percent of the readable payload is made up of known broken
         Unicode glyphs.  Ordinary layout symbols are intentionally excluded.
         """
 
@@ -187,7 +183,7 @@ def extract_pdf_text(
     *,
     min_text_chars_per_page: int,
     ocr_sparse_text_chars_per_page: int = 200,
-    tencent_ocr_config: TencentOcrConfig | None = None,
+    ocr_engine: DocumentOcrEngine | None = None,
     max_pages: int | None = None,
     max_text_chars: int | None = None,
 ) -> PdfExtractionResult:
@@ -268,7 +264,7 @@ def extract_pdf_text(
     ocr_successful_pages: set[int] = set()
     ocr_selected_pages: set[int] = set()
     ocr_failed_pages: set[int] = set()
-    if tencent_ocr_config is not None:
+    if ocr_engine is not None:
         for page_no, text in enumerate(page_texts, start=1):
             page_index = page_no - 1
             current_quality = _assess_text_quality(text)
@@ -280,12 +276,11 @@ def extract_pdf_text(
                 continue
             ocr_attempted_pages.add(page_no)
             try:
-                ocr_text = extract_pdf_page_text(
+                ocr_text = ocr_engine.extract_pdf_page(
                     path=path,
                     page_no=page_no,
-                    config=tencent_ocr_config,
                 )
-            except TencentOcrError:
+            except DocumentOcrError:
                 ocr_failed_pages.add(page_no)
                 continue
             ocr_successful_pages.add(page_no)
@@ -297,7 +292,7 @@ def extract_pdf_text(
             ):
                 page_texts[page_index] = ocr_text
                 ocr_selected_pages.add(page_no)
-                _append_parser_label(parser_labels, "tencent-ocr")
+                _append_parser_label(parser_labels, ocr_engine.parser_label)
 
     pages: list[ExtractedPage] = []
     flags: list[str] = []
@@ -323,7 +318,7 @@ def extract_pdf_text(
             page_no in ocr_failed_pages
             and non_whitespace_chars < min_text_chars_per_page
         ):
-            flags.append(f"page_{page_no}_tencent_ocr_failed")
+            flags.append(f"page_{page_no}_ocr_failed")
 
     parsed_page_count = sum(
         page.non_whitespace_chars >= min_text_chars_per_page for page in pages

@@ -36,6 +36,9 @@ x-app-environment: &app-environment
   # Preserve the historic Basic action unless the deployment explicitly
   # selects Tencent's higher-precision GeneralAccurateOCR endpoint.
   TENCENT_OCR_API: ${TENCENT_OCR_API:-GeneralBasicOCR}
+  # Safe release default remains Tencent. Switch only after the AI Gateway
+  # vision route and server-only credential are configured for this environment.
+  RESUME_V3_DOCUMENT_OCR_BACKEND: ${RESUME_V3_DOCUMENT_OCR_BACKEND:-tencent}
   OCR_SPARSE_TEXT_CHARS_PER_PAGE: ${OCR_SPARSE_TEXT_CHARS_PER_PAGE:-200}
   RESUME_V3_AI_EXTRACTION_JOB_MAX_ATTEMPTS: ${RESUME_V3_AI_EXTRACTION_JOB_MAX_ATTEMPTS:-3}
   RESUME_V3_AI_EXTRACTION_JOB_LEASE_SECONDS: ${RESUME_V3_AI_EXTRACTION_JOB_LEASE_SECONDS:-180}

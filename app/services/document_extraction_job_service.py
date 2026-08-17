@@ -30,6 +30,15 @@ from app.services.contact_extraction_service import (
     ContactSourceBlock,
     contact_storage_values,
 )
+from app.services.ai_gateway_service import (
+    AiGatewayError,
+    resolve_active_route_policy_version_id,
+)
+from app.services.document_ocr_service import (
+    AiGatewayDocumentOcrEngine,
+    DocumentOcrEngine,
+    TencentDocumentOcrEngine,
+)
 from app.services.tencent_ocr_provider import TencentOcrConfig
 from app.services.workspace_background_lane_service import (
     acquire_workspace_background_lane,
@@ -187,8 +196,9 @@ def _failed_ocr_usage_delta(
     )
     inferred_image_attempt = (
         document_kind == "image"
-        and error_code.startswith("tencent_ocr_")
-        and error_code != "tencent_ocr_not_configured"
+        and error_code.startswith(("tencent_ocr_", "document_ocr_"))
+        and error_code
+        not in {"tencent_ocr_not_configured", "document_ocr_not_configured"}
     )
     if attempted_pages == 0 and inferred_image_attempt:
         attempted_pages = 1
@@ -726,11 +736,16 @@ def _process_claimed_job(
             worker_id=worker_id,
             claimed=claimed,
         )
+        ocr_engine = _document_ocr_engine(
+            database,
+            settings=settings,
+            claimed=claimed,
+        )
         result = extract_document_text(
             path,
             min_text_chars_per_page=settings.min_text_chars_per_page,
             ocr_sparse_text_chars_per_page=settings.ocr_sparse_text_chars_per_page,
-            tencent_ocr_config=_tencent_ocr_config(settings),
+            ocr_engine=ocr_engine,
             max_pages=settings.document_max_pages,
             max_text_chars=settings.document_max_text_chars,
             max_archive_uncompressed_bytes=settings.document_max_archive_uncompressed_bytes,
@@ -910,6 +925,40 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _document_ocr_engine(
+    database: Database,
+    *,
+    settings: AppSettings,
+    claimed: ClaimedDocumentExtractionJob,
+) -> DocumentOcrEngine | None:
+    if settings.document_ocr_backend == "disabled":
+        return None
+    if settings.document_ocr_backend == "tencent":
+        config = _tencent_ocr_config(settings)
+        return TencentDocumentOcrEngine(config) if config is not None else None
+    if settings.document_ocr_backend != "ai_gateway":
+        raise DocumentExtractionJobError("document_ocr_backend_invalid")
+
+    try:
+        with database.session_factory() as session:
+            with _organization_session(session, claimed.organization_id):
+                route_policy_version_id = resolve_active_route_policy_version_id(
+                    session,
+                    settings=settings,
+                    feature="resume_ocr_page",
+                )
+                session.rollback()
+    except AiGatewayError as exc:
+        raise DocumentExtractionJobError("document_ocr_not_configured") from exc
+    return AiGatewayDocumentOcrEngine(
+        database=database,
+        settings=settings,
+        organization_id=claimed.organization_id,
+        resume_id=claimed.resume_id,
+        route_policy_version_id=route_policy_version_id,
+    )
 
 
 def _tencent_ocr_config(settings: AppSettings) -> TencentOcrConfig | None:
@@ -1127,11 +1176,13 @@ def _is_retryable_document_error(error: str) -> bool:
     return error in {
         "office_conversion_timed_out",
         "spreadsheet_conversion_timed_out",
-        # Tencent network/provider failures are transiently retried through
+        # Cloud OCR network/provider failures are transiently retried through
         # the existing durable document queue. Missing credentials and invalid
         # image inputs intentionally remain actionable rather than looping.
         "tencent_ocr_request_failed",
         "tencent_ocr_rate_limited",
+        "document_ocr_request_failed",
+        "document_ocr_rate_limited",
         "document_extraction_worker_error",
         "document_extraction_persist_failed",
     }
@@ -1141,7 +1192,7 @@ def _document_retry_delay_seconds(*, error: str, attempt_count: int) -> int:
     """Delay cloud OCR throttling enough to avoid immediately amplifying it."""
 
     exponent = max(attempt_count - 1, 0)
-    if error == "tencent_ocr_rate_limited":
+    if error in {"tencent_ocr_rate_limited", "document_ocr_rate_limited"}:
         return min(300, 30 * (2**exponent))
     return min(60, 2**exponent)
 

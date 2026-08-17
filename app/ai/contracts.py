@@ -20,6 +20,10 @@ from urllib.parse import urlsplit
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 
+_MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024
+_MAX_INLINE_IMAGE_TOTAL_BYTES = 40 * 1024 * 1024
+_MAX_MESSAGE_CONTENT_PARTS = 16
+
 
 class GatewayContractError(ValueError):
     """Raised when a gateway boundary object is malformed before transport."""
@@ -120,11 +124,55 @@ class ToolCall:
 
 
 @dataclass(frozen=True, slots=True)
+class TextContentPart:
+    """One provider-neutral textual part in a multimodal user message."""
+
+    text: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.text, str) or not self.text:
+            raise GatewayContractError("message_text_part_must_be_non_empty_text")
+
+
+@dataclass(frozen=True, slots=True)
+class InlineImageContentPart:
+    """Private image bytes that may be encoded only by a protocol adapter.
+
+    Business services cannot supply an image URL or provider-shaped JSON.  The
+    byte payload is hidden from repr/comparison so ordinary traces and test
+    diffs cannot accidentally retain a candidate page.
+    """
+
+    media_type: Literal["image/png", "image/jpeg", "image/webp", "image/gif"]
+    data: bytes = field(repr=False, compare=False)
+    detail: Literal["low", "default", "high"] = "high"
+
+    def __post_init__(self) -> None:
+        if self.media_type not in {
+            "image/png",
+            "image/jpeg",
+            "image/webp",
+            "image/gif",
+        }:
+            raise GatewayContractError("message_image_media_type_not_supported")
+        if not isinstance(self.data, bytes) or not self.data:
+            raise GatewayContractError("message_image_data_must_be_non_empty_bytes")
+        if len(self.data) > _MAX_INLINE_IMAGE_BYTES:
+            raise GatewayContractError("message_image_data_too_large")
+        if self.detail not in {"low", "default", "high"}:
+            raise GatewayContractError("message_image_detail_not_supported")
+
+
+ChatContentPart: TypeAlias = TextContentPart | InlineImageContentPart
+ChatContent: TypeAlias = str | tuple[ChatContentPart, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ChatMessage:
-    """A canonical chat message accepted by all text-generation adapters."""
+    """A canonical text or controlled-inline-image chat message."""
 
     role: Literal["system", "developer", "user", "assistant", "tool"]
-    content: str | None = None
+    content: ChatContent | None = None
     name: str | None = None
     tool_call_id: str | None = None
     tool_calls: tuple[ToolCall, ...] = ()
@@ -133,8 +181,23 @@ class ChatMessage:
         allowed_roles = {"system", "developer", "user", "assistant", "tool"}
         if self.role not in allowed_roles:
             raise GatewayContractError("message_role_not_supported")
-        if self.content is not None and not isinstance(self.content, str):
-            raise GatewayContractError("message_content_must_be_text")
+        content = self.content
+        if content is not None and not isinstance(content, (str, tuple)):
+            raise GatewayContractError("message_content_must_be_text_or_parts")
+        if isinstance(content, tuple):
+            if not content:
+                raise GatewayContractError("message_content_parts_required")
+            if len(content) > _MAX_MESSAGE_CONTENT_PARTS:
+                raise GatewayContractError("message_content_parts_too_many")
+            if any(
+                not isinstance(part, (TextContentPart, InlineImageContentPart))
+                for part in content
+            ):
+                raise GatewayContractError("message_content_parts_invalid")
+            if any(isinstance(part, InlineImageContentPart) for part in content):
+                if self.role != "user":
+                    raise GatewayContractError("message_images_require_user_role")
+            object.__setattr__(self, "content", tuple(content))
         if self.content is None and not self.tool_calls:
             raise GatewayContractError("message_content_or_tool_calls_required")
         object.__setattr__(self, "name", _optional_text(self.name, field_name="message_name"))
@@ -226,6 +289,7 @@ class CompletionRequest:
     tools: tuple[ToolDefinition, ...] = ()
     tool_choice: ToolChoice | None = None
     required_capabilities: frozenset[str] = frozenset()
+    data_classification: Literal["candidate_text", "candidate_image"] = "candidate_text"
     max_output_tokens: int | None = None
     temperature: float | None = None
     metadata: Mapping[str, object] = field(default_factory=dict, repr=False)
@@ -280,6 +344,25 @@ class CompletionRequest:
         ):
             raise GatewayContractError("required_capabilities_must_be_non_empty_strings")
         object.__setattr__(self, "required_capabilities", capabilities)
+
+        if self.data_classification not in {"candidate_text", "candidate_image"}:
+            raise GatewayContractError("completion_data_classification_not_supported")
+        inline_images = [
+            part
+            for message in messages
+            if isinstance(message.content, tuple)
+            for part in message.content
+            if isinstance(part, InlineImageContentPart)
+        ]
+        has_inline_image = bool(inline_images)
+        if sum(len(image.data) for image in inline_images) > _MAX_INLINE_IMAGE_TOTAL_BYTES:
+            raise GatewayContractError("completion_image_data_total_too_large")
+        if has_inline_image and "vision" not in capabilities:
+            raise GatewayContractError("completion_images_require_vision_capability")
+        if has_inline_image and self.data_classification != "candidate_image":
+            raise GatewayContractError("completion_images_require_candidate_image_classification")
+        if self.data_classification == "candidate_image" and not has_inline_image:
+            raise GatewayContractError("candidate_image_classification_requires_image")
 
         if self.max_output_tokens is not None:
             if isinstance(self.max_output_tokens, bool) or self.max_output_tokens <= 0:

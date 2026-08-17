@@ -184,7 +184,47 @@ def test_configured_image_upload_only_queues_the_document_worker(tmp_path) -> No
             assert job.status == "queued"
 
 
-def test_image_upload_requires_tencent_ocr_configuration(client) -> None:
+def test_ai_gateway_ocr_backend_pins_one_route_for_document(
+    ai_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_resolve(session, *, settings, feature: str) -> str:
+        del session, settings
+        captured["feature"] = feature
+        return "vision-route-version-1"
+
+    monkeypatch.setattr(
+        job_service,
+        "resolve_active_route_policy_version_id",
+        fake_resolve,
+    )
+    settings = replace(
+        ai_client.app.state.settings,
+        document_ocr_backend="ai_gateway",
+    )
+    claimed = job_service.ClaimedDocumentExtractionJob(
+        job_id="job-1",
+        organization_id="00000000-0000-4000-8000-000000000001",
+        resume_id="resume-1",
+        workspace_lane_token="lane-1",
+    )
+
+    engine = job_service._document_ocr_engine(
+        ai_client.app.state.database,
+        settings=settings,
+        claimed=claimed,
+    )
+
+    assert isinstance(engine, job_service.AiGatewayDocumentOcrEngine)
+    assert engine.organization_id == claimed.organization_id
+    assert engine.resume_id == claimed.resume_id
+    assert engine.route_policy_version_id == "vision-route-version-1"
+    assert captured["feature"] == "resume_ocr_page"
+
+
+def test_image_upload_requires_document_ocr_configuration(client) -> None:
     response = client.post(
         "/v1/resumes/upload",
         files={
@@ -197,7 +237,7 @@ def test_image_upload_requires_tencent_ocr_configuration(client) -> None:
     )
 
     assert response.status_code == 422, response.text
-    assert response.json()["detail"] == "tencent_ocr_not_configured"
+    assert response.json()["detail"] == "document_ocr_not_configured"
 
 
 def test_document_worker_persists_source_blocks_then_queues_ai_job(

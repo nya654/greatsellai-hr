@@ -146,14 +146,19 @@ def validate_pdf_resume_upload(
         if submitted_name.lower().endswith(".pdf") and str(exc) == "invalid_document_signature":
             raise UploadValidationError("not_a_pdf") from exc
         raise UploadValidationError(str(exc)) from exc
-    # Image resumes have no native text layer. They would otherwise be
-    # accepted and only fail later in the durable worker, which is misleading
-    # now that Tencent is the sole image OCR provider. Keep this after the
-    # signature gate so a spoofed image still reports its invalid file.
-    if suffix in {".png", ".jpg", ".jpeg"} and (
-        not settings.tencent_secret_id or not settings.tencent_secret_key
-    ):
-        raise UploadValidationError("tencent_ocr_not_configured")
+    # Image resumes have no native text layer. Reject them before durable storage
+    # when the deployment has deliberately disabled OCR or lacks any credential
+    # path for the selected backend. Route/model authorization is revalidated by
+    # the worker immediately before a provider call.
+    image_ocr_configured = (
+        settings.document_ocr_backend == "tencent"
+        and bool(settings.tencent_secret_id and settings.tencent_secret_key)
+    ) or (
+        settings.document_ocr_backend == "ai_gateway"
+        and ai_gateway_credentials_configured(settings)
+    )
+    if suffix in {".png", ".jpg", ".jpeg"} and not image_ocr_configured:
+        raise UploadValidationError("document_ocr_not_configured")
     return submitted_name
 
 

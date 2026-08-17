@@ -258,7 +258,13 @@ def _library_state_for_tone(
     )
 
 
-_STATUS_TONE_KEYS = ("processing", "attention", "unscored", "summary_pending")
+_STATUS_TONE_KEYS = (
+    "processing",
+    "attention",
+    "unscored",
+    "summary_pending",
+    "non_resume",
+)
 
 
 def _status_tone_counts(
@@ -314,13 +320,13 @@ def list_resume_library(
     mailbox_config_id: str | None = None,
     viewer_user_id: str | None = None,
     status_filter: Literal[
-        "processing", "attention", "unscored", "summary_pending"
+        "processing", "attention", "unscored", "summary_pending", "non_resume"
     ] | None = None,
 ) -> ResumeLibraryResponse:
     """List uploaded resume versions without exposing raw extracted facts.
 
     ``status_filter`` narrows the view to one mutually exclusive status tab.
-    The four buckets depend on per-resume job states that are impractical to
+    The five buckets depend on per-resume job states that are impractical to
     express as SQL, so the filtered path classifies every matching resume in
     Python before paginating.  Without a filter the common list uses the
     existing SQL-paged fast path.

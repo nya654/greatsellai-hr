@@ -17,6 +17,7 @@ import {
 } from "../../backoffice/utils/ai-extraction";
 import { formatLibraryDate } from "../../backoffice/utils/formatters";
 import {
+  hasNonResumeDocument,
   hasSourceTextQualityIssue,
   hasSupersededReparseVersion,
 } from "../../backoffice/utils/resume-source-quality";
@@ -162,8 +163,11 @@ function analysisActivityAriaLabel(estimate: ResumeAnalysisWaitEstimate): string
 
 function resumeLibraryStatus(item: ResumeLibraryItem): {
   label: string;
-  tone: "ready" | "progress" | "attention" | "waiting";
+  tone: "ready" | "progress" | "attention" | "waiting" | "non-resume";
 } {
+  if (hasNonResumeDocument(item.quality_flags)) {
+    return { label: "非简历文档", tone: "non-resume" };
+  }
   if (hasSourceTextQualityIssue(item.quality_flags)) {
     return { label: RESUME_EXTRACTION_FAILED_LABEL, tone: "attention" };
   }
@@ -235,6 +239,7 @@ function resumeLibraryStatus(item: ResumeLibraryItem): {
 
 /** Whether one-click retry has any branch to dispatch for this row. */
 function isRowRetryable(item: ResumeLibraryItem): boolean {
+  if (hasNonResumeDocument(item.quality_flags)) return false;
   const readyForProcessing = item.is_active && item.extraction_status === "ready";
   // First-time summary/score: a ready resume with a missing result is retryable.
   const missingScore = readyForProcessing && item.score_status == null;
@@ -266,6 +271,7 @@ const STATUS_TAB_DEFINITIONS: ReadonlyArray<{
   { key: "attention", label: "需处理" },
   { key: "unscored", label: "待评分" },
   { key: "summary_pending", label: "待总结" },
+  { key: "non_resume", label: "非简历" },
 ];
 
 function waitEstimateLabel(estimate: ResumeAnalysisWaitEstimate): string {
@@ -366,6 +372,9 @@ function workExperienceLabel(months: number): string {
 }
 
 function candidateProfileText(item: ResumeLibraryItem): string {
+  if (hasNonResumeDocument(item.quality_flags)) {
+    return "非简历文档";
+  }
   const degree = item.highest_degree;
   const hasProfileFacts = Boolean(
     item.graduation_month ||
@@ -587,7 +596,9 @@ export function ResumeLibraryPage({
             statusFilter,
           );
           for (const item of response.items) {
-            collected.add(item.resume_id);
+            if (!hasNonResumeDocument(item.quality_flags)) {
+              collected.add(item.resume_id);
+            }
           }
           if (response.items.length < collectPageSize) break;
           collectPage += 1;
@@ -776,7 +787,7 @@ export function ResumeLibraryPage({
                         indeterminate={
                           someOnPageSelected && !allOnPageSelected
                         }
-                        disabled={selectAllRequested}
+                        disabled={selectAllRequested || statusFilter === "non_resume"}
                         onChange={(event) =>
                           void toggleSelectAll(event.target.checked)
                         }
@@ -792,6 +803,9 @@ export function ResumeLibraryPage({
                 <tbody>
                   {items.map((item) => {
                     const status = resumeLibraryStatus(item);
+                    const nonResumeDocument = hasNonResumeDocument(
+                      item.quality_flags,
+                    );
                     const sourceTextIssue = hasSourceTextQualityIssue(
                       item.quality_flags,
                     );
@@ -807,6 +821,7 @@ export function ResumeLibraryPage({
                       <tr
                         className={[
                           selectedResumeId === item.resume_id ? "is-selected" : "",
+                          nonResumeDocument ? "has-non-resume-document" : "",
                           sourceTextIssue ? "has-source-quality-issue" : "",
                           supersededReparse ? "has-superseded-reparse" : "",
                         ]
@@ -822,7 +837,9 @@ export function ResumeLibraryPage({
                           <SemiCheckbox
                             aria-label={`选择 ${item.display_name?.trim() || "未命名候选人"}`}
                             checked={selectedResumeIds.has(item.resume_id)}
-                            disabled={rowRetrying || selectAllRequested}
+                            disabled={
+                              rowRetrying || selectAllRequested || nonResumeDocument
+                            }
                             onChange={(event) =>
                               toggleRowSelection(item, event.target.checked)
                             }
@@ -863,6 +880,7 @@ export function ResumeLibraryPage({
                             {item.is_favorited ? "已收藏" : "收藏"}
                           </button>
                           {item.analysis_wait_estimate &&
+                          !nonResumeDocument &&
                           !sourceTextIssue &&
                           !supersededReparse ? (
                             <AnalysisActivity
@@ -875,13 +893,15 @@ export function ResumeLibraryPage({
                               <span
                                 className={`library-status is-${status.tone}`}
                                 title={
-                                  sourceTextIssue
-                                    ? `${RESUME_EXTRACTION_FAILED_LABEL}。请重新解析原文件后重试。`
-                                    : supersededReparse
-                                      ? "候选人已有更新版本，此解析版本不会被启用。"
-                                      : resumeExtractionStatusMessage(
-                                        item.ai_extraction_error,
-                                      )
+                                  nonResumeDocument
+                                    ? "该文件未识别为简历，无需重试。"
+                                    : sourceTextIssue
+                                      ? `${RESUME_EXTRACTION_FAILED_LABEL}。请重新解析原文件后重试。`
+                                      : supersededReparse
+                                        ? "候选人已有更新版本，此解析版本不会被启用。"
+                                        : resumeExtractionStatusMessage(
+                                          item.ai_extraction_error,
+                                        )
                                 }
                               >
                                 {status.label}
@@ -914,7 +934,11 @@ export function ResumeLibraryPage({
                         </div>
                       </td>
                       <td className="library-summary-cell">
-                        {sourceTextIssue ? (
+                        {nonResumeDocument ? (
+                          <span className="library-quality-copy">
+                            非简历文档，不生成总结
+                          </span>
+                        ) : sourceTextIssue ? (
                           <span className="library-quality-copy">
                             {RESUME_EXTRACTION_FAILED_LABEL}
                           </span>
@@ -947,7 +971,11 @@ export function ResumeLibraryPage({
                         )}
                       </td>
                       <td>
-                        {sourceTextIssue ? (
+                        {nonResumeDocument ? (
+                          <span className="library-quality-copy">
+                            非简历文档，不参与评分
+                          </span>
+                        ) : sourceTextIssue ? (
                           <span className="library-quality-copy">
                             请先打开并重新解析
                           </span>

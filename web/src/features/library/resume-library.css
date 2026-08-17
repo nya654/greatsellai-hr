@@ -183,6 +183,16 @@
   border-color: #fecdca;
 }
 
+.backoffice-ui-root .resume-library-page .library-status.is-non-resume {
+  color: #475467;
+  background: #f2f4f7;
+  border-color: #d0d5dd;
+}
+
+.backoffice-ui-root .resume-library-page .library-processing-meta .library-status.is-non-resume {
+  font-weight: 600;
+}
+
 .backoffice-ui-root .resume-library-page .library-processing-meta {
   display: flex;
   flex-wrap: wrap;

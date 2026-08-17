@@ -1507,7 +1507,8 @@ export type ResumeLibraryStatusFilter =
   | "processing"
   | "attention"
   | "unscored"
-  | "summary_pending";
+  | "summary_pending"
+  | "non_resume";
 
 export interface ResumeRetryQueuedItem {
   resume_id: string;

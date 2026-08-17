@@ -6626,7 +6626,7 @@ def create_app(settings_override: AppSettings | None = None) -> FastAPI:
         page_size: Annotated[int, Query(ge=1, le=100)] = 50,
         mailbox_id: str | None = Query(default=None, min_length=1, max_length=64),
         status_filter: Literal[
-            "processing", "attention", "unscored", "summary_pending"
+            "processing", "attention", "unscored", "summary_pending", "non_resume"
         ]
         | None = Query(default=None),
         principal: AuthPrincipal = Depends(require_single_admin),

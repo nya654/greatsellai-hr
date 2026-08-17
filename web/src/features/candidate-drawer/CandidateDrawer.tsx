@@ -14,6 +14,7 @@ import { TableSkeleton } from "../../backoffice/ui/TableSkeleton";
 import { formatLibraryDate } from "../../backoffice/utils/formatters";
 import { experienceTypeOptions } from "../filter/filter-model";
 import {
+  hasNonResumeDocument,
   hasSourceTextQualityIssue,
   hasSupersededReparseVersion,
 } from "../../backoffice/utils/resume-source-quality";
@@ -142,6 +143,7 @@ export function CandidateDrawer({
   const [deleting, setDeleting] = useState(false);
   const currentSummary =
     summaries.find((item) => item.is_current) ?? summaries[0] ?? null;
+  const nonResumeDocument = hasNonResumeDocument(review?.quality_flags);
   const sourceTextIssue = hasSourceTextQualityIssue(review?.quality_flags);
   const supersededReparse = hasSupersededReparseVersion(review?.quality_flags);
   const selectedResumeVersion = candidate
@@ -204,7 +206,9 @@ export function CandidateDrawer({
         <div className="drawer-title-wrap">
           <h2>
             {candidate?.candidateName ?? "候选人详情"}
-            {sourceTextIssue ? (
+            {nonResumeDocument ? (
+              <span className="tiny-badge">非简历文档</span>
+            ) : sourceTextIssue ? (
               <span className="tiny-badge is-attention">{RESUME_EXTRACTION_FAILED_LABEL}</span>
             ) : supersededReparse ? (
               <span className="tiny-badge is-attention">当前版本已更新</span>
@@ -300,13 +304,14 @@ export function CandidateDrawer({
           </button>
         </div>
       </header>
-      {sourceTextIssue && (
+      {nonResumeDocument && <NonResumeDocumentNotice />}
+      {sourceTextIssue && !nonResumeDocument && (
         <SourceTextQualityNotice
           busy={reparsingSource}
           onReparse={onReparseSource}
         />
       )}
-      {supersededReparse && !sourceTextIssue && <SupersededReparseNotice />}
+      {supersededReparse && !sourceTextIssue && !nonResumeDocument && <SupersededReparseNotice />}
       <div className="drawer-body">
         <div className="drawer-navigation">
           {review?.contacts.length ? (
@@ -362,7 +367,12 @@ export function CandidateDrawer({
               review={review}
             />
           ) : drawerTab === "summary" ? (
-            sourceTextIssue ? (
+            nonResumeDocument ? (
+              <NonResumeDocumentBlockedContent
+                label="总结"
+                onOpenEvidence={() => onTabChange("evidence")}
+              />
+            ) : sourceTextIssue ? (
               <SourceTextQualityBlockedSummary
                 busy={reparsingSource}
                 onOpenEvidence={() => onTabChange("evidence")}
@@ -385,7 +395,12 @@ export function CandidateDrawer({
               />
             )
           ) : drawerTab === "score" ? (
-            sourceTextIssue ? (
+            nonResumeDocument ? (
+              <NonResumeDocumentBlockedContent
+                label="评分"
+                onOpenEvidence={() => onTabChange("evidence")}
+              />
+            ) : sourceTextIssue ? (
               <ScoreDetailsUnavailable
                 busy={reparsingSource}
                 onOpenEvidence={() => onTabChange("evidence")}
@@ -647,6 +662,41 @@ function ScoreDetailsUnavailable({
             查看提取依据
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function NonResumeDocumentNotice() {
+  return (
+    <section className="source-quality-notice source-quality-notice-stale" role="status">
+      <span aria-hidden="true" className="source-quality-notice-icon">
+        <Icon name="document" size={18} />
+      </span>
+      <div className="source-quality-notice-copy">
+        <strong>非简历文档</strong>
+        <p>系统判断当前文件不是简历，因此不会生成 AI 总结或评分。你仍可以查看和下载原文件。</p>
+      </div>
+    </section>
+  );
+}
+
+function NonResumeDocumentBlockedContent({
+  label,
+  onOpenEvidence,
+}: {
+  label: string;
+  onOpenEvidence: () => void;
+}) {
+  return (
+    <div className="empty-state source-quality-blocked-summary">
+      <div className="empty-state-inner">
+        <span className="empty-glyph"><Icon name="document" size={23} /></span>
+        <h2>非简历文档</h2>
+        <p>当前文件未识别为简历，不生成{label}结论。</p>
+        <button className="button button-ghost" onClick={onOpenEvidence} type="button">
+          查看原文依据
+        </button>
       </div>
     </div>
   );

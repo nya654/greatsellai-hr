@@ -1038,10 +1038,26 @@ def test_core_fallback_saves_source_grounded_name_in_primary_extraction(
         assert name_job is None
 
 
-def test_structured_provider_failure_stops_at_the_attempt_budget(ai_client, monkeypatch) -> None:
+def test_empty_facts_are_classified_as_non_resume_after_compact_fallback(
+    ai_client,
+    monkeypatch,
+) -> None:
     uploaded = _upload_new_resume(ai_client)
     resume_id = str(uploaded["resume_id"])
     database = ai_client.app.state.database
+
+    def empty_model_result(**kwargs: object) -> ResumeFactsSubmission:
+        raise DeepSeekProviderError("deepseek_empty_structured_facts")
+
+    monkeypatch.setattr(job_service, "extract_resume_facts", empty_model_result)
+    monkeypatch.setattr(job_service, "extract_resume_core_facts", empty_model_result)
+
+    # The rich attempt returns no facts and schedules the compact fallback.
+    assert job_service.run_ai_extraction_worker_once(
+        database,
+        settings=ai_client.app.state.settings,
+        worker_id="test-worker",
+    )
     with database.session_factory() as session:
         job = session.scalar(
             select(ResumeAiExtractionJob).where(
@@ -1049,23 +1065,29 @@ def test_structured_provider_failure_stops_at_the_attempt_budget(ai_client, monk
             )
         )
         assert job is not None
-        job.max_attempts = 1
+        assert job.status == "queued"
+        assert job.last_error == "deepseek_empty_structured_facts"
+        job.next_attempt_at = None
         session.commit()
 
-    def invalid_model_result(**kwargs: object) -> ResumeFactsSubmission:
-        raise DeepSeekProviderError("deepseek_empty_structured_facts")
-
-    monkeypatch.setattr(job_service, "extract_resume_facts", invalid_model_result)
+    # The compact attempt also returns no facts, so the worker terminates the
+    # job and marks the source as a non-resume document instead of retrying.
     assert job_service.run_ai_extraction_worker_once(
         database,
         settings=ai_client.app.state.settings,
-        worker_id="test-worker",
+        worker_id="test-worker-compact",
     )
 
-    failed = ai_client.get(f"/v1/resumes/{resume_id}")
-    assert failed.status_code == 200, failed.text
-    assert failed.json()["ai_extraction_status"] == "needs_attention"
-    assert failed.json()["ai_extraction_error"] == "deepseek_empty_structured_facts"
+    detail = ai_client.get(f"/v1/resumes/{resume_id}")
+    assert detail.status_code == 200, detail.text
+    assert "non_resume_document" in detail.json()["quality_flags"]
+    assert detail.json()["ai_extraction_status"] == "completed"
+    assert detail.json()["ai_extraction_error"] == "deepseek_empty_structured_facts"
+
+    library = ai_client.get("/v1/resume-library?status_filter=non_resume")
+    assert library.status_code == 200, library.text
+    assert library.json()["total"] == 1
+    assert library.json()["items"][0]["resume_id"] == resume_id
 
 
 def test_retryable_provider_failure_is_requeued_with_backoff(ai_client, monkeypatch) -> None:

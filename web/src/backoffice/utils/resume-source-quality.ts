@@ -11,6 +11,14 @@ const POSSIBLE_MOJIBAKE_FLAG = /^page_\d+_possible_mojibake$/i;
 const REPARSE_SOURCE_SUPERSEDED_FLAG =
   "reparse_source_superseded_before_completion";
 
+const NON_RESUME_DOCUMENT_FLAG = "non_resume_document";
+
+export function hasNonResumeDocument(
+  qualityFlags: readonly string[] | null | undefined,
+): boolean {
+  return Boolean(qualityFlags?.includes(NON_RESUME_DOCUMENT_FLAG));
+}
+
 export function hasSourceTextQualityIssue(
   qualityFlags: readonly string[] | null | undefined,
 ): boolean {

@@ -61,6 +61,7 @@ def test_resume_library_returns_current_ai_summary_preview_and_score(
         "attention": 0,
         "unscored": 0,
         "summary_pending": 0,
+        "non_resume": 0,
     }
     item = payload["items"][0]
     assert set(item) == {
@@ -212,6 +213,7 @@ def test_resume_library_status_counts_cover_whole_library_not_just_page(
         "attention": 0,
         "unscored": 1,
         "summary_pending": 0,
+        "non_resume": 0,
     }
     assert [item["resume_id"] for item in payload["items"]] == [unscored_resume_id]
 

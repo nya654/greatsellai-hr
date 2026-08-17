@@ -2,7 +2,7 @@
 
 Covers the four dispatch branches (document reparse, AI extraction, summary,
 scoring), the documented skip reasons, the single/batch retry endpoints, and
-the four status-filter tabs.
+the five status-filter tabs.
 """
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from app.models import (
     ScoreTemplate,
 )
 from app.services import resume_retry_service
+from app.services.ai_extraction_job_service import NON_RESUME_DOCUMENT_FLAG
 from app.services.resume_retry_service import (
     ACTION_AI_EXTRACTION,
     ACTION_DOCUMENT_EXTRACTION,
@@ -591,6 +592,8 @@ def test_status_filter_returns_only_matching_tab(ai_client) -> None:
     _, unscored_resume_id = _save_ready(ai_client)
     # processing: active+ready with the summary still queued.
     _, processing_resume_id = _save_ready(ai_client)
+    # non_resume: a completed AI job whose source was classified as non-resume.
+    _, non_resume_resume_id = _save_ready(ai_client)
 
     database = ai_client.app.state.database
     now = datetime.now(timezone.utc)
@@ -618,6 +621,9 @@ def test_status_filter_returns_only_matching_tab(ai_client) -> None:
 
             processing_resume = session.get(Resume, processing_resume_id)
             assert processing_resume is not None
+            non_resume_resume = session.get(Resume, non_resume_resume_id)
+            assert non_resume_resume is not None
+            non_resume_resume.quality_flags = [NON_RESUME_DOCUMENT_FLAG]
             session.commit()
 
     expected = {
@@ -625,6 +631,7 @@ def test_status_filter_returns_only_matching_tab(ai_client) -> None:
         "attention": attention_resume_id,
         "unscored": unscored_resume_id,
         "processing": processing_resume_id,
+        "non_resume": non_resume_resume_id,
     }
     for tab, expected_resume_id in expected.items():
         response = ai_client.get(f"/v1/resume-library?status_filter={tab}")

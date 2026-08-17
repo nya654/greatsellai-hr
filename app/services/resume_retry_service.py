@@ -31,6 +31,7 @@ from app.services.ai_extraction_job_service import (
     AI_EXTRACTION_QUEUED,
     AI_EXTRACTION_RUNNING,
     AI_EXTRACTION_UNAVAILABLE,
+    NON_RESUME_DOCUMENT_FLAG,
     ai_extraction_state,
     request_resume_ai_extraction,
 )
@@ -281,11 +282,14 @@ def resume_library_status_tone(
     Priority follows the design: summary failure of an otherwise ready resume
     wins over its missing score, source-quality problems and pipeline failures
     win over a missing score, and a missing score is only reported for a ready
-    resume (an in-progress resume legitimately has no score yet).  Any
-    remaining inactive/queued state (including name recognition in flight)
-    falls into the processing tab.
+    resume (an in-progress resume legitimately has no score yet).  Definitively
+    non-resume documents are classified first and kept out of retry-oriented
+    attention states. Any remaining inactive/queued state (including name
+    recognition in flight) falls into the processing tab.
     """
 
+    if NON_RESUME_DOCUMENT_FLAG in (resume.quality_flags or []):
+        return "non_resume"
     if (
         resume.is_active
         and resume.extraction_status == "ready"

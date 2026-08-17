@@ -69,6 +69,11 @@ logger = logging.getLogger(__name__)
 
 _RETRYABLE_HTTP_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504}
 _NO_KEY_ERROR = "deepseek_api_key_not_configured"
+# Quality flag marking a source document as definitively not a resume.  Set
+# when both the rich extraction and its compact fallback return empty
+# structured facts; the library renders these as a dedicated "non-resume" tab
+# instead of a failed extraction.
+NON_RESUME_DOCUMENT_FLAG = "non_resume_document"
 _RETRYABLE_STRUCTURED_RESPONSE_ERRORS = frozenset(
     {
         "deepseek_empty_structured_facts",
@@ -818,6 +823,25 @@ def _process_claimed_job(
                         )
     except (DeepSeekProviderError, AiGatewayError) as exc:
         error = str(exc)
+        if (
+            error == "deepseek_empty_structured_facts"
+            and claimed.job_kind == "initial"
+            and claimed.previous_error == "deepseek_empty_structured_facts"
+        ):
+            # Both the rich prompt (first attempt) and the compact fallback
+            # (second attempt) returned empty structured facts.  The source
+            # document is not a resume; re-queuing it would only burn the
+            # attempt budget again.  Terminate as a recognisable state the
+            # library can surface as "non-resume" instead of a failed
+            # extraction.
+            _finish_non_resume_document(
+                database,
+                worker_id=worker_id,
+                job_id=claimed.job_id,
+                organization_id=claimed.organization_id,
+                error="deepseek_empty_structured_facts",
+            )
+            return
         _finish_failure(
             database,
             worker_id=worker_id,
@@ -1091,6 +1115,49 @@ def _save_completed_ai_facts(
                 raise
 
 
+def _finish_non_resume_document(
+    database: Database,
+    *,
+    worker_id: str,
+    job_id: str,
+    organization_id: str,
+    error: str,
+) -> None:
+    """Terminate an extraction whose source text is not a resume.
+
+    Both the rich prompt and the compact fallback returned empty structured
+    facts, so the document is definitively not a resume.  The job completes
+    (there is nothing left to extract) and the resume is flagged so the
+    library can render it as "non-resume" instead of a failed extraction.
+    """
+    now = utcnow()
+    with database.session_factory() as session:
+        with _organization_session(session, organization_id):
+            job = _owned_running_job(
+                session,
+                job_id=job_id,
+                worker_id=worker_id,
+                organization_id=organization_id,
+            )
+            if job is None or job.organization_id != organization_id:
+                session.rollback()
+                return
+            resume = session.scalar(
+                select(Resume).where(Resume.id == job.resume_id)
+            )
+            if resume is not None:
+                flags = set(resume.quality_flags or [])
+                flags.add(NON_RESUME_DOCUMENT_FLAG)
+                resume.quality_flags = sorted(flags)
+            job.status = AI_EXTRACTION_COMPLETED
+            job.next_attempt_at = None
+            job.completed_at = now
+            job.lease_owner = None
+            job.lease_expires_at = None
+            job.last_error = error
+            session.commit()
+
+
 def _finish_failure(
     database: Database,
     *,
@@ -1190,6 +1257,7 @@ __all__ = [
     "AI_EXTRACTION_QUEUED",
     "AI_EXTRACTION_RUNNING",
     "AI_EXTRACTION_UNAVAILABLE",
+    "NON_RESUME_DOCUMENT_FLAG",
     "AiExtractionJobError",
     "ai_extraction_state",
     "backfill_unnamed_candidate_names",

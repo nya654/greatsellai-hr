@@ -2209,6 +2209,9 @@ class EducationFact(ApiModel):
         return self
 
 
+MAX_EXPERIENCE_DETAIL_ITEMS = 20
+
+
 class ExperienceDetailItem(ApiModel):
     """One verbatim, source-cited responsibility or contribution."""
 
@@ -2239,7 +2242,10 @@ class ExperienceFact(ApiModel):
     is_current: bool = False
     evidence_block_ids: list[str] = Field(min_length=1, max_length=8)
     classification_evidence_block_ids: list[str] = Field(default_factory=list, max_length=8)
-    detail_items: list[ExperienceDetailItem] = Field(default_factory=list, max_length=12)
+    detail_items: list[ExperienceDetailItem] = Field(
+        default_factory=list,
+        max_length=MAX_EXPERIENCE_DETAIL_ITEMS,
+    )
     leadership_context: Literal["class", "student_org", "club", "project_team", "company"] | None = None
     leadership_role: str | None = Field(default=None, max_length=64)
     award_level: Literal["national", "provincial", "school", "department", "other"] | None = None

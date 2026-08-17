@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from app.services.deepseek_provider import (
     _downgrade_incomplete_work_experiences,
@@ -194,6 +195,7 @@ def test_resume_fact_tool_schema_requires_binary_ai_school_judgment() -> None:
     experience = schema["properties"]["experiences"]["items"]
     assert "experience_name_raw" in experience["required"]
     assert "detail_items" in experience["required"]
+    assert experience["properties"]["detail_items"]["maxItems"] == 20
     detail = experience["properties"]["detail_items"]["items"]
     assert detail["required"] == ["detail_raw", "evidence_block_ids"]
     assert detail["additionalProperties"] is False
@@ -663,6 +665,53 @@ def test_year_only_education_months_are_normalized_before_validation() -> None:
     assert result.education[0].start_month == "2024-01"
     assert result.education[0].end_month == "2026-01"
     assert result.experiences[0].start_month == "2020-01"
+
+
+def test_resume_fact_validation_accepts_fourteen_experience_details() -> None:
+    detail_items = [
+        {
+            "detail_raw": f"Responsibility {index}",
+            "evidence_block_ids": ["page-001"],
+        }
+        for index in range(14)
+    ]
+    payload = {
+        "experiences": [
+            {
+                "experience_type": "project",
+                "experience_name_raw": "Recruiting Platform",
+                "evidence_block_ids": ["page-001"],
+                "detail_items": detail_items,
+            }
+        ]
+    }
+
+    result = _validate_resume_facts_payload(payload)
+
+    assert len(result.experiences[0].detail_items) == 14
+
+
+def test_resume_fact_validation_still_rejects_more_than_twenty_details() -> None:
+    detail_items = [
+        {
+            "detail_raw": f"Responsibility {index}",
+            "evidence_block_ids": ["page-001"],
+        }
+        for index in range(21)
+    ]
+    payload = {
+        "experiences": [
+            {
+                "experience_type": "project",
+                "experience_name_raw": "Recruiting Platform",
+                "evidence_block_ids": ["page-001"],
+                "detail_items": detail_items,
+            }
+        ]
+    }
+
+    with pytest.raises(ValidationError, match="at most 20 items"):
+        _validate_resume_facts_payload(payload)
 
 
 def test_normalize_year_only_months_leaves_yyyymm_and_none_untouched() -> None:

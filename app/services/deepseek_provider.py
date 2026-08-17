@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from app.schemas import (
     CANDIDATE_NAME_LABEL_PATTERN,
     CANDIDATE_NAME_UNSAFE_CHARACTER_PATTERN,
+    MAX_EXPERIENCE_DETAIL_ITEMS,
     ResumeFactsSubmission,
     TalentSearchEvidencePolicy,
     TalentSearchHardFilters,
@@ -1025,7 +1026,11 @@ def resume_facts_tool_schema() -> dict[str, Any]:
                 "items": evidence,
                 "maxItems": 8,
             },
-            "detail_items": {"type": "array", "items": experience_detail, "maxItems": 12},
+            "detail_items": {
+                "type": "array",
+                "items": experience_detail,
+                "maxItems": MAX_EXPERIENCE_DETAIL_ITEMS,
+            },
             "leadership_context": {
                 "anyOf": [
                     {"type": "string", "enum": ["class", "student_org", "club", "project_team", "company"]},

@@ -5,80 +5,76 @@ from pathlib import Path
 import pytest
 
 from app.services import document_text_extraction as document_text
+from app.services.document_ocr_service import DocumentOcrError
 from app.services.document_text_extraction import DocumentExtractionError
 from app.services.text_extraction import PdfExtractionError
-from app.services.tencent_ocr_provider import TencentOcrConfig, TencentOcrError
 
 
-def _config() -> TencentOcrConfig:
-    return TencentOcrConfig(
-        secret_id="test-secret-id",
-        secret_key="test-secret-key",
-        region="ap-guangzhou",
-        timeout_seconds=5,
-    )
+class _FakeOcrEngine:
+    parser_label = "test-ocr"
+
+    def __init__(self, callback):
+        self._callback = callback
+
+    def extract_pdf_page(self, *, path: Path, page_no: int) -> str:
+        return self._callback(path=path, page_no=page_no)
+
+    def extract_image(self, *, path: Path) -> str:
+        return self._callback(path=path)
 
 
-def _extract(path: Path, *, config: TencentOcrConfig | None):
+def _extract(path: Path, *, ocr_engine):
     return document_text.extract_document_text(
         path,
         min_text_chars_per_page=1,
         ocr_sparse_text_chars_per_page=1,
-        tencent_ocr_config=config,
+        ocr_engine=ocr_engine,
     )
 
 
-def test_png_and_jpg_use_tencent_ocr(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    calls: list[dict[str, object]] = []
+def test_png_and_jpg_use_configured_ocr_engine(tmp_path: Path) -> None:
+    calls: list[Path] = []
 
-    def fake_image_ocr(*, path: Path, config: TencentOcrConfig) -> str:
-        calls.append({"path": path, "config": config})
+    def fake_image_ocr(*, path: Path) -> str:
+        calls.append(path)
         return "Candidate Python project experience"
 
-    monkeypatch.setattr(document_text, "extract_image_text", fake_image_ocr)
-
+    engine = _FakeOcrEngine(fake_image_ocr)
     for suffix in (".png", ".jpg"):
         image_path = tmp_path / f"resume{suffix}"
         image_path.write_bytes(b"synthetic image")
-        result = _extract(image_path, config=_config())
-        assert result.parser_version == "tencent-ocr"
+        result = _extract(image_path, ocr_engine=engine)
+        assert result.parser_version == "test-ocr"
         assert result.raw_text.endswith("Candidate Python project experience")
         assert result.ocr_attempted_page_count == 1
         assert result.ocr_successful_page_count == 1
         assert result.ocr_selected_page_count == 1
         assert result.ocr_failed_page_count == 0
 
-    assert [call["path"].suffix for call in calls] == [".png", ".jpg"]
-    assert all(call["config"] == _config() for call in calls)
+    assert [path.suffix for path in calls] == [".png", ".jpg"]
 
 
-def test_image_requires_tencent_configuration(
+def test_image_requires_ocr_configuration(
     tmp_path: Path,
 ) -> None:
     image_path = tmp_path / "resume.png"
     image_path.write_bytes(b"synthetic image")
 
-    with pytest.raises(DocumentExtractionError, match="tencent_ocr_not_configured"):
-        _extract(image_path, config=None)
+    with pytest.raises(DocumentExtractionError, match="document_ocr_not_configured"):
+        _extract(image_path, ocr_engine=None)
 
 
 def test_image_provider_error_is_preserved_as_stable_document_failure(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     image_path = tmp_path / "resume.jpeg"
     image_path.write_bytes(b"synthetic image")
 
     def fail(*_args: object, **_kwargs: object) -> str:
-        raise TencentOcrError("tencent_ocr_request_failed")
+        raise DocumentOcrError("document_ocr_request_failed")
 
-    monkeypatch.setattr(document_text, "extract_image_text", fail)
-
-    with pytest.raises(DocumentExtractionError, match="tencent_ocr_request_failed"):
-        _extract(image_path, config=_config())
+    with pytest.raises(DocumentExtractionError, match="document_ocr_request_failed"):
+        _extract(image_path, ocr_engine=_FakeOcrEngine(fail))
 
 
 def test_pdf_error_preserves_count_only_ocr_telemetry(
@@ -103,7 +99,10 @@ def test_pdf_error_preserves_count_only_ocr_telemetry(
     )
 
     with pytest.raises(DocumentExtractionError) as raised:
-        _extract(tmp_path / "resume.pdf", config=_config())
+        _extract(
+            tmp_path / "resume.pdf",
+            ocr_engine=_FakeOcrEngine(lambda **kwargs: "unused"),
+        )
 
     error = raised.value
     assert str(error) == "document_text_limit_exceeded"

@@ -242,6 +242,7 @@ class AppSettings:
     # Keep the historic general-print API unless an operator explicitly opts
     # into Tencent's higher-precision action.
     tencent_ocr_api: str = TENCENT_OCR_API_GENERAL_BASIC
+    document_ocr_backend: str = "tencent"
     ocr_sparse_text_chars_per_page: int = 200
 
     @classmethod
@@ -603,6 +604,10 @@ class AppSettings:
             tencent_ocr_api=os.getenv(
                 "TENCENT_OCR_API", TENCENT_OCR_API_GENERAL_BASIC
             ).strip(),
+            document_ocr_backend=os.getenv(
+                "RESUME_V3_DOCUMENT_OCR_BACKEND",
+                "tencent",
+            ).strip().lower(),
             ocr_sparse_text_chars_per_page=int(
                 os.getenv("OCR_SPARSE_TEXT_CHARS_PER_PAGE", "200")
             ),
@@ -659,6 +664,10 @@ class AppSettings:
         if self.tencent_ocr_api not in TENCENT_OCR_APIS:
             raise ValueError(
                 "TENCENT_OCR_API must be GeneralBasicOCR or GeneralAccurateOCR"
+            )
+        if self.document_ocr_backend not in {"disabled", "tencent", "ai_gateway"}:
+            raise ValueError(
+                "RESUME_V3_DOCUMENT_OCR_BACKEND must be disabled, tencent, or ai_gateway"
             )
         if self.ocr_sparse_text_chars_per_page < self.min_text_chars_per_page:
             raise ValueError(
@@ -741,6 +750,9 @@ class AppSettings:
         document_longest_operation_seconds = max(
             self.document_office_timeout_seconds,
             self.tencent_ocr_timeout_seconds,
+            self.deepseek_timeout_seconds
+            if self.document_ocr_backend == "ai_gateway"
+            else 0,
         )
         if self.document_extraction_job_lease_seconds < document_longest_operation_seconds + 30:
             raise ValueError(

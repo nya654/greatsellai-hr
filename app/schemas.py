@@ -840,7 +840,10 @@ class AiModelProfileCreate(ApiModel):
     provider_slug: str = Field(min_length=2, max_length=64)
     display_name: str = Field(min_length=1, max_length=120)
     provider_model_id: str = Field(min_length=1, max_length=255)
-    capabilities: list[Literal["chat", "tools", "json_schema"]] = Field(default_factory=lambda: ["chat"])
+    capabilities: list[Literal["chat", "tools", "json_schema", "vision"]] = Field(
+        default_factory=lambda: ["chat"]
+    )
+    candidate_image_allowed: bool = False
     context_window_tokens: int | None = Field(default=None, ge=1, le=20_000_000)
     max_output_tokens: int | None = Field(default=None, ge=1, le=2_000_000)
     is_enabled: bool = True
@@ -862,6 +865,12 @@ class AiModelProfileCreate(ApiModel):
             raise ValueError("value_must_not_be_blank")
         return normalized
 
+    @model_validator(mode="after")
+    def validate_candidate_image_capability(self) -> "AiModelProfileCreate":
+        if self.candidate_image_allowed and "vision" not in self.capabilities:
+            raise ValueError("candidate_image_permission_requires_vision")
+        return self
+
     @field_validator("reason")
     @classmethod
     def normalize_model_audit_reason(cls, value: str | None) -> str | None:
@@ -881,6 +890,7 @@ class AiModelProfileResponse(ApiModel):
     display_name: str
     provider_model_id: str
     capabilities: list[str] = Field(default_factory=list)
+    candidate_image_allowed: bool = False
     context_window_tokens: int | None = None
     max_output_tokens: int | None = None
     is_enabled: bool

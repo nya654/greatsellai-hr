@@ -340,6 +340,7 @@ export interface AiModelProfile {
   display_name: string;
   provider_model_id: string;
   capabilities: string[];
+  candidate_image_allowed: boolean;
   context_window_tokens: number | null;
   max_output_tokens: number | null;
   is_enabled: boolean;
@@ -347,7 +348,7 @@ export interface AiModelProfile {
   updated_at: string;
 }
 
-export type AiModelCapability = "chat" | "tools" | "json_schema";
+export type AiModelCapability = "chat" | "tools" | "json_schema" | "vision";
 
 export interface AiModelProfileCreateInput {
   slug: string;
@@ -355,6 +356,7 @@ export interface AiModelProfileCreateInput {
   display_name: string;
   provider_model_id: string;
   capabilities: AiModelCapability[];
+  candidate_image_allowed: boolean;
   context_window_tokens?: number;
   max_output_tokens?: number;
   is_enabled: boolean;

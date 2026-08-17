@@ -123,6 +123,21 @@ def test_runtime_rejects_unknown_tencent_ocr_api(tmp_path: Path) -> None:
         _settings(tmp_path, tencent_ocr_api="GeneralExperimentalOCR").validate_runtime()
 
 
+def test_document_ocr_backend_defaults_to_tencent_and_validates_choices(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("RESUME_V3_DOCUMENT_OCR_BACKEND", raising=False)
+    assert AppSettings.from_env().document_ocr_backend == "tencent"
+
+    monkeypatch.setenv("RESUME_V3_DOCUMENT_OCR_BACKEND", "ai_gateway")
+    assert AppSettings.from_env().document_ocr_backend == "ai_gateway"
+    _settings(tmp_path, document_ocr_backend="disabled").validate_runtime()
+    _settings(tmp_path, document_ocr_backend="ai_gateway").validate_runtime()
+    with pytest.raises(ValueError, match="RESUME_V3_DOCUMENT_OCR_BACKEND"):
+        _settings(tmp_path, document_ocr_backend="unknown").validate_runtime()
+
+
 def test_tencent_ocr_api_reaches_worker_provider_config(tmp_path: Path) -> None:
     ocr_config = _tencent_ocr_config(
         _settings(
@@ -146,8 +161,14 @@ def test_production_compose_and_templates_expose_tencent_ocr_api_selector() -> N
     development_example = (root / ".env.example").read_text(encoding="utf-8")
 
     assert "TENCENT_OCR_API: ${TENCENT_OCR_API:-GeneralBasicOCR}" in compose
+    assert (
+        "RESUME_V3_DOCUMENT_OCR_BACKEND: "
+        "${RESUME_V3_DOCUMENT_OCR_BACKEND:-tencent}"
+    ) in compose
     assert "TENCENT_OCR_API=GeneralAccurateOCR" in production_example
+    assert "RESUME_V3_DOCUMENT_OCR_BACKEND=tencent" in production_example
     assert "TENCENT_OCR_API=GeneralBasicOCR" in development_example
+    assert "RESUME_V3_DOCUMENT_OCR_BACKEND=tencent" in development_example
 
 
 def test_compose_injects_generic_provider_credential_map_into_api_and_worker() -> None:

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.services import tencent_ocr_provider as provider
+from app.services.document_image_preparation import PreparedDocumentImage
 from app.services.tencent_ocr_provider import TencentOcrConfig, TencentOcrError
 
 
@@ -128,18 +129,20 @@ def test_oversized_image_is_reencoded_before_tencent_request(
     image_path.write_bytes(b"x" * (provider._MAX_OCR_IMAGE_BYTES + 1))
     captured: dict[str, object] = {}
 
-    def fake_reencode(*, path: Path) -> bytes:
+    def fake_prepare(*, path: Path) -> PreparedDocumentImage:
         captured["reencode_path"] = path
-        return b"compressed-image"
+        return PreparedDocumentImage(
+            media_type="image/jpeg",
+            data=b"compressed-image",
+        )
 
     def fake_request(*, image_bytes: bytes, config: TencentOcrConfig) -> str:
         captured["image_bytes"] = image_bytes
         captured["config"] = config
         return "Recovered text"
 
-    monkeypatch.setattr(provider, "_reencode_image_within_ocr_limit", fake_reencode)
+    monkeypatch.setattr(provider.image_preparation, "prepare_image_file", fake_prepare)
     monkeypatch.setattr(provider, "_extract_tencent_ocr", fake_request)
-    monkeypatch.setattr(provider, "_image_dimensions", lambda _bytes: (100, 100))
 
     assert provider.extract_image_text(path=image_path, config=_config()) == "Recovered text"
     assert captured["reencode_path"] == image_path

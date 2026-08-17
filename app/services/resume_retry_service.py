@@ -108,8 +108,16 @@ def retry_resume_failed(
     document_job = resume.document_extraction_job
     ai_job = resume.ai_extraction_job
 
-    # 1. Failed document parsing → re-normalize the original source file.
-    if resume.extraction_status == "failed":
+    # 1. Failed document parsing, or a completed normalization that produced no
+    # source blocks, must restart from the original file. The latter is how an
+    # all-page OCR failure is represented: extraction needs review and AI
+    # correctly reports source text unavailable, but there is no AI input to
+    # requeue yet.
+    source_text_unavailable = (
+        resume.extraction_status in {"text_ready", "needs_review"}
+        and not resume.source_blocks
+    )
+    if resume.extraction_status == "failed" or source_text_unavailable:
         if resume.is_active or resume.extraction_status == "ready":
             skip_reasons.append(SKIP_ACTIVE_RESUME_IMMUTABLE)
         elif ai_job is not None and ai_job.status in {

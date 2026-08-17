@@ -169,6 +169,46 @@ def test_dispatch_document_extraction_failure(ai_client, monkeypatch) -> None:
     assert calls == [resume_id]
 
 
+def test_dispatch_no_source_text_retries_document_extraction(
+    ai_client,
+    monkeypatch,
+) -> None:
+    _, resume_id = _save_ready(ai_client)
+    database = ai_client.app.state.database
+    calls = []
+
+    def fake_document_reextract(session, *, resume_id, settings):
+        del session, settings
+        calls.append(resume_id)
+
+    monkeypatch.setattr(
+        resume_retry_service,
+        "request_resume_document_extraction",
+        fake_document_reextract,
+    )
+    with database.session_factory() as session:
+        with bypass_organization_scope(session):
+            resume = session.get(Resume, resume_id)
+            assert resume is not None
+            resume.extraction_status = "needs_review"
+            resume.is_active = False
+            resume.quality_flags = [
+                "no_extractable_text",
+                "page_1_tencent_ocr_failed",
+            ]
+            resume.source_blocks.clear()
+            ai_job = resume.ai_extraction_job
+            assert ai_job is not None
+            ai_job.status = "completed"
+            session.commit()
+
+    dispatch = _dispatch(ai_client, resume_id)
+
+    assert dispatch.actions == (ACTION_DOCUMENT_EXTRACTION,)
+    assert dispatch.skip_reasons == ()
+    assert calls == [resume_id]
+
+
 def test_dispatch_ai_extraction_failure(ai_client, monkeypatch) -> None:
     _, resume_id = _save_ready(ai_client)
     database = ai_client.app.state.database

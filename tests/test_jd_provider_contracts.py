@@ -359,7 +359,7 @@ def test_talent_profile_generation_retries_one_invalid_structured_draft(
 
     assert result["title"] == "AI 应用工程师人才画像"
     assert len(calls) == 2
-    assert calls[1]["max_tokens"] == 3200
+    assert calls[1]["max_tokens"] == 5600
     assert "correction retry" in str(calls[1]["system_prompt"])
 
 
@@ -504,7 +504,7 @@ def test_talent_profile_generation_retries_when_requirement_omits_evidence_polic
 
     assert result["verification_requirements"][0]["evidence_policy"]["kind"] == "any_fact"
     assert len(calls) == 2
-    assert calls[1]["max_tokens"] == 3200
+    assert calls[1]["max_tokens"] == 5600
 
 
 def test_talent_profile_generation_retries_when_evidence_policy_omits_term_mode(
@@ -560,7 +560,7 @@ def test_talent_profile_generation_retries_one_transient_gateway_failure(
 
     assert result["title"] == "AI 应用工程师人才画像"
     assert len(calls) == 2
-    assert calls[1]["max_tokens"] == 3200
+    assert calls[1]["max_tokens"] == 5600
 
 
 def test_long_jd_requirement_extraction_receives_a_bounded_larger_token_budget() -> None:

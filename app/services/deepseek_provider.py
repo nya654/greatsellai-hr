@@ -2140,6 +2140,8 @@ def optimize_score_template(
         "deepseek_invalid_structured_response",
         "deepseek_tool_call_missing",
         "deepseek_arguments_missing",
+        "ai_provider_truncated",
+        "ai_provider_structured_invalid",
     }
 
     def request_optimization(*, correction_pass: bool) -> dict[str, Any]:
@@ -2201,7 +2203,7 @@ def optimize_score_template(
                     else ""
                 )
             ),
-            max_tokens=2600 if correction_pass else 2200,
+            max_tokens=5200 if correction_pass else 4200,
         )
         return validate_score_template_optimization_output(
             result,
@@ -3627,7 +3629,7 @@ def generate_talent_search_profile(
                     else ""
                 )
             ),
-            max_tokens=3200 if correction_pass else 2600,
+            max_tokens=5600 if correction_pass else 4600,
         )
         return validate_talent_search_profile_output(result)
 

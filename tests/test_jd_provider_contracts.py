@@ -402,6 +402,47 @@ def test_talent_profile_refinement_instructs_the_model_how_to_condense(
     assert "Current draft to refine" in str(calls[0]["user_prompt"])
 
 
+def test_talent_profile_validation_fills_only_omitted_empty_fields() -> None:
+    incomplete = _generated_talent_profile()
+    hard_filters = incomplete["hard_filters"]
+    assert isinstance(hard_filters, dict)
+    for field in (
+        "institution_classifications_any_of",
+        "education_degree_in",
+        "highest_degree_in",
+        "graduation_status",
+        "fresh_graduate_start_month",
+        "fresh_graduate_end_month",
+        "min_employment_or_internship_months",
+        "experience_types_all_of",
+        "skills_all_of",
+        "language_credentials_all_of",
+    ):
+        hard_filters.pop(field, None)
+    requirement = incomplete["verification_requirements"][0]
+    assert isinstance(requirement, dict)
+    policy = requirement["evidence_policy"]
+    assert isinstance(policy, dict)
+    del policy["terms_any_of"]
+
+    validated = provider.validate_talent_search_profile_output(incomplete)
+
+    assert validated["hard_filters"]["graduation_status"] == "any"
+    assert validated["hard_filters"]["skills_all_of"] == []
+    assert validated["hard_filters"]["min_employment_or_internship_months"] is None
+    assert validated["verification_requirements"][0]["evidence_policy"]["terms_any_of"] == []
+
+
+def test_talent_profile_validation_does_not_default_malformed_values() -> None:
+    invalid = _generated_talent_profile()
+    hard_filters = invalid["hard_filters"]
+    assert isinstance(hard_filters, dict)
+    hard_filters["skills_all_of"] = None
+
+    with pytest.raises(provider.DeepSeekProviderError, match="talent_profile_hard_filters"):
+        provider.validate_talent_search_profile_output(invalid)
+
+
 @pytest.mark.parametrize(
     ("field", "error_code"),
     [
@@ -507,7 +548,7 @@ def test_talent_profile_generation_retries_when_requirement_omits_evidence_polic
     assert calls[1]["max_tokens"] == 5600
 
 
-def test_talent_profile_generation_retries_when_evidence_policy_omits_term_mode(
+def test_talent_profile_generation_normalizes_an_omitted_empty_term_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict[str, object]] = []
@@ -520,7 +561,7 @@ def test_talent_profile_generation_retries_when_evidence_policy_omits_term_mode(
 
     def fake_call(**kwargs: object) -> dict[str, object]:
         calls.append(kwargs)
-        return incomplete if len(calls) == 1 else _generated_talent_profile()
+        return incomplete
 
     monkeypatch.setattr(provider, "call_strict_function", fake_call)
     result = provider.generate_talent_search_profile(
@@ -531,7 +572,7 @@ def test_talent_profile_generation_retries_when_evidence_policy_omits_term_mode(
     )
 
     assert result["verification_requirements"][0]["evidence_policy"]["terms_any_of"] == []
-    assert len(calls) == 2
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -650,6 +691,23 @@ def test_invalid_model_fact_ids_are_safely_downgraded_to_unknown() -> None:
     assert validated["requirement_matches"][0]["status"] == "unknown"
     assert validated["requirement_matches"][0]["fact_ids"] == []
     assert validated["requirement_matches"][0]["uncertainties"]
+
+
+def test_jd_match_sanitizer_restores_omitted_empty_uncertainties() -> None:
+    payload = _match_output()
+    del payload["requirement_matches"][0]["uncertainties"]  # type: ignore[index]
+
+    sanitized = provider._sanitize_jd_match_evidence_ids(
+        payload,
+        fact_ids=["education-001", "experience-001", "skill-001"],
+    )
+    validated = provider.validate_jd_match_output(
+        sanitized,
+        confirmed_requirements=_requirements(),
+        fact_ids=["education-001", "experience-001", "skill-001"],
+    )
+
+    assert validated["requirement_matches"][0]["uncertainties"] == []
 
 
 def test_experience_policy_preserves_a_matching_project_fact_and_reaches_prompt(

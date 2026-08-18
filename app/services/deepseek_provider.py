@@ -4322,11 +4322,30 @@ def _sanitize_jd_match_evidence_ids(
         # existing evidence and status validation runs.
         match.setdefault("uncertainties", [])
         cited = match.get("fact_ids")
+        status = match.get("status")
         if not isinstance(cited, list):
+            if status == "unknown":
+                # Unknown means the snapshot cannot prove either direction;
+                # an omitted citation list is therefore the empty list.
+                match["fact_ids"] = []
+            elif status in {"met", "partial", "not_met"}:
+                match["status"] = "unknown"
+                match["fact_ids"] = []
+                match["uncertainties"] = [
+                    *(
+                        match["uncertainties"]
+                        if isinstance(match["uncertainties"], list)
+                        else []
+                    ),
+                    "The model did not provide a valid source-grounded fact citation.",
+                ]
             sanitized_matches.append(match)
             continue
-        valid_citations = [fact_id for fact_id in cited if isinstance(fact_id, str) and fact_id in allowed]
-        status = match.get("status")
+        valid_citations = [
+            fact_id
+            for fact_id in cited
+            if isinstance(fact_id, str) and fact_id in allowed
+        ]
         if status == "unknown":
             # Unknown means the snapshot cannot prove either direction.
             match["fact_ids"] = []

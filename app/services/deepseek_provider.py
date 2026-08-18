@@ -2323,7 +2323,7 @@ def render_evidence_blocks(
 _RICH_EXTRACT_CONDENSE_THRESHOLD_CHARS = 8000
 
 
-def extract_resume_facts(
+def _extract_resume_facts_once(
     *,
     api_key: str,
     model: str,
@@ -2493,6 +2493,52 @@ def extract_resume_facts(
         return _validate_resume_facts_payload(parsed)
     except (json.JSONDecodeError, ValueError) as exc:
         raise DeepSeekProviderError("deepseek_invalid_structured_response") from exc
+
+
+_RICH_FACTS_RETRYABLE_ERRORS = frozenset(
+    {
+        "deepseek_invalid_structured_response",
+        "deepseek_response_truncated",
+        "deepseek_tool_call_missing",
+        "deepseek_arguments_missing",
+        "ai_provider_truncated",
+        "ai_provider_structured_invalid",
+    }
+)
+
+
+def extract_resume_facts(
+    *,
+    api_key: str,
+    model: str,
+    timeout_seconds: int,
+    blocks: list[EvidenceBlock],
+    retry_reason: str | None = None,
+) -> ResumeFactsSubmission:
+    """Extract rich facts, allowing one correction call for transient tool failures."""
+
+    try:
+        return _extract_resume_facts_once(
+            api_key=api_key,
+            model=model,
+            timeout_seconds=timeout_seconds,
+            blocks=blocks,
+            retry_reason=retry_reason,
+        )
+    except DeepSeekProviderError as exc:
+        error_code = str(exc)
+        # Queue callers already pass a retry_reason after their first failed
+        # attempt. Keep that existing one-retry budget instead of multiplying
+        # provider calls, while direct feature calls still get one correction.
+        if retry_reason is not None or error_code not in _RICH_FACTS_RETRYABLE_ERRORS:
+            raise
+        return _extract_resume_facts_once(
+            api_key=api_key,
+            model=model,
+            timeout_seconds=timeout_seconds,
+            blocks=blocks,
+            retry_reason=error_code,
+        )
 
 
 def _flatten_evidence_block_ids(payload: dict[str, Any]) -> None:
@@ -3558,6 +3604,7 @@ def generate_talent_search_profile(
             "function schema. Regenerate the full profile from scratch. Return every required top-level "
             "field, and make every verification/preferred requirement include key, label, evidence_hint, "
             "and a complete evidence_policy. All recruiter-visible prose must be Simplified Chinese; "
+            "aliases must be empty or Chinese phrases and must never be bare English technology names; "
             "do not return an English sentence or paragraph. Return function arguments only."
             if correction_pass
             else ""
@@ -3580,7 +3627,8 @@ def generate_talent_search_profile(
                 "All recruiter-visible title, summary, requirement label, evidence hint, alias, and "
                 "clarifying-question prose must be Simplified Chinese. English technology, company, and "
                 "product names may appear only as embedded terms, never as a complete English sentence "
-                "or paragraph. "
+                "or paragraph. Keep aliases empty unless they are Chinese recruiter-visible phrases; "
+                "never put a bare English technology or product name in aliases. "
                 "Only place a condition in hard_filters when it is explicit and can "
                 "map exactly to the supplied structured fields; otherwise leave it empty and place the "
                 "need in verification_requirements or preferred_requirements. Distinguish education "
@@ -4548,7 +4596,7 @@ def _enforce_experience_evidence_policies(
     return enforced
 
 
-def match_resume_fact_snapshot_against_requirements(
+def _match_resume_fact_snapshot_against_requirements_once(
     *,
     api_key: str,
     model: str,
@@ -4588,7 +4636,8 @@ def match_resume_fact_snapshot_against_requirements(
             "affirmative use of every terms_all_of value, or of at least one terms_any_of value. "
             "A skill list, a related technology, or an experience of a different type cannot prove met. Explicit wording such as 'without "
             "using', 'not used', '未使用', or '未采用' is contradictory rather than affirmative use. Do not "
-            "calculate or output any total score, percentage, ranking, or hiring recommendation."
+            "calculate or output any total score, percentage, ranking, or hiring recommendation. "
+            "Return only the required function arguments; do not write prose outside the function call."
         ),
         user_prompt=(
             "Confirmed requirements:\n"
@@ -4600,7 +4649,7 @@ def match_resume_fact_snapshot_against_requirements(
             + "\nStructured resume fact snapshot:\n"
             + json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
         ),
-        max_tokens=2200,
+        max_tokens=4000,
     )
     sanitized_result = _sanitize_jd_match_evidence_ids(result, fact_ids=fact_ids)
     enforced_result = _enforce_experience_evidence_policies(
@@ -4613,3 +4662,45 @@ def match_resume_fact_snapshot_against_requirements(
         confirmed_requirements=normalized_requirements,
         fact_ids=fact_ids,
     )
+
+
+_MATCH_RETRYABLE_ERRORS = frozenset(
+    {
+        "deepseek_invalid_structured_response",
+        "deepseek_response_truncated",
+        "deepseek_tool_call_missing",
+        "deepseek_arguments_missing",
+        "ai_provider_truncated",
+        "ai_provider_structured_invalid",
+    }
+)
+
+
+def match_resume_fact_snapshot_against_requirements(
+    *,
+    api_key: str,
+    model: str,
+    timeout_seconds: int,
+    fact_snapshot: Mapping[str, Any],
+    confirmed_requirements: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Match facts with one correction call for transient tool failures."""
+
+    try:
+        return _match_resume_fact_snapshot_against_requirements_once(
+            api_key=api_key,
+            model=model,
+            timeout_seconds=timeout_seconds,
+            fact_snapshot=fact_snapshot,
+            confirmed_requirements=confirmed_requirements,
+        )
+    except DeepSeekProviderError as exc:
+        if str(exc) not in _MATCH_RETRYABLE_ERRORS:
+            raise
+        return _match_resume_fact_snapshot_against_requirements_once(
+            api_key=api_key,
+            model=model,
+            timeout_seconds=timeout_seconds,
+            fact_snapshot=fact_snapshot,
+            confirmed_requirements=confirmed_requirements,
+        )

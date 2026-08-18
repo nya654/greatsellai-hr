@@ -13,6 +13,7 @@ from app.services.deepseek_provider import (
     call_strict_function,
     DeepSeekProviderError,
     EvidenceBlock,
+    extract_resume_candidate_name,
     extract_resume_core_facts,
     extract_resume_facts,
     legacy_direct_transport_for_testing,
@@ -241,6 +242,40 @@ def test_core_fact_tool_schema_keeps_identity_and_omits_enrichment_fields() -> N
     assert "ai_institution_roster_id" not in education["properties"]
     assert "detail_items" not in experience["properties"]
     assert education["properties"]["evidence_block_ids"]["maxItems"] == 8
+
+
+def test_candidate_name_extraction_leaves_headroom_for_minimax_tool_call(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_call_strict_function(**kwargs):
+        captured.update(kwargs)
+        return {
+            "candidate_name_raw": "Test Candidate",
+            "candidate_name_evidence_block_ids": ["page-001"],
+        }
+
+    monkeypatch.setattr(
+        "app.services.deepseek_provider.call_strict_function",
+        fake_call_strict_function,
+    )
+    result = extract_resume_candidate_name(
+        api_key="test-key",
+        model="test-model",
+        timeout_seconds=5,
+        blocks=[
+            EvidenceBlock(
+                block_id="page-001",
+                page_no=1,
+                block_type="page",
+                text="姓名：Test Candidate\nSkills: Python",
+            )
+        ],
+    )
+
+    assert result.value == "Test Candidate"
+    assert result.evidence_block_ids == ["page-001"]
+    assert captured["max_tokens"] == 1024
+    assert "must not include reasoning or prose" in captured["system_prompt"]
 
 
 def test_core_extraction_fills_existing_submission_defaults(monkeypatch) -> None:

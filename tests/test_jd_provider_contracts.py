@@ -710,6 +710,24 @@ def test_jd_match_sanitizer_restores_omitted_empty_uncertainties() -> None:
     assert validated["requirement_matches"][0]["uncertainties"] == []
 
 
+def test_jd_match_sanitizer_restores_omitted_unknown_fact_ids() -> None:
+    payload = _match_output()
+    del payload["requirement_matches"][1]["fact_ids"]  # type: ignore[index]
+
+    sanitized = provider._sanitize_jd_match_evidence_ids(
+        payload,
+        fact_ids=["education-001", "experience-001", "skill-001"],
+    )
+    validated = provider.validate_jd_match_output(
+        sanitized,
+        confirmed_requirements=_requirements(),
+        fact_ids=["education-001", "experience-001", "skill-001"],
+    )
+
+    assert validated["requirement_matches"][1]["status"] == "unknown"
+    assert validated["requirement_matches"][1]["fact_ids"] == []
+
+
 def test_experience_policy_preserves_a_matching_project_fact_and_reaches_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

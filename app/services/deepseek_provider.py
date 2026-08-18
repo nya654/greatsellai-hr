@@ -309,6 +309,24 @@ _TALENT_PROFILE_DISALLOWED_TERMS = re.compile(
     r"nationality|hometown|household\s+registration|zodiac|blood\s+type)\b)",
     re.IGNORECASE,
 )
+_TALENT_PROFILE_HARD_FILTER_DEFAULTS: dict[str, object] = {
+    "institution_classifications_any_of": [],
+    "education_degree_in": [],
+    "highest_degree_in": [],
+    "graduation_status": "any",
+    "fresh_graduate_start_month": None,
+    "fresh_graduate_end_month": None,
+    "min_employment_or_internship_months": None,
+    "experience_types_all_of": [],
+    "skills_all_of": [],
+    "language_credentials_all_of": [],
+}
+_TALENT_PROFILE_EVIDENCE_POLICY_KEYS = {
+    "kind",
+    "allowed_experience_types",
+    "terms_all_of",
+    "terms_any_of",
+}
 _SCORE_TEMPLATE_OPTIMIZATION_RESPONSE_KEYS = {
     "schema_version",
     "proposed_template",
@@ -3354,6 +3372,55 @@ def _normalize_talent_profile_text_list(
     return normalized
 
 
+def _normalize_talent_profile_hard_filters(value: object) -> dict[str, Any]:
+    """Fill only omitted empty hard-filter fields from a provider draft.
+
+    MiniMax occasionally omits fields whose value is the schema's empty
+    condition.  Filling those fields is semantics-preserving; malformed,
+    non-empty values and unknown fields still go through the existing strict
+    Pydantic contract unchanged.
+    """
+
+    if not isinstance(value, Mapping):
+        raise _contract_error("talent_profile_hard_filters")
+    normalized = dict(value)
+    for field, default in _TALENT_PROFILE_HARD_FILTER_DEFAULTS.items():
+        if field not in normalized:
+            normalized[field] = list(default) if isinstance(default, list) else default
+    return normalized
+
+
+def _normalize_talent_profile_evidence_policy(
+    value: object,
+    *,
+    code: str,
+) -> dict[str, Any]:
+    """Restore only omitted empty policy arrays, never an omitted scope."""
+
+    if not isinstance(value, Mapping):
+        raise _contract_error(code)
+    normalized = dict(value)
+    kind = normalized.get("kind")
+    if kind == "any_fact":
+        normalized.setdefault("allowed_experience_types", [])
+        normalized.setdefault("terms_all_of", [])
+        normalized.setdefault("terms_any_of", [])
+    elif kind == "experience_detail_terms":
+        # The allowed experience scope and at least one term mode are
+        # semantic requirements.  Only the unused, empty mode may be omitted.
+        if "allowed_experience_types" not in normalized:
+            raise _contract_error(code)
+        if "terms_all_of" not in normalized and "terms_any_of" not in normalized:
+            raise _contract_error(code)
+        normalized.setdefault("terms_all_of", [])
+        normalized.setdefault("terms_any_of", [])
+    else:
+        raise _contract_error(code)
+    if set(normalized) != _TALENT_PROFILE_EVIDENCE_POLICY_KEYS:
+        raise _contract_error(code)
+    return normalized
+
+
 def _validate_talent_profile_requirements(
     value: object,
     *,
@@ -3363,7 +3430,7 @@ def _validate_talent_profile_requirements(
         raise _contract_error(code)
     if len(value) > 12:
         raise _contract_error(code)
-    normalized: list[dict[str, str]] = []
+    normalized: list[dict[str, Any]] = []
     seen_keys: set[str] = set()
     seen_labels: set[str] = set()
     for item in value:
@@ -3373,16 +3440,14 @@ def _validate_talent_profile_requirements(
         # otherwise a malformed draft silently becomes broad ``any_fact``.
         if not isinstance(item, Mapping) or "evidence_policy" not in item:
             raise _contract_error(code)
-        raw_policy = item["evidence_policy"]
-        if not isinstance(raw_policy, Mapping) or set(raw_policy) != {
-            "kind",
-            "allowed_experience_types",
-            "terms_all_of",
-            "terms_any_of",
-        }:
-            raise _contract_error(code)
+        raw_policy = _normalize_talent_profile_evidence_policy(
+            item["evidence_policy"],
+            code=code,
+        )
+        normalized_item = dict(item)
+        normalized_item["evidence_policy"] = raw_policy
         try:
-            requirement = TalentSearchProfileRequirement.model_validate(item)
+            requirement = TalentSearchProfileRequirement.model_validate(normalized_item)
         except ValidationError as exc:
             raise _contract_error(code) from exc
         label = _normalize_jd_generation_input(
@@ -3425,7 +3490,9 @@ def validate_talent_search_profile_output(payload: Mapping[str, Any]) -> dict[st
     if payload.get("schema_version") != TALENT_SEARCH_PROFILE_SCHEMA_VERSION:
         raise _contract_error("talent_profile_schema_version")
     try:
-        hard_filters = TalentSearchHardFilters.model_validate(payload["hard_filters"])
+        hard_filters = TalentSearchHardFilters.model_validate(
+            _normalize_talent_profile_hard_filters(payload["hard_filters"])
+        )
     except ValidationError as exc:
         raise _contract_error("talent_profile_hard_filters") from exc
     title = _normalize_jd_generation_input(
@@ -4249,6 +4316,11 @@ def _sanitize_jd_match_evidence_ids(
             sanitized_matches.append(raw_match)
             continue
         match = dict(raw_match)
+        # Some tool-compatible providers omit an empty optional uncertainty
+        # array even when the strict schema marks the field as required. Treat
+        # the omission as the only semantically valid empty value before the
+        # existing evidence and status validation runs.
+        match.setdefault("uncertainties", [])
         cited = match.get("fact_ids")
         if not isinstance(cited, list):
             sanitized_matches.append(match)

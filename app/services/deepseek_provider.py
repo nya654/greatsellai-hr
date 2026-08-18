@@ -882,8 +882,8 @@ def extract_resume_candidate_name(
             "containing it. If ownership is not explicit, return null with an empty "
             "evidence list. Do not explain the decision. Evidence blocks:\n" + source
         ),
-        # MiniMax-M3 may spend a small amount of its tool-call budget on hidden
-        # planning even with thinking disabled. Keep the contract tiny, but leave
+        # Some compatible tool-call providers consume more output budget than
+        # the compact JSON arguments alone. Keep the contract tiny, but leave
         # enough headroom for the required JSON arguments and evidence array.
         max_tokens=1024,
     )

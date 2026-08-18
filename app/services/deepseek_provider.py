@@ -874,14 +874,18 @@ def extract_resume_candidate_name(
             "Extract only the resume owner's explicitly written header or labeled name. "
             "Never infer a name and never use a filename, email, employer, referee, "
             "team member, author, or any other identity. Do not output phone, email, "
-            "address, photo, or any other personal data."
+            "address, photo, or any other personal data. Return the function arguments "
+            "immediately: this is a tiny extraction and must not include reasoning or prose."
         ),
         user_prompt=(
             "Return the exact name text without a `姓名`/`Name` label and cite the page "
             "containing it. If ownership is not explicit, return null with an empty "
-            "evidence list. Evidence blocks:\n" + source
+            "evidence list. Do not explain the decision. Evidence blocks:\n" + source
         ),
-        max_tokens=300,
+        # Some compatible tool-call providers consume more output budget than
+        # the compact JSON arguments alone. Keep the contract tiny, but leave
+        # enough headroom for the required JSON arguments and evidence array.
+        max_tokens=1024,
     )
     name = result.get("candidate_name_raw")
     evidence_block_ids = result.get("candidate_name_evidence_block_ids")
@@ -1336,9 +1340,18 @@ def resume_score_tool_schema(
         "properties": {
             "key": {"type": "string", "enum": normalized_dimension_keys},
             "raw_score": {"type": "number", "minimum": 0, "maximum": 100},
-            "rationale": {"type": "string"},
+            "rationale": {
+                "type": "string",
+                "description": "用简体中文说明评分依据；技术名词可保留原文，但不得写英文完整句。",
+            },
             "fact_ids": _fact_id_array_schema(normalized_fact_ids),
-            "uncertainties": {"type": "array", "items": {"type": "string"}},
+            "uncertainties": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "description": "用简体中文写待确认事项；没有待确认事项时返回空数组。",
+                },
+            },
         },
         "required": ["key", "raw_score", "rationale", "fact_ids", "uncertainties"],
         "additionalProperties": False,
@@ -1346,7 +1359,10 @@ def resume_score_tool_schema(
     risk_flag = {
         "type": "object",
         "properties": {
-            "message": {"type": "string"},
+            "message": {
+                "type": "string",
+                "description": "用简体中文写风险说明；不得输出英文完整句或英文段落。",
+            },
             "fact_ids": _fact_id_array_schema(normalized_fact_ids),
         },
         "required": ["message", "fact_ids"],
@@ -1362,7 +1378,10 @@ def resume_score_tool_schema(
                 "minItems": len(normalized_dimension_keys),
                 "maxItems": len(normalized_dimension_keys),
             },
-            "overall_summary": {"type": "string"},
+            "overall_summary": {
+                "type": "string",
+                "description": "必须使用简体中文完整句子概括评分结论；不得输出英文句子或英文段落。",
+            },
             "risk_flags": {"type": "array", "items": risk_flag},
             "needs_human_review": {"type": "boolean"},
         },
@@ -2040,6 +2059,7 @@ def score_resume_fact_snapshot(
         correction = (
             " 这是纠正重试：上一次结果没有满足简体中文输出或函数参数约束。"
             "请重新生成完整结果，不要解释前一次结果，也不要输出英文完整句或英文段落。"
+            "overall_summary 必须是以中文汉字开头的简体中文句子，例如：候选人具备明确的 Python 经历，但云经验仍待确认。"
             if correction_pass
             else ""
         )
@@ -2059,6 +2079,7 @@ def score_resume_fact_snapshot(
                 "待确认项，不能当作证据。不要计算加权总分，服务端会确定性计算。"
                 "所有面向招聘人员的解释性字段——rationale、uncertainties、overall_summary 和"
                 "risk_flags.message——必须使用简体中文（zh-CN）写成简洁完整的中文句子。"
+                "overall_summary 必须以中文汉字开头；即使事实和维度指引全是英文，也必须先用中文组织句子。"
                 "不得输出英文完整句、英文段落或英文说明。公司名、学校名、职位名、产品名和技术名词"
                 "仅在翻译会降低准确性时可以保留原文，但必须嵌入中文句子中。"
                 "只返回符合 Schema 的函数参数；字段名和事实 ID 保持不变。"

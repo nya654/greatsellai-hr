@@ -240,6 +240,14 @@ function resumeLibraryStatus(item: ResumeLibraryItem): {
 /** Whether one-click retry has any branch to dispatch for this row. */
 function isRowRetryable(item: ResumeLibraryItem): boolean {
   if (hasNonResumeDocument(item.quality_flags)) return false;
+  // Source-quality failures have a dedicated "重新解析为新版本" action in
+  // the drawer. Superseded versions are historical and must not be requeued.
+  if (
+    hasSourceTextQualityIssue(item.quality_flags) ||
+    hasSupersededReparseVersion(item.quality_flags)
+  ) {
+    return false;
+  }
   const readyForProcessing = item.is_active && item.extraction_status === "ready";
   // First-time summary/score: a ready resume with a missing result is retryable.
   const missingScore = readyForProcessing && item.score_status == null;

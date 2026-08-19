@@ -10,6 +10,7 @@ from app.services.deepseek_provider import (
     SCORE_SCHEMA_VERSION,
     SUMMARY_SCHEMA_VERSION,
     SUMMARY_SECTION_KEYS,
+    _resume_score_max_tokens,
     _validate_fact_snapshot,
     resume_score_tool_schema,
     resume_summary_tool_schema,
@@ -435,6 +436,101 @@ def test_score_rejects_two_english_outputs_after_one_correction(monkeypatch) -> 
             dimensions=_dimensions(),
         )
     assert len(calls) == 2
+
+
+def test_resume_score_max_tokens_bounds() -> None:
+    assert _resume_score_max_tokens(1, correction=False) == 3200
+    assert _resume_score_max_tokens(2, correction=False) == 3200
+    assert _resume_score_max_tokens(4, correction=False) == 3800
+    assert _resume_score_max_tokens(10, correction=False) == 6000
+    assert _resume_score_max_tokens(4, correction=True) == 6000
+
+
+def test_score_correction_retry_gets_a_full_output_budget(monkeypatch) -> None:
+    """MiniMax-M3 needs more than 1800 output tokens to render every required
+    simplified-Chinese score field on real resumes.  The first attempt uses the
+    dimension-scaled budget; a correction retry must re-render everything, so it
+    always gets the largest safe budget."""
+
+    calls: list[dict[str, object]] = []
+
+    def fake_provider_call(**kwargs):
+        calls.append(kwargs)
+        return _english_score_output() if len(calls) == 1 else _valid_score_output()
+
+    monkeypatch.setattr(
+        "app.services.deepseek_provider.call_strict_function",
+        fake_provider_call,
+    )
+
+    result = score_resume_fact_snapshot(
+        api_key="not-used",
+        model="not-used",
+        timeout_seconds=1,
+        fact_snapshot=_fact_snapshot(),
+        dimensions=_dimensions(),
+    )
+
+    assert result["overall_summary"].startswith("现有事实")
+    assert len(calls) == 2
+    assert calls[0]["max_tokens"] == _resume_score_max_tokens(
+        len(_dimensions()), correction=False
+    )
+    assert calls[1]["max_tokens"] == 6000
+
+
+def test_score_fills_missing_top_level_fields_with_completion(monkeypatch) -> None:
+    """MiniMax-M3's strict generator sometimes closes the JSON after
+    dimension_scores and omits the trailing top-level fields (or writes a
+    stray "item" key).  A targeted completion request must fill them."""
+
+    calls: list[dict[str, object]] = []
+
+    def fake_provider_call(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            incomplete = _valid_score_output()
+            incomplete.pop("overall_summary")
+            incomplete.pop("risk_flags")
+            incomplete.pop("needs_human_review")
+            incomplete["item"] = {"message": "stray risk flag"}
+            return incomplete
+        return {
+            "overall_summary": "现有事实显示候选人具备 Python 技能并拥有一段工作经历。",
+            "risk_flags": [
+                {
+                    "message": "需要在后续沟通中核实与目标行业的相关性。",
+                    "fact_ids": ["experience-001"],
+                }
+            ],
+            "needs_human_review": False,
+        }
+
+    monkeypatch.setattr(
+        "app.services.deepseek_provider.call_strict_function",
+        fake_provider_call,
+    )
+
+    result = score_resume_fact_snapshot(
+        api_key="not-used",
+        model="not-used",
+        timeout_seconds=1,
+        fact_snapshot=_fact_snapshot(),
+        dimensions=_dimensions(),
+    )
+
+    assert set(result) == {
+        "schema_version",
+        "dimension_scores",
+        "overall_summary",
+        "risk_flags",
+        "needs_human_review",
+    }
+    assert "item" not in result
+    assert len(calls) == 2
+    assert calls[1]["function_name"] == "submit_resume_score_top_level"
+    assert calls[1]["max_tokens"] == 2000
+    assert "overall_summary" in str(calls[1]["parameters_schema"]["required"])
 
 
 def test_summary_schema_and_output_require_fixed_sections_and_known_citations() -> None:

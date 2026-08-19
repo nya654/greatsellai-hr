@@ -1414,6 +1414,51 @@ def resume_score_tool_schema(
     }
 
 
+def resume_score_top_level_schema(*, fact_ids: Sequence[str]) -> dict[str, Any]:
+    """Small, reliable completion contract for the top-level score fields.
+
+    MiniMax-M3's strict tool generator is unreliable when the full score schema
+    must emit both a long ``dimension_scores`` array and the trailing scalar
+    fields in one response: it sometimes closes the JSON right after the array
+    (or writes a stray ``item`` key instead of ``risk_flags``).  A completion
+    request that asks only for ``overall_summary``, ``risk_flags`` and
+    ``needs_human_review`` is small enough to render reliably, so the adapter
+    fills any missing top-level fields with a targeted second request instead
+    of re-generating the whole score.
+    """
+
+    normalized_fact_ids = _require_string_list(
+        fact_ids,
+        code="fact_ids",
+        allow_empty=False,
+    )
+    risk_flag = {
+        "type": "object",
+        "properties": {
+            "message": {
+                "type": "string",
+                "description": "用简体中文写风险说明；不得输出英文完整句或英文段落。",
+            },
+            "fact_ids": _fact_id_array_schema(normalized_fact_ids),
+        },
+        "required": ["message", "fact_ids"],
+        "additionalProperties": False,
+    }
+    return {
+        "type": "object",
+        "properties": {
+            "overall_summary": {
+                "type": "string",
+                "description": "必须使用简体中文完整句子概括评分结论；不得输出英文句子或英文段落。",
+            },
+            "risk_flags": {"type": "array", "items": risk_flag},
+            "needs_human_review": {"type": "boolean"},
+        },
+        "required": ["overall_summary", "risk_flags", "needs_human_review"],
+        "additionalProperties": False,
+    }
+
+
 def score_template_optimization_tool_schema() -> dict[str, Any]:
     """Build the strict, persistable draft contract for template optimization."""
 
@@ -2059,6 +2104,84 @@ def validate_resume_summary_output(
     }
 
 
+def _resume_score_max_tokens(dimension_count: int, *, correction: bool) -> int:
+    """Bound a resume-score response by how many dimensions must be rendered.
+
+    The score contract requires every dimension rationale, its uncertainties,
+    an overall_summary, and risk_flags to be written as simplified-Chinese
+    prose.  MiniMax-M3 consumes substantially more output tokens for that than
+    the old fixed 1800 budget allowed; on real production resumes the model
+    closed the JSON right after ``dimension_scores`` and omitted the required
+    top-level fields, which the strict validator rejected.  A correction pass
+    must re-render the full result, so it gets the largest safe budget.
+    """
+
+    if correction:
+        return 6000
+    return min(6000, max(3200, 2200 + 400 * dimension_count))
+
+
+def _complete_missing_top_level(
+    *,
+    api_key: str,
+    model: str,
+    timeout_seconds: int,
+    fact_snapshot: Mapping[str, Any],
+    fact_ids: list[str],
+    dimension_scores_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Fill the top-level score fields that MiniMax-M3 sometimes omits.
+
+    The strict generator reliably renders a small schema, so instead of asking
+    it to re-generate the entire score (which can fail the same way again) we
+    strip the stray ``item`` key it sometimes writes and request only the
+    missing ``overall_summary``/``risk_flags``/``needs_human_review`` fields.
+    The returned payload keeps the already-valid ``dimension_scores`` and
+    overlays the completion result.
+    """
+
+    completed = dict(dimension_scores_payload)
+    # MiniMax-M3's strict generator sometimes emits a stray "item" key in
+    # place of risk_flags; the full-score validator must never see it.
+    completed.pop("item", None)
+
+    dimension_scores = dimension_scores_payload.get("dimension_scores")
+    dimension_summary = (
+        json.dumps(
+            dimension_scores,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )[:4000]
+        if isinstance(dimension_scores, list)
+        else "[]"
+    )
+    completion = call_strict_function(
+        api_key=api_key,
+        model=model,
+        timeout_seconds=timeout_seconds,
+        function_name="submit_resume_score_top_level",
+        function_description="补全评分结果的总结、风险标记与人工复核标记。",
+        parameters_schema=resume_score_top_level_schema(fact_ids=fact_ids),
+        system_prompt=(
+            "你正在补全一份已生成的评分结果。只输出 overall_summary、risk_flags、needs_human_review 三个字段，"
+            "不要输出维度评分或其他字段。overall_summary 必须以中文汉字开头的简体中文完整句子概括评分结论；"
+            "risk_flags 的 message 使用简体中文，只引用提供的事实 ID，缺少事实应写为待确认项；"
+            "needs_human_review 为布尔值。只返回符合 Schema 的函数参数；字段名和事实 ID 保持不变。"
+            "不得输出英文完整句或英文段落，不得解释或复述前一次结果。"
+        ),
+        user_prompt=(
+            "结构化简历事实：\n"
+            + json.dumps(fact_snapshot, ensure_ascii=False, separators=(",", ":"))
+            + "\n\n已生成的各维度评分（仅作总结参考，不要重复输出）：\n"
+            + dimension_summary
+            + "\n\n请补全 overall_summary、risk_flags、needs_human_review 三个字段。"
+        ),
+        max_tokens=2000,
+    )
+    completed.update(completion)
+    return completed
+
+
 def score_resume_fact_snapshot(
     *,
     api_key: str,
@@ -2080,6 +2203,10 @@ def score_resume_fact_snapshot(
             "overall_summary 必须是以中文汉字开头的简体中文句子，例如：候选人具备明确的 Python 经历，但云经验仍待确认。"
             if correction_pass
             else ""
+        )
+        score_max_tokens = _resume_score_max_tokens(
+            len(normalized_dimensions),
+            correction=correction_pass,
         )
         result = call_strict_function(
             api_key=api_key,
@@ -2112,18 +2239,39 @@ def score_resume_fact_snapshot(
                 "risk_flags.message 都必须使用简体中文。即使输入事实或评分指引包含英文，也必须"
                 "用中文解释；只有必要的专有名称和技术名词可保留原文。"
             ),
-            max_tokens=1800,
+            max_tokens=score_max_tokens,
         )
+        return result
+
+    raw_result = request_score(correction_pass=False)
+    try:
         return validate_resume_score_output(
-            result,
+            raw_result,
             dimensions=normalized_dimensions,
             fact_ids=fact_ids,
         )
-
-    try:
-        return request_score(correction_pass=False)
     except DeepSeekProviderError as exc:
         error_code = str(exc)
+        if error_code == "deepseek_contract_score_response_fields":
+            # MiniMax-M3's strict generator sometimes closes the JSON right
+            # after dimension_scores and omits the trailing top-level fields
+            # (or writes a stray "item" key instead of risk_flags).  Fill the
+            # missing fields with a targeted completion request instead of
+            # re-generating the whole score, which fails the same way at the
+            # same rate on the same long input.
+            completed = _complete_missing_top_level(
+                api_key=api_key,
+                model=model,
+                timeout_seconds=timeout_seconds,
+                fact_snapshot=snapshot,
+                fact_ids=fact_ids,
+                dimension_scores_payload=raw_result,
+            )
+            return validate_resume_score_output(
+                completed,
+                dimensions=normalized_dimensions,
+                fact_ids=fact_ids,
+            )
         if (
             error_code not in {
                 "deepseek_contract_score_rationale_language",
@@ -2140,7 +2288,11 @@ def score_resume_fact_snapshot(
             and not error_code.startswith("deepseek_contract_score_")
         ):
             raise
-        return request_score(correction_pass=True)
+        return validate_resume_score_output(
+            request_score(correction_pass=True),
+            dimensions=normalized_dimensions,
+            fact_ids=fact_ids,
+        )
 
 
 def optimize_score_template(
